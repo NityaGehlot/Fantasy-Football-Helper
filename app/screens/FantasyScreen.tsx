@@ -633,7 +633,7 @@ const formatPlayerStats = (position: string, stats: any) => {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>League Nameeee: {league?.name}</Text>
+      <Text style={styles.title}>League Name: {league?.name}</Text>
 
       {/* ========================= NEW TEST BLOCK ========================= */}
       {/* Verify NFL data is loaded */}
