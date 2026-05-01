@@ -1,0 +1,53 @@
+{
+  "name": "fantasy-play-caller",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "type": "commonjs",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^15.0.3",
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "@react-native-picker/picker": "^2.11.1",
+    "@react-navigation/bottom-tabs": "^7.8.5",
+    "@react-navigation/native": "^7.1.20",
+    "@react-navigation/native-stack": "^7.6.2",
+    "@react-navigation/stack": "^7.6.4",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.3",
+    "event-source-polyfill": "^1.0.31",
+    "expo": "~54.0.33",
+    "expo-status-bar": "~3.0.9",
+    "express": "^5.2.1",
+    "firebase": "^12.8.0",
+    "node-fetch": "^3.3.2",
+    "openai": "^6.10.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-dotenv": "^3.4.11",
+    "react-native-gesture-handler": "~2.28.0",
+    "react-native-paper": "^5.14.5",
+    "react-native-reanimated": "~4.1.1",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0",
+    "react-native-vector-icons": "^10.3.0",
+    "react-native-web": "^0.21.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/event-source-polyfill": "^1.0.5",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.10.13",
+    "@types/react": "~19.1.0",
+    "baseline-browser-mapping": "^2.9.19",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.3"
+  },
+  "private": true
+}
