@@ -29,6 +29,20 @@ app.use(express.json({ limit: "10mb" }));
 
 const PORT = 4000;
 
+type OpponentDefenseContext = {
+  matchupWeek: number;
+  opponentTeam: string;
+  opponentAbbreviation: string;
+  weeksIncluded: number[];
+  avgRushingYardsAllowed: number;
+  avgPassingYardsAllowed: number;
+  avgRushingTDAllowed: number;
+  avgPassingTDAllowed: number;
+  avgInterceptions: number;
+  avgFumblesForced: number;
+  defenseStrengthScore: number;
+};
+
 // ===============================
 // Shared Utilities
 // ===============================
@@ -45,6 +59,187 @@ function getCurrentFantasyWeek(playerStats: any[]): number {
   if (weeksWithData.length === 0) return 1;
   const latestWeekWithData = Math.max(...weeksWithData);
   return Math.min(latestWeekWithData, MAX_WEEK);
+}
+
+function getSeasonYear(playerStats: any[]): number {
+  const seasons = playerStats
+    .map(p => Number(p.season))
+    .filter(year => Number.isFinite(year) && year > 0);
+
+  return seasons.length > 0 ? Math.max(...seasons) : 2025;
+}
+
+function resolveAnalysisWeek(playerStats: any[], requestedWeek?: number): number {
+  const MAX_WEEK = 17;
+
+  if (Number.isFinite(requestedWeek) && Number(requestedWeek) > 0) {
+    return Math.min(Number(requestedWeek), MAX_WEEK);
+  }
+
+  return getCurrentFantasyWeek(playerStats);
+}
+
+function normalizeTeamAbbreviation(team: string | null | undefined): string {
+  const normalized = String(team ?? "").trim().toUpperCase();
+  const aliases: Record<string, string> = {
+    WSH: "WAS",
+    JAC: "JAX",
+    LA: "LAR",
+  };
+
+  return aliases[normalized] ?? normalized;
+}
+
+function roundStat(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+async function fetchOpponentMap(
+  seasonYear: number,
+  week: number
+): Promise<Map<string, { opponentAbbreviation: string; opponentTeam: string }>> {
+  const scheduleUrl = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${seasonYear}&seasontype=2&week=${week}`;
+  const response = await fetch(scheduleUrl);
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch NFL schedule for week ${week}`);
+  }
+
+  const data = (await response.json()) as any;
+  const opponentMap = new Map<string, { opponentAbbreviation: string; opponentTeam: string }>();
+
+  for (const event of data.events ?? []) {
+    const competitors = event?.competitions?.[0]?.competitors ?? [];
+    if (competitors.length !== 2) continue;
+
+    const [teamA, teamB] = competitors;
+    const teamAAbbr = normalizeTeamAbbreviation(teamA?.team?.abbreviation);
+    const teamBAbbr = normalizeTeamAbbreviation(teamB?.team?.abbreviation);
+
+    opponentMap.set(teamAAbbr, {
+      opponentAbbreviation: teamBAbbr,
+      opponentTeam: teamB?.team?.displayName ?? teamBAbbr,
+    });
+    opponentMap.set(teamBAbbr, {
+      opponentAbbreviation: teamAAbbr,
+      opponentTeam: teamA?.team?.displayName ?? teamAAbbr,
+    });
+  }
+
+  return opponentMap;
+}
+
+function getPlayerTeamForWeek(
+  playerName: string,
+  position: Position,
+  playerStats: any[],
+  week: number
+): string | null {
+  const row = playerStats
+    .filter(
+      p =>
+        p.position === position &&
+        p.player_name.toLowerCase() === playerName.toLowerCase() &&
+        Number(p.week) <= week &&
+        p.team
+    )
+    .sort((a, b) => Number(b.week) - Number(a.week))[0];
+
+  return row?.team ?? null;
+}
+
+function calculateDefenseStrengthScore(defense: {
+  avgRushingYardsAllowed: number;
+  avgPassingYardsAllowed: number;
+  avgRushingTDAllowed: number;
+  avgPassingTDAllowed: number;
+  avgInterceptions: number;
+  avgFumblesForced: number;
+}): number {
+  const rushingYardsComponent = Math.max(0, Math.min(20, ((160 - defense.avgRushingYardsAllowed) / 160) * 20));
+  const passingYardsComponent = Math.max(0, Math.min(25, ((320 - defense.avgPassingYardsAllowed) / 320) * 25));
+  const rushingTDComponent = Math.max(0, Math.min(15, ((3 - defense.avgRushingTDAllowed) / 3) * 15));
+  const passingTDComponent = Math.max(0, Math.min(15, ((3 - defense.avgPassingTDAllowed) / 3) * 15));
+  const interceptionsComponent = Math.max(0, Math.min(15, (defense.avgInterceptions / 3) * 15));
+  const fumblesComponent = Math.max(0, Math.min(10, (defense.avgFumblesForced / 3) * 10));
+
+  return roundStat(
+    rushingYardsComponent +
+      passingYardsComponent +
+      rushingTDComponent +
+      passingTDComponent +
+      interceptionsComponent +
+      fumblesComponent
+  );
+}
+
+function buildOpponentDefenseContext(
+  playerName: string,
+  playerStats: any[],
+  matchupWeek: number,
+  opponentMap: Map<string, { opponentAbbreviation: string; opponentTeam: string }>
+): OpponentDefenseContext | null {
+  const playerTeam = normalizeTeamAbbreviation(
+    getPlayerTeamForWeek(playerName, "QB", playerStats, matchupWeek)
+  );
+
+  if (!playerTeam) {
+    return null;
+  }
+
+  const opponent = opponentMap.get(playerTeam);
+  if (!opponent) {
+    return null;
+  }
+
+  const previousDefenseWeeks = playerStats
+    .filter(
+      p =>
+        p.position === "DEF" &&
+        normalizeTeamAbbreviation(p.team) === opponent.opponentAbbreviation &&
+        Number(p.week) < matchupWeek
+    )
+    .sort((a, b) => Number(b.week) - Number(a.week))
+    .slice(0, 3);
+
+  const defenseWeeks =
+    previousDefenseWeeks.length > 0
+      ? previousDefenseWeeks
+      : playerStats
+          .filter(
+            p =>
+              p.position === "DEF" &&
+              normalizeTeamAbbreviation(p.team) === opponent.opponentAbbreviation &&
+              Number(p.week) <= matchupWeek
+          )
+          .sort((a, b) => Number(b.week) - Number(a.week))
+          .slice(0, 3);
+
+  if (defenseWeeks.length === 0) {
+    return null;
+  }
+
+  const count = defenseWeeks.length;
+  const sum = (key: string) =>
+    defenseWeeks.reduce((total, row) => total + (Number(row[key]) || 0), 0);
+
+  const summary = {
+    matchupWeek,
+    opponentTeam: opponent.opponentTeam,
+    opponentAbbreviation: opponent.opponentAbbreviation,
+    weeksIncluded: defenseWeeks.map(row => Number(row.week)).sort((a, b) => b - a),
+    avgRushingYardsAllowed: roundStat(sum("rushing_yards_allowed") / count),
+    avgPassingYardsAllowed: roundStat(sum("passing_yards_allowed") / count),
+    avgRushingTDAllowed: roundStat(sum("rushing_tds_allowed") / count),
+    avgPassingTDAllowed: roundStat(sum("passing_tds_allowed") / count),
+    avgInterceptions: roundStat(sum("def_interceptions") / count),
+    avgFumblesForced: roundStat(sum("def_fumbles_forced") / count),
+  };
+
+  return {
+    ...summary,
+    defenseStrengthScore: calculateDefenseStrengthScore(summary),
+  };
 }
 
 // ===============================
@@ -133,7 +328,7 @@ app.get("/player-stats-all-weeks", async (req, res) => {
 app.post("/fantasy-chat", async (req, res) => {
   console.log("➡️ /fantasy-chat hit");
 
-  const { message } = req.body;
+  const { message, selectedWeek } = req.body;
   if (!message || message.trim() === "") {
     return res.status(400).json({ reply: "⚠️ No question provided." });
   }
@@ -144,8 +339,11 @@ app.post("/fantasy-chat", async (req, res) => {
     if (!statsResponse.ok) throw new Error("Failed to fetch player stats");
     const playerStats = (await statsResponse.json()) as any[];
 
-    const currentWeek = getCurrentFantasyWeek(playerStats);
-    console.log(`📅 Current fantasy week detected: ${currentWeek}`);
+    const currentWeek = resolveAnalysisWeek(playerStats, selectedWeek);
+    const seasonYear = getSeasonYear(playerStats);
+    const opponentMap = await fetchOpponentMap(seasonYear, currentWeek);
+
+    console.log(`📅 Fantasy matchup week: ${currentWeek}`);
     console.log("📦 Backend fetched stats:", playerStats.length);
 
     // Extract all mentioned players and their positions
@@ -193,7 +391,17 @@ app.post("/fantasy-chat", async (req, res) => {
       };
 
       const builder_fn = getAnalysisBuilders[player.position];
-      const block = builder_fn(player.name, ctx, playerStats, currentWeek);
+      const opponentDefense =
+        player.position === "QB"
+          ? buildOpponentDefenseContext(player.name, playerStats, currentWeek, opponentMap)
+          : null;
+      const block = builder_fn(
+        player.name,
+        ctx,
+        playerStats,
+        currentWeek,
+        opponentDefense
+      );
       analysisBlock += block;
     }
 

@@ -27,7 +27,6 @@ export default function PlayerDetailsScreen({ route }: any) {
   const displayTeam = String(stats?.team || player?.team || 'N/A');
 
   const [allWeeksStats, setAllWeeksStats] = useState<any>({});
-  const [loadingStats, setLoadingStats] = useState(true);
   const [loadingNews, setLoadingNews] = useState(true);
   const [newsTab, setNewsTab] = useState<'player' | 'team'>('player');
   const [playerNews, setPlayerNews] = useState<NewsArticle[]>([]);
@@ -47,9 +46,48 @@ export default function PlayerDetailsScreen({ route }: any) {
     return null;
   };
 
+  const hasMeaningfulStats = (weekStats: any) => {
+    if (!weekStats || typeof weekStats !== 'object') return false;
+
+    const nonStatKeys = new Set([
+      'player_id',
+      'player_name',
+      'team',
+      'position',
+      'opponent',
+      'opp_team',
+      'week',
+      'season',
+      'game_id',
+      'headshot_url',
+      'injury_status',
+      'practice_status',
+      'practice_primary_injury',
+      'primary_injury',
+      'secondary_injury',
+      'status',
+      'number',
+      'age',
+      'years_exp',
+      'college',
+      'height',
+      'weight',
+    ]);
+
+    for (const [key, rawValue] of Object.entries(weekStats)) {
+      if (nonStatKeys.has(key)) continue;
+
+      const value = Number(rawValue);
+      if (!Number.isNaN(value) && value !== 0) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
   useEffect(() => {
     const fetchAllWeeks = async () => {
-      setLoadingStats(true);
       try {
         const weeks = Array.from({ length: 18 }, (_, i) => i + 1);
         const promises = weeks.map(w => getPlayerStatsByWeek(w));
@@ -59,15 +97,13 @@ export default function PlayerDetailsScreen({ route }: any) {
         results.forEach((data, index) => {
           const w = index + 1;
           const playerStats = getPlayerNFLStats(player.player_id, w, data);
-          if (playerStats && Object.keys(playerStats).length > 0) {
+          if (hasMeaningfulStats(playerStats)) {
             statsMap[w] = playerStats;
           }
         });
         setAllWeeksStats(statsMap);
       } catch (err) {
         console.error('Error fetching player stats:', err);
-      } finally {
-        setLoadingStats(false);
       }
     };
     fetchAllWeeks();
@@ -617,7 +653,7 @@ export default function PlayerDetailsScreen({ route }: any) {
           );
         })() : (
           <Text style={styles.statLine}>
-            {loadingStats ? 'Loading...' : 'No stats recorded yet'}
+            No stats available
           </Text>
         )}
       </View>
@@ -626,15 +662,10 @@ export default function PlayerDetailsScreen({ route }: any) {
       {/* SEASON STATS */}
       {/* ========================= */}
 
-      {loadingStats ? (
+      {renderSeasonStats() ?? (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Season Stats</Text>
-          <Text style={styles.statLine}>Loading...</Text>
-        </View>
-      ) : renderSeasonStats() ?? (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Season Stats</Text>
-          <Text style={styles.statLine}>No stats recorded yet</Text>
+          <Text style={styles.statLine}>No stats available</Text>
         </View>
       )}
 
@@ -705,7 +736,7 @@ export default function PlayerDetailsScreen({ route }: any) {
             })
           ) : (
             <Text style={styles.statLine}>
-              {loadingStats ? 'Loading...' : 'No stats recorded yet'}
+              No stats available
             </Text>
           )}
         </ScrollView>

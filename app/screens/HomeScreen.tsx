@@ -178,6 +178,15 @@ export default function HomeScreen() {
               onChangeText={setSearchQuery}
               clearButtonMode="while-editing"
             />
+            {searchQuery.trim().length > 0 && (
+              <TouchableOpacity
+                onPress={() => setSearchQuery('')}
+                style={styles.searchClearBtn}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="close-circle" size={18} color="#999" />
+              </TouchableOpacity>
+            )}
           </View>
           <TouchableOpacity
             style={[styles.filterBtn, activeFilterCount > 0 && styles.filterBtnActive]}
@@ -438,6 +447,11 @@ const styles = StyleSheet.create({
     color: '#1e1e1e',
     padding: 0,
     outlineStyle: 'none',
+  },
+  searchClearBtn: {
+    marginLeft: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   filterBtn: {
     width: 42,

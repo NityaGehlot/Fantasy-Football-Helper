@@ -8,6 +8,20 @@ import {
   getInjuredTeammates,
 } from "../utils/playerExtraction";
 
+interface OpponentDefenseContext {
+  matchupWeek: number;
+  opponentTeam: string;
+  opponentAbbreviation: string;
+  weeksIncluded: number[];
+  avgRushingYardsAllowed: number;
+  avgPassingYardsAllowed: number;
+  avgRushingTDAllowed: number;
+  avgPassingTDAllowed: number;
+  avgInterceptions: number;
+  avgFumblesForced: number;
+  defenseStrengthScore: number;
+}
+
 /**
  * Build a formatted analysis block for a QB
  */
@@ -15,7 +29,8 @@ export function buildQBAnalysisBlock(
   playerName: string,
   ctx: any,
   playerStats: any[],
-  currentWeek: number
+  currentWeek: number,
+  opponentDefense?: OpponentDefenseContext | null
 ): string {
   const team = getPlayerTeam(playerName, "QB", playerStats);
   const injuryInfo = getPlayerInjuryStatus(playerName, "QB", playerStats, currentWeek);
@@ -33,6 +48,32 @@ export function buildQBAnalysisBlock(
         .join("\n");
     }
   }
+
+  const opponentDefenseBlock = opponentDefense
+    ? `
+--- OPPONENT DEFENSE MATCHUP (Week ${opponentDefense.matchupWeek}) ---
+Opponent Defense Team: ${opponentDefense.opponentTeam} (${opponentDefense.opponentAbbreviation})
+Last 3 Completed Weeks Used: ${opponentDefense.weeksIncluded.join(", ")}
+Rushing Yards Allowed: ${opponentDefense.avgRushingYardsAllowed}
+Passing Yards Allowed: ${opponentDefense.avgPassingYardsAllowed}
+Rushing TDs Allowed: ${opponentDefense.avgRushingTDAllowed}
+Passing TDs Allowed: ${opponentDefense.avgPassingTDAllowed}
+Interceptions: ${opponentDefense.avgInterceptions}
+Fumbles Forced: ${opponentDefense.avgFumblesForced}
+Defense Strength Score (0-100, higher = stronger defense): ${opponentDefense.defenseStrengthScore}
+`
+    : `
+--- OPPONENT DEFENSE MATCHUP (Week ${currentWeek}) ---
+Opponent Defense Team: Not available
+Last 3 Completed Weeks Used: Not available
+Rushing Yards Allowed: Not available
+Passing Yards Allowed: Not available
+Rushing TDs Allowed: Not available
+Passing TDs Allowed: Not available
+Interceptions: Not available
+Fumbles Forced: Not available
+Defense Strength Score (0-100, higher = stronger defense): Not available
+`;
 
   return `
 ${playerName.toUpperCase()}
@@ -63,6 +104,8 @@ QB Injury Type:       ${injuryInfo.injuryType}
 
 Injured Teammates (Week ${currentWeek} only):
 ${teammateInjuryBlock}
+
+${opponentDefenseBlock}
 `;
 }
 

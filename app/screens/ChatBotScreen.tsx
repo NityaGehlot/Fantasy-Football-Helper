@@ -11,7 +11,7 @@ import {
 import { useFantasy } from "../context/FantasyContext";
 
 export default function ChatBotScreen() {
-  const { playerStats2025, matchups } = useFantasy();
+  const { playerStats2025, matchups, selectedWeek } = useFantasy();
 
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<{ role: string; text: string }[]>([]);
@@ -37,6 +37,7 @@ export default function ChatBotScreen() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: userMsg.text,
+          selectedWeek,
           // playerStats: playerStats2025,
           // matchupData: matchups
         })

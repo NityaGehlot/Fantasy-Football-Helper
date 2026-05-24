@@ -38,7 +38,6 @@ export default function FantasyScreen() {
   const [matchups, setMatchups] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [myTeamId, setMyTeamId] = useState<string | null>(null);
-  const [selectedWeek, setSelectedWeek] = useState<number>(1);
   const [weekMatchups, setWeekMatchups] = useState<any[]>([]);
   const [leagueInput, setLeagueInput] = useState("");
   const [addingLeague, setAddingLeague] = useState(false);
@@ -61,7 +60,7 @@ export default function FantasyScreen() {
   // const LEAGUE_ID = '1262118513326182400';
   // const { activeLeagueId } = useFantasy();
   // const LEAGUE_ID = String(activeLeagueId);
-  const { activeLeagueId, addLeague } = useFantasy();
+  const { activeLeagueId, addLeague, selectedWeek, setSelectedWeek } = useFantasy();
 
 
   // =====================

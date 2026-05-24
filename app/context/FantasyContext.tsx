@@ -27,6 +27,8 @@ interface FantasyContextType {
   setPlayerStats2025: React.Dispatch<React.SetStateAction<any[]>>;
   matchups: any[];
   setMatchups: React.Dispatch<React.SetStateAction<any[]>>;
+  selectedWeek: number;
+  setSelectedWeek: React.Dispatch<React.SetStateAction<number>>;
   leagues: League[];
   activeLeagueId: string | null;
   addLeague: (leagueId: string) => Promise<void>;
@@ -39,6 +41,7 @@ const FantasyContext = createContext<FantasyContextType | undefined>(undefined);
 export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   const [playerStats2025, setPlayerStats2025] = useState<any[]>([]);
   const [matchups, setMatchups] = useState<any[]>([]);
+  const [selectedWeek, setSelectedWeek] = useState<number>(17);
   const [leagues, setLeagues] = useState<League[]>([]);
   const [activeLeagueId, setActiveLeagueId] = useState<string | null>(null);
 
@@ -135,6 +138,8 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
         setPlayerStats2025,
         matchups,
         setMatchups,
+        selectedWeek,
+        setSelectedWeek,
         leagues,
         activeLeagueId,
         addLeague,
