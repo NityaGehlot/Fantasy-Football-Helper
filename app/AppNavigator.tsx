@@ -146,12 +146,14 @@ function AccountMenu() {
  * Bottom Tab Navigator
  */
 function TabNavigator() {
+  const { unreadBotMessages, isChatTyping } = useFantasy();
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: true,
         headerRight: () => <AccountMenu />,
-        tabBarIcon: ({ color, size }) => {
+        tabBarIcon: ({ color, size, focused }) => {
           let iconName: keyof typeof Ionicons.glyphMap = 'home';
 
           switch (route.name) {
@@ -169,7 +171,20 @@ function TabNavigator() {
               break;
           }
 
-          return <Ionicons name={iconName} size={size} color={color} />;
+          const showChatBadge =
+            route.name === 'ChatBot' && !focused && (isChatTyping || unreadBotMessages > 0);
+          const chatBadgeText = isChatTyping ? '...' : unreadBotMessages > 9 ? '9+' : String(unreadBotMessages);
+
+          return (
+            <View style={styles.tabIconWrapper}>
+              <Ionicons name={iconName} size={size} color={color} />
+              {showChatBadge ? (
+                <View style={styles.chatBadge}>
+                  <Text style={styles.chatBadgeText}>{chatBadgeText}</Text>
+                </View>
+              ) : null}
+            </View>
+          );
         },
         tabBarActiveTintColor: '#3b82f6',
         tabBarInactiveTintColor: 'gray',
@@ -259,5 +274,28 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: "#eee"
+  },
+  tabIconWrapper: {
+    width: 26,
+    height: 26,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  chatBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -12,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 3,
+    borderRadius: 8,
+    backgroundColor: '#ef4444',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  chatBadgeText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '700'
   }
 });

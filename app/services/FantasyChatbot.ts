@@ -7,17 +7,17 @@ export type MatchupData = any[];      // same here
 // ---- Chatbot Function ----
 export async function fantasyChatResponse(
   userMessage: string,
-  playerStats: PlayerStats = [],     // default if null sent
-  matchupData: MatchupData = []      // default if null sent
+  playerStats: PlayerStats = [],     // kept for compatibility; not sent
+  matchupData: MatchupData = [],     // kept for compatibility; not sent
+  selectedWeek?: number
 ): Promise<string> {
   try {
-    const res = await fetch("http://localhost:4000/fantasy-chat", {
+    const res = await fetch("http://127.0.0.1:4000/fantasy-chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message: userMessage,
-        playerStats,
-        matchupData,
+        selectedWeek,
       }),
     });
 

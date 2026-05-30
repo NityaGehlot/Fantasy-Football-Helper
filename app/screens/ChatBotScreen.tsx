@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -11,64 +12,32 @@ import {
 import { useFantasy } from "../context/FantasyContext";
 
 export default function ChatBotScreen() {
-  const { playerStats2025, matchups, selectedWeek } = useFantasy();
+  const {
+    chatMessages,
+    isChatTyping,
+    sendChatMessage,
+    markChatAsRead,
+    chatPersistenceEnabled,
+    setChatPersistenceEnabled,
+    clearChatHistory
+  } = useFantasy();
 
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<{ role: string; text: string }[]>([]);
-  const [isTyping, setIsTyping] = useState(false);
+  const scrollRef = useRef<ScrollView | null>(null);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      markChatAsRead();
+    }, [chatMessages.length, markChatAsRead])
+  );
 
   const sendMessage = async () => {
-    if (!input.trim() || isTyping) return;
+    const trimmed = input.trim();
+    if (!trimmed || isChatTyping) return;
 
-    Keyboard.dismiss(); // hide keyboard
-    const userMsg = { role: "user", text: input };
-    setMessages(prev => [...prev, userMsg]);
+    Keyboard.dismiss();
     setInput("");
-    setIsTyping(true); // disable send button
-
-    // Start empty bot bubble
-    setMessages(prev => [...prev, { role: "bot", text: "" }]);
-
-    try {
-      console.log("Sending playerStats length:", playerStats2025?.length);
-
-      const response = await fetch("http://127.0.0.1:4000/fantasy-chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: userMsg.text,
-          selectedWeek,
-          // playerStats: playerStats2025,
-          // matchupData: matchups
-        })
-      });
-
-      const data = await response.json();
-
-      // Typing effect
-      let i = 0;
-      const interval = setInterval(() => {
-        i++;
-        setMessages(prev => {
-          const updated = [...prev];
-          updated[updated.length - 1].text = data.reply.slice(0, i);
-          return updated;
-        });
-
-        if (i >= (data.reply || "").length) {
-          clearInterval(interval);
-          setIsTyping(false); // enable send button
-        }
-      }, 15); // adjust speed here
-
-    } catch (err) {
-      console.error(err);
-      setMessages(prev => [
-        ...prev,
-        { role: "bot", text: "⚠️ Failed to reach AI." }
-      ]);
-      setIsTyping(false);
-    }
+    await sendChatMessage(trimmed);
   };
 
   // Allow Enter key to send message (web only)
@@ -78,10 +47,33 @@ export default function ChatBotScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView style={styles.chat}>
-        {messages.map((m, i) => (
+      <View style={styles.chatOptionsRow}>
+        <TouchableOpacity
+          style={styles.optionBtn}
+          onPress={() => setChatPersistenceEnabled(!chatPersistenceEnabled)}
+        >
+          <Text style={styles.optionBtnText}>
+            {chatPersistenceEnabled ? "History: On" : "History: Off"}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.optionBtn}
+          onPress={clearChatHistory}
+          disabled={isChatTyping}
+        >
+          <Text style={styles.optionBtnText}>Clear</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView
+        ref={scrollRef}
+        style={styles.chat}
+        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+      >
+        {chatMessages.map(m => (
           <Text
-            key={i}
+            key={m.id}
             style={m.role === "user" ? styles.userMsg : styles.botMsg}
           >
             {m.text}
@@ -99,8 +91,8 @@ export default function ChatBotScreen() {
         />
         <TouchableOpacity
           onPress={sendMessage}
-          style={[styles.sendBtn, isTyping && { opacity: 0.5 }]}
-          disabled={isTyping}
+          style={[styles.sendBtn, isChatTyping && { opacity: 0.5 }]}
+          disabled={isChatTyping}
         >
           <Text style={{ color: "#fff" }}>Send</Text>
         </TouchableOpacity>
@@ -111,6 +103,22 @@ export default function ChatBotScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 15, backgroundColor: "#fff" },
+  chatOptionsRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 8
+  },
+  optionBtn: {
+    backgroundColor: "#f3f4f6",
+    borderRadius: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 10
+  },
+  optionBtnText: {
+    color: "#111827",
+    fontSize: 12,
+    fontWeight: "600"
+  },
   chat: { flex: 1, marginBottom: 10 },
   userMsg: {
     alignSelf: "flex-end",
