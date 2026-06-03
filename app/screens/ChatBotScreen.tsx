@@ -19,7 +19,8 @@ export default function ChatBotScreen() {
     markChatAsRead,
     chatPersistenceEnabled,
     setChatPersistenceEnabled,
-    clearChatHistory
+    clearChatHistory,
+    myTeam
   } = useFantasy();
 
   const [input, setInput] = useState("");
@@ -71,6 +72,12 @@ export default function ChatBotScreen() {
         style={styles.chat}
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
       >
+        <Text style={styles.contextHint}>
+          {myTeam
+            ? `Team context: ${myTeam.teamName}`
+            : "Team context: not set (go to Fantasy and tap 'Set Viewed Team As My Team')"}
+        </Text>
+
         {chatMessages.map(m => (
           <Text
             key={m.id}
@@ -134,6 +141,11 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 8,
     margin: 4
+  },
+  contextHint: {
+    fontSize: 12,
+    color: "#4b5563",
+    marginBottom: 8
   },
   row: { flexDirection: "row" },
   input: {

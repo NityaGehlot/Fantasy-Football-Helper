@@ -21,7 +21,12 @@ import {
   buildDEFAnalysisBlock,
 } from "./services/playerAnalysis";
 import { comparePlayerStats, formatComparisonBlock } from "./services/comparisonService";
-import { buildAnalysisPrompt, buildQBResponseFormat, buildSkillPositionResponseFormat } from "./services/promptBuilder";
+import {
+  buildAnalysisPrompt,
+  buildQBResponseFormat,
+  buildSkillPositionResponseFormat,
+  buildRosterDecisionResponseFormat,
+} from "./services/promptBuilder";
 
 const app = express();
 app.use(cors());
@@ -41,6 +46,24 @@ type OpponentDefenseContext = {
   avgInterceptions: number;
   avgFumblesForced: number;
   defenseStrengthScore: number;
+};
+
+type TeamPlayerPayload = {
+  playerId: string;
+  fullName: string;
+  position: string;
+  team: string;
+  isStarter: boolean;
+};
+
+type MyTeamPayload = {
+  leagueId: string;
+  ownerId: string;
+  rosterId: number;
+  teamName: string;
+  players: TeamPlayerPayload[];
+  starters: string[];
+  starterSlotsByPosition?: Partial<Record<"QB" | "RB" | "WR" | "TE" | "K" | "DEF", number>>;
 };
 
 // ===============================
@@ -92,6 +115,104 @@ function normalizeTeamAbbreviation(team: string | null | undefined): string {
 
 function roundStat(value: number): number {
   return Number(value.toFixed(2));
+}
+
+function inferRequestedPosition(message: string): Position | null {
+  const lower = message.toLowerCase();
+
+  if (/\bqb\b|quarterback/.test(lower)) return "QB";
+  if (/\brb\b|running back/.test(lower)) return "RB";
+  if (/\bwr\b|wide receiver/.test(lower)) return "WR";
+  if (/\bte\b|tight end/.test(lower)) return "TE";
+  if (/\bk\b|kicker/.test(lower)) return "K";
+  if (/\bdef\b|defense|dst|d\/st/.test(lower)) return "DEF";
+
+  return null;
+}
+
+function canonicalizePlayerName(
+  name: string,
+  position: Position,
+  playerStats: any[]
+): string {
+  const target = name.trim().toLowerCase();
+  const positionRows = playerStats.filter(p => p.position === position && p.player_name);
+
+  const exactMatch = positionRows.find(
+    p => String(p.player_name).trim().toLowerCase() === target
+  );
+  if (exactMatch) return String(exactMatch.player_name).trim().toLowerCase();
+
+  const fuzzyMatch = positionRows.find(p => {
+    const candidate = String(p.player_name).trim().toLowerCase();
+    return candidate.includes(target) || target.includes(candidate);
+  });
+
+  return String(fuzzyMatch?.player_name ?? name).trim().toLowerCase();
+}
+
+function inferPlayersFromMyTeam(
+  message: string,
+  myTeam: MyTeamPayload | null,
+  playerStats: any[]
+): { name: string; position: Position }[] {
+  if (!myTeam || !Array.isArray(myTeam.players) || myTeam.players.length === 0) {
+    return [];
+  }
+
+  const requestedPosition = inferRequestedPosition(message);
+  if (!requestedPosition) {
+    return [];
+  }
+
+  const teamPlayersAtPosition = myTeam.players.filter(
+    p => String(p.position).toUpperCase() === requestedPosition
+  );
+  if (teamPlayersAtPosition.length === 0) {
+    return [];
+  }
+
+  const sortedCandidates = [...teamPlayersAtPosition].sort((a, b) => {
+    if (a.isStarter && !b.isStarter) return -1;
+    if (!a.isStarter && b.isStarter) return 1;
+    return a.fullName.localeCompare(b.fullName);
+  });
+
+  const seen = new Set<string>();
+  const normalized = sortedCandidates
+    .map(p => canonicalizePlayerName(p.fullName, requestedPosition, playerStats))
+    .filter(name => {
+      if (!name || seen.has(name)) return false;
+      seen.add(name);
+      return true;
+    });
+
+  return normalized.map(name => ({
+    name,
+    position: requestedPosition,
+  }));
+}
+
+function getRosterStartCount(
+  position: Position,
+  myTeam: MyTeamPayload | null,
+  candidateCount: number
+): number {
+  const defaults: Record<Position, number> = {
+    QB: 1,
+    RB: 2,
+    WR: 2,
+    TE: 1,
+    K: 1,
+    DEF: 1,
+  };
+
+  const configured = myTeam?.starterSlotsByPosition?.[position];
+  const rawCount = Number.isFinite(configured) && Number(configured) > 0
+    ? Number(configured)
+    : defaults[position];
+
+  return Math.max(1, Math.min(rawCount, candidateCount));
 }
 
 async function fetchOpponentMap(
@@ -328,7 +449,11 @@ app.get("/player-stats-all-weeks", async (req, res) => {
 app.post("/fantasy-chat", async (req, res) => {
   console.log("➡️ /fantasy-chat hit");
 
-  const { message, selectedWeek } = req.body;
+  const { message, selectedWeek, myTeam } = req.body as {
+    message: string;
+    selectedWeek?: number;
+    myTeam?: MyTeamPayload | null;
+  };
   if (!message || message.trim() === "") {
     return res.status(400).json({ reply: "⚠️ No question provided." });
   }
@@ -347,10 +472,22 @@ app.post("/fantasy-chat", async (req, res) => {
     console.log("📦 Backend fetched stats:", playerStats.length);
 
     // Extract all mentioned players and their positions
-    const mentionedPlayers = extractAllPlayers(message, playerStats);
+    let mentionedPlayers = extractAllPlayers(message, playerStats);
+    const requestedPosition = inferRequestedPosition(message);
+    let usedRosterInference = false;
+
+    if (mentionedPlayers.length === 0) {
+      mentionedPlayers = inferPlayersFromMyTeam(message, myTeam ?? null, playerStats);
+      if (mentionedPlayers.length > 0) {
+        usedRosterInference = true;
+        console.log("🤖 Using saved roster context for players:", mentionedPlayers);
+      }
+    }
+
     if (mentionedPlayers.length === 0) {
       return res.json({
-        reply: "⚠️ No recognizable players found in question.",
+        reply:
+          "⚠️ I couldn't identify players from your question. Set your team in Fantasy and ask by position (for example: 'which qb should I start?') or mention player names.",
       });
     }
 
@@ -535,15 +672,26 @@ app.post("/fantasy-chat", async (req, res) => {
     const mainPosition =
       playerContexts.length > 0 ? playerContexts[0].position : "QB";
     const playerNames = playerContexts.map(p => p.name);
-    const responseFormat =
+    const startCount = getRosterStartCount(mainPosition, myTeam ?? null, playerNames.length);
+
+    let responseFormat =
       mainPosition === "QB"
         ? buildQBResponseFormat(playerNames)
         : buildSkillPositionResponseFormat(mainPosition, playerNames);
 
+    if (usedRosterInference && requestedPosition && playerNames.length > 0) {
+      responseFormat = buildRosterDecisionResponseFormat(mainPosition, playerNames, startCount);
+    }
+
+    const questionWithRosterInstruction =
+      usedRosterInference && requestedPosition
+        ? `${message}\n\nRoster Decision Requirement: Compare ALL listed ${requestedPosition} candidates and choose exactly ${startCount} starter(s).`
+        : message;
+
     const prompt = buildAnalysisPrompt({
       playerData: analysisBlock,
       comparisons: comparisonBlock,
-      userQuestion: message,
+      userQuestion: questionWithRosterInstruction,
       responseFormat: responseFormat,
       positions: [mainPosition],
     });

@@ -446,7 +446,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#1e1e1e',
     padding: 0,
-    outlineStyle: 'none',
   },
   searchClearBtn: {
     marginLeft: 8,

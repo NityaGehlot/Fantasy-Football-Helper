@@ -22,7 +22,7 @@ import {
 
 // >>> ADDED
 import { getPlayerStatsByWeek } from '../services/nflApi';
-import { useFantasy } from "../context/FantasyContext";
+import { useFantasy, type MyFantasyTeam } from "../context/FantasyContext";
 
 import { Picker } from '@react-native-picker/picker';
 import { User, Roster } from '../types';
@@ -37,7 +37,7 @@ export default function FantasyScreen() {
   const [players, setPlayers] = useState<any>({});
   const [matchups, setMatchups] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [myTeamId, setMyTeamId] = useState<string | null>(null);
+  const [viewedTeamId, setViewedTeamId] = useState<string | null>(null);
   const [weekMatchups, setWeekMatchups] = useState<any[]>([]);
   const [leagueInput, setLeagueInput] = useState("");
   const [addingLeague, setAddingLeague] = useState(false);
@@ -60,7 +60,14 @@ export default function FantasyScreen() {
   // const LEAGUE_ID = '1262118513326182400';
   // const { activeLeagueId } = useFantasy();
   // const LEAGUE_ID = String(activeLeagueId);
-  const { activeLeagueId, addLeague, selectedWeek, setSelectedWeek } = useFantasy();
+  const {
+    activeLeagueId,
+    addLeague,
+    selectedWeek,
+    setSelectedWeek,
+    myTeam,
+    setMyTeam,
+  } = useFantasy();
 
 
   // =====================
@@ -225,10 +232,21 @@ useEffect(() => {
     loadWeek();
   }, [selectedWeek]);
 
+  useEffect(() => {
+    if (users.length === 0) {
+      setViewedTeamId(null);
+      return;
+    }
+
+    if (!viewedTeamId || !users.some(u => u.user_id === viewedTeamId)) {
+      setViewedTeamId(users[0].user_id);
+    }
+  }, [users, viewedTeamId]);
+
   const getTeamName = (user: User) =>
     user.metadata.team_name || user.display_name;
 
-  const myRoster = rosters.find((r) => r.owner_id === myTeamId);
+  const viewedRoster = rosters.find((r) => r.owner_id === viewedTeamId);
 
   const getHeadshotUrl = (player: any) => {
     // 1. Try ESPN headshot using espn_id (best quality)
@@ -290,19 +308,19 @@ useEffect(() => {
     Math.round((rosters.filter(r => r.starters?.includes(playerId)).length / rosters.length) * 100);
 
   const getPointsThisWeek = (playerId: string): number => {
-    if (!myRoster || !weekMatchups) return 0;
-    const myMatchup = weekMatchups.find(m => m.roster_id === myRoster.roster_id);
+    if (!viewedRoster || !weekMatchups) return 0;
+    const myMatchup = weekMatchups.find(m => m.roster_id === viewedRoster.roster_id);
     return myMatchup?.players_points?.[playerId] ?? 0;
   };
 
   const getTeamWeeklyResult = () => {
-    if (!myRoster || !weekMatchups) return { points: 0, result: '-' };
-    const myMatchup = weekMatchups.find(m => m.roster_id === myRoster.roster_id);
+    if (!viewedRoster || !weekMatchups) return { points: 0, result: '-' };
+    const myMatchup = weekMatchups.find(m => m.roster_id === viewedRoster.roster_id);
     if (!myMatchup) return { points: 0, result: '-' };
     const totalPoints = (myMatchup.starters_points || []).reduce((a: any, b: any) => a + b, 0);
 
     const opponent = weekMatchups.find(
-      m => m.matchup_id === myMatchup.matchup_id && m.roster_id !== myRoster.roster_id
+      m => m.matchup_id === myMatchup.matchup_id && m.roster_id !== viewedRoster.roster_id
     );
     const opponentPoints = opponent?.starters_points?.reduce((a: any, b: any) => a + b, 0) ?? 0;
     const result = totalPoints > opponentPoints ? 'WIN' : totalPoints < opponentPoints ? 'LOSS' : 'TIE';
@@ -521,7 +539,7 @@ const formatPlayerStats = (position: string, stats: any) => {
   }
 
   /** Use actual players from the selected week's matchup */
-  const myWeekMatchup = weekMatchups.find(m => m.roster_id === myRoster?.roster_id);
+  const myWeekMatchup = weekMatchups.find(m => m.roster_id === viewedRoster?.roster_id);
   const starterIds = myWeekMatchup?.starters || [];
   const allIds = myWeekMatchup?.players || [];
   const enrichedPlayers = allIds.map((id: string | number) => ({ ...players[id], player_id: id }));
@@ -644,7 +662,7 @@ const formatPlayerStats = (position: string, stats: any) => {
       {/* ================================================================ */}
 
       {/* TEAM SELECTOR */}
-      <Text style={styles.subTitle}>Select Your Team</Text>
+      <Text style={styles.subTitle}>View Team</Text>
       <View style={{ height: 50 }}>
         <FlatList
           horizontal
@@ -653,15 +671,66 @@ const formatPlayerStats = (position: string, stats: any) => {
           showsHorizontalScrollIndicator={false}
           renderItem={({ item }) => (
             <TouchableOpacity
-              style={[styles.teamButton, myTeamId === item.user_id && styles.teamSelected]}
-              onPress={() => setMyTeamId(item.user_id)}
+              style={[styles.teamButton, viewedTeamId === item.user_id && styles.teamSelected]}
+              onPress={() => setViewedTeamId(item.user_id)}
             >
-              <Text style={[styles.teamText, myTeamId === item.user_id && styles.teamTextSelected]}>
+              <Text style={[styles.teamText, viewedTeamId === item.user_id && styles.teamTextSelected]}>
                 {getTeamName(item)}
+                {myTeam?.ownerId === item.user_id ? " (My Team)" : ""}
               </Text>
             </TouchableOpacity>
           )}
         />
+      </View>
+
+      <View style={{ flexDirection: "row", alignItems: "center", marginTop: 8, marginBottom: 8 }}>
+        <TouchableOpacity
+          style={styles.setMyTeamButton}
+          onPress={async () => {
+            const selectedOwnerId = viewedTeamId;
+            if (!selectedOwnerId || !selectedSeasonLeagueId) return;
+
+            const selectedUser = users.find(u => u.user_id === selectedOwnerId);
+            const selectedRoster = rosters.find(r => r.owner_id === selectedOwnerId);
+            if (!selectedUser || !selectedRoster) return;
+
+            const selectedTeam: MyFantasyTeam = {
+              leagueId: selectedSeasonLeagueId,
+              ownerId: selectedOwnerId,
+              rosterId: selectedRoster.roster_id,
+              teamName: getTeamName(selectedUser),
+              starters: selectedRoster.starters || [],
+              starterSlotsByPosition: (league?.roster_positions || []).reduce(
+                (acc: Partial<Record<"QB" | "RB" | "WR" | "TE" | "K" | "DEF", number>>, slot: string) => {
+                  const normalized = String(slot).toUpperCase();
+                  if (normalized === "QB" || normalized === "RB" || normalized === "WR" || normalized === "TE" || normalized === "K" || normalized === "DEF") {
+                    acc[normalized] = (acc[normalized] || 0) + 1;
+                  }
+                  return acc;
+                },
+                {}
+              ),
+              players: (selectedRoster.players || []).map((playerId: string) => {
+                const player = players[playerId] || {};
+                return {
+                  playerId: String(playerId),
+                  fullName: String(player.full_name || "").trim(),
+                  position: String(player.position || "").toUpperCase(),
+                  team: String(player.team || "").toUpperCase(),
+                  isStarter: (selectedRoster.starters || []).includes(playerId),
+                };
+              }).filter((p: any) => Boolean(p.fullName)),
+            };
+
+            await setMyTeam(selectedTeam);
+          }}
+        >
+          <Text style={styles.setMyTeamButtonText}>Set Viewed Team As My Team</Text>
+        </TouchableOpacity>
+
+        <Text style={styles.myTeamLabel}>
+          {myTeam ? `Current: ${myTeam.teamName}` : "Current: not set"}
+        </Text>
       </View>
 
       {/* WEEK + RESULTS */}
@@ -676,7 +745,7 @@ const formatPlayerStats = (position: string, stats: any) => {
               style={{ height: 40 }}
               onValueChange={(itemValue) => {
                 setSelectedSeasonLeagueId(itemValue);
-                setMyTeamId(null); // Reset team selection when changing season
+                setViewedTeamId(null); // Reset viewed team when changing season
               }}
             >
               {availableSeasons.map((season) => (
@@ -718,7 +787,7 @@ const formatPlayerStats = (position: string, stats: any) => {
       </View>
 
       {/* PLAYER LIST */}
-      {myRoster && (
+      {viewedRoster && (
         <ScrollView style={{ flex: 1 }}>
           <Text style={styles.subTitle}>Starters</Text>
           {startersList.map(renderPlayerRow)}
@@ -758,5 +827,23 @@ const styles = StyleSheet.create({
   playerStats: { flexDirection: 'row', width: 50 },
   statText: { fontSize: 14, fontWeight: '700', textAlign: 'right' },
   statLine: { fontSize: 12, color: '#333' },
+  setMyTeamButton: {
+    backgroundColor: '#2563eb',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  setMyTeamButtonText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  myTeamLabel: {
+    marginLeft: 10,
+    color: '#374151',
+    fontSize: 13,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
 
 });

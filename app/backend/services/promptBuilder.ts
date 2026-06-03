@@ -410,3 +410,52 @@ ${players[1].toUpperCase()}
 - Confidence: [X]/10
 `;
 }
+
+/**
+ * Build response format for roster-driven start decisions where all candidates at a
+ * position are included and the model must select an exact number of starters.
+ */
+export function buildRosterDecisionResponseFormat(
+  position: string,
+  players: string[],
+  startCount: number
+): string {
+  const normalizedPosition = position.toUpperCase();
+  const candidateLines = players.map(p => `- ${p.toUpperCase()}`).join("\n");
+
+  return `
+──────────────────────
+▶ CANDIDATES (${normalizedPosition})
+──────────────────────
+${candidateLines}
+
+──────────────────────
+▶ PLAYER-BY-PLAYER SNAPSHOT
+──────────────────────
+- For EACH candidate above, provide:
+  - Last 3 weeks fantasy points trend (exact values from data)
+  - Relevant volume/efficiency stats for this position (exact values)
+  - Injury status and practice status
+  - Matchup note (for QB include defense strength score context)
+
+──────────────────────
+▶ RANKING
+──────────────────────
+- Rank all candidates from best to worst for this week.
+- Use only provided data and exact numbers.
+
+──────────────────────
+▶ START DECISION
+──────────────────────
+- Must Start Count: ${startCount}
+- START (${startCount}): [comma-separated names]
+- BENCH (${Math.max(players.length - startCount, 0)}): [comma-separated names]
+- Confidence: [X]/10
+- Reasoning: [3-6 numbered points tied directly to exact stats, injuries, and matchup context]
+
+CONSISTENCY CHECK (REQUIRED BEFORE FINAL OUTPUT)
+- START list must contain exactly ${startCount} player(s).
+- Every candidate must appear once in either START or BENCH.
+- Do not reference players outside the candidate list.
+`;
+}

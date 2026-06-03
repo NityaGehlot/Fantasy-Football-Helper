@@ -23,11 +23,30 @@ import { fantasyChatResponse } from "../services/FantasyChatbot";
 
 const CHAT_STORAGE_KEY = "fantasy_chat_messages_v1";
 const CHAT_PERSISTENCE_FLAG_KEY = "fantasy_chat_persistence_enabled_v1";
+const MY_TEAM_STORAGE_KEY = "fantasy_my_team_v1";
 
 export type ChatMessage = {
   id: string;
   role: "user" | "bot";
   text: string;
+};
+
+export type FantasyTeamPlayer = {
+  playerId: string;
+  fullName: string;
+  position: string;
+  team: string;
+  isStarter: boolean;
+};
+
+export type MyFantasyTeam = {
+  leagueId: string;
+  ownerId: string;
+  rosterId: number;
+  teamName: string;
+  players: FantasyTeamPlayer[];
+  starters: string[];
+  starterSlotsByPosition?: Partial<Record<"QB" | "RB" | "WR" | "TE" | "K" | "DEF", number>>;
 };
 
 interface League {
@@ -55,6 +74,9 @@ interface FantasyContextType {
   chatPersistenceEnabled: boolean;
   setChatPersistenceEnabled: (enabled: boolean) => Promise<void>;
   sendChatMessage: (text: string) => Promise<void>;
+  myTeam: MyFantasyTeam | null;
+  setMyTeam: (team: MyFantasyTeam) => Promise<void>;
+  clearMyTeam: () => Promise<void>;
 }
 
 const FantasyContext = createContext<FantasyContextType | undefined>(undefined);
@@ -70,6 +92,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   const [seenBotMessageCount, setSeenBotMessageCount] = useState(0);
   const [chatPersistenceEnabled, setChatPersistenceEnabledState] = useState(true);
   const [hasLoadedChatStorage, setHasLoadedChatStorage] = useState(false);
+  const [myTeam, setMyTeamState] = useState<MyFantasyTeam | null>(null);
 
   const typingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const chatIdCounterRef = useRef(0);
@@ -140,7 +163,8 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
         trimmed,
         playerStats2025,
         matchups,
-        selectedWeek
+        selectedWeek,
+        myTeam
       );
       streamBotReply(botMessageId, reply);
     } catch (err) {
@@ -255,6 +279,29 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   useEffect(() => {
+    const loadMyTeam = async () => {
+      try {
+        const savedTeam = await AsyncStorage.getItem(MY_TEAM_STORAGE_KEY);
+        if (!savedTeam) return;
+
+        const parsed = JSON.parse(savedTeam) as MyFantasyTeam;
+        if (
+          parsed &&
+          typeof parsed.leagueId === "string" &&
+          typeof parsed.ownerId === "string" &&
+          Array.isArray(parsed.players)
+        ) {
+          setMyTeamState(parsed);
+        }
+      } catch (err) {
+        console.error("Failed to restore my team selection:", err);
+      }
+    };
+
+    loadMyTeam();
+  }, []);
+
+  useEffect(() => {
     if (!hasLoadedChatStorage || !chatPersistenceEnabled) return;
 
     const persistChat = async () => {
@@ -327,6 +374,24 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const setMyTeam = async (team: MyFantasyTeam) => {
+    setMyTeamState(team);
+    try {
+      await AsyncStorage.setItem(MY_TEAM_STORAGE_KEY, JSON.stringify(team));
+    } catch (err) {
+      console.error("Failed to save my team selection:", err);
+    }
+  };
+
+  const clearMyTeam = async () => {
+    setMyTeamState(null);
+    try {
+      await AsyncStorage.removeItem(MY_TEAM_STORAGE_KEY);
+    } catch (err) {
+      console.error("Failed to clear my team selection:", err);
+    }
+  };
+
   return (
     <FantasyContext.Provider
       value={{
@@ -348,7 +413,10 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
         clearChatHistory,
         chatPersistenceEnabled,
         setChatPersistenceEnabled,
-        sendChatMessage
+        sendChatMessage,
+        myTeam,
+        setMyTeam,
+        clearMyTeam
       }}
     >
       {children}

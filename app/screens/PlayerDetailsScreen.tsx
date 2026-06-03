@@ -546,7 +546,7 @@ export default function PlayerDetailsScreen({ route }: any) {
       rows.push({ label: 'Pass Yards', value: String(s.passing_yards) });
       rows.push({ label: 'Pass TDs', value: String(s.passing_tds) });
       rows.push({ label: 'INTs', value: String(s.passing_interceptions) });
-      if (s.carries > 0) {
+      if ((s.carries ?? 0) > 0) {
         rows.push({ label: 'Carries', value: String(s.carries) });
         rows.push({ label: 'Rush Yards', value: String(s.rushing_yards) });
         rows.push({ label: 'Rush TDs', value: String(s.rushing_tds) });
@@ -562,7 +562,7 @@ export default function PlayerDetailsScreen({ route }: any) {
       rows.push({ label: 'Receptions', value: `${s.receptions}/${s.targets}` });
       rows.push({ label: 'Rec Yards', value: String(s.receiving_yards) });
       rows.push({ label: 'Rec TDs', value: String(s.receiving_tds) });
-      if (s.carries > 0) {
+      if ((s.carries ?? 0) > 0) {
         rows.push({ label: 'Carries', value: String(s.carries) });
         rows.push({ label: 'Rush Yards', value: String(s.rushing_yards) });
       }
