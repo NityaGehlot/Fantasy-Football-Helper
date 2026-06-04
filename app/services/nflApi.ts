@@ -1,13 +1,10 @@
 // app/services/nflApi.ts
 
-const PLAYER_STATS_URL =
-  "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/player_stats_2025.json";
-
 export async function getPlayerStats() {
   try {
-    const response = await fetch(PLAYER_STATS_URL);
-    const data = await response.json();
-    return data;   // Array of all weekly player stats
+    const response = await fetch("http://127.0.0.1:4000/player-stats-all-weeks");
+    if (!response.ok) throw new Error("Failed to fetch all stats");
+    return response.json();
   } catch (error) {
     console.error("❌ Failed to load NFL player stats:", error);
     return null;

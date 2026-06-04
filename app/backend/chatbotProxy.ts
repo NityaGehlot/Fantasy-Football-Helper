@@ -33,6 +33,47 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
 const PORT = 4000;
+const STATS_MIN_WEEK = 1;
+const STATS_MAX_WEEK = 22;
+const STATS_BASE_URL =
+  "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/2025%20stats";
+
+function getWeekStatsFileName(week: number): string {
+  return `player_stats_2025_week${String(week).padStart(2, "0")}.json`;
+}
+
+function getWeekStatsUrl(week: number): string {
+  return `${STATS_BASE_URL}/${getWeekStatsFileName(week)}`;
+}
+
+function normalizeWeekStats(raw: any): any[] {
+  const rows = Array.isArray(raw) ? raw : (Object.values(raw ?? {}).flat() as any[]);
+
+  return rows.map((player: any) => ({
+    ...player,
+    week: Number(String(player.week).trim()),
+    fantasy_points_ppr: Number(player.fantasy_points_ppr) || 0,
+    passing_yards: Number(player.passing_yards) || 0,
+    passing_tds: Number(player.passing_tds) || 0,
+    passing_interceptions: Number(player.passing_interceptions) || 0,
+    rushing_yards: Number(player.rushing_yards) || 0,
+    rushing_tds: Number(player.rushing_tds) || 0,
+  }));
+}
+
+async function readWeekStatsFromSource(week: number): Promise<any[]> {
+  if (!Number.isFinite(week) || week < STATS_MIN_WEEK || week > STATS_MAX_WEEK) {
+    throw new Error(`Week must be between ${STATS_MIN_WEEK} and ${STATS_MAX_WEEK}`);
+  }
+
+  const response = await fetch(getWeekStatsUrl(week));
+  if (!response.ok) {
+    throw new Error(`Failed to fetch stats for week ${week}`);
+  }
+
+  const parsed = await response.json();
+  return normalizeWeekStats(parsed);
+}
 
 type OpponentDefenseContext = {
   matchupWeek: number;
@@ -71,10 +112,10 @@ type MyTeamPayload = {
 // ===============================
 
 /**
- * Returns the current fantasy week, capped at 17
+ * Returns the current fantasy week, capped at 22
  */
 function getCurrentFantasyWeek(playerStats: any[]): number {
-  const MAX_WEEK = 17;
+  const MAX_WEEK = STATS_MAX_WEEK;
   const weeksWithData = playerStats
     .filter(p => Number(p.fantasy_points_ppr) > 0 && Number(p.week) <= MAX_WEEK)
     .map(p => Number(p.week));
@@ -93,7 +134,7 @@ function getSeasonYear(playerStats: any[]): number {
 }
 
 function resolveAnalysisWeek(playerStats: any[], requestedWeek?: number): number {
-  const MAX_WEEK = 17;
+  const MAX_WEEK = STATS_MAX_WEEK;
 
   if (Number.isFinite(requestedWeek) && Number(requestedWeek) > 0) {
     return Math.min(Number(requestedWeek), MAX_WEEK);
@@ -372,27 +413,9 @@ function buildOpponentDefenseContext(
 // ===============================
 app.get("/player-stats-week/:week", async (req, res) => {
   const week = Number(req.params.week);
-  const weekStr = week < 10 ? `week ${week}` : `week${week}`;
-  const url = `https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/player_stats_2025_${weekStr}.json`;
 
   try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Failed to fetch week ${week}`);
-
-    const raw = (await response.json()) as any;
-    const data: any[] = Object.values(raw).flat();
-
-    const cleaned = data.map((player) => ({
-      ...player,
-      week: Number(String(player.week).trim()),
-      fantasy_points_ppr: Number(player.fantasy_points_ppr) || 0,
-      passing_yards: Number(player.passing_yards) || 0,
-      passing_tds: Number(player.passing_tds) || 0,
-      passing_interceptions: Number(player.passing_interceptions) || 0,
-      rushing_yards: Number(player.rushing_yards) || 0,
-      rushing_tds: Number(player.rushing_tds) || 0,
-    }));
-
+    const cleaned = await readWeekStatsFromSource(week);
     res.json(cleaned);
   } catch (err) {
     console.error(`❌ Failed to load week ${week} stats:`, err);
@@ -405,36 +428,28 @@ app.get("/player-stats-week/:week", async (req, res) => {
 // ===============================
 app.get("/player-stats-all-weeks", async (req, res) => {
   try {
-    // ✅ Only fetch weeks 1-17 max
-    const MAX_WEEK = 17;
-    const weekNumbers = Array.from({ length: MAX_WEEK }, (_, i) => i + 1);
-
-    const allData = await Promise.all(
-      weekNumbers.map(async (week) => {
-        const weekStr = week < 10 ? `week ${week}` : `week${week}`;
-        const url = `https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/player_stats_2025_${weekStr}.json`;
-        try {
-          const r = await fetch(url);
-          if (!r.ok) return [];
-          const raw = (await r.json()) as any;
-          return (Object.values(raw).flat() as any[]).map((player: any) => ({
-            ...player,
-            week: Number(String(player.week).trim()),
-            fantasy_points_ppr: Number(player.fantasy_points_ppr) || 0,
-            passing_yards: Number(player.passing_yards) || 0,
-            passing_tds: Number(player.passing_tds) || 0,
-            passing_interceptions: Number(player.passing_interceptions) || 0,
-            rushing_yards: Number(player.rushing_yards) || 0,
-            rushing_tds: Number(player.rushing_tds) || 0,
-          }));
-        } catch {
-          return [];
-        }
-      })
+    const weekNumbers = Array.from(
+      { length: STATS_MAX_WEEK - STATS_MIN_WEEK + 1 },
+      (_, i) => STATS_MIN_WEEK + i
     );
 
-    const combined = allData.flat();
-    console.log("✅ All weeks combined (weeks 1-17):", combined.length, "rows");
+    const allDataSettled = await Promise.allSettled(
+      weekNumbers.map((week) => readWeekStatsFromSource(week))
+    );
+
+    const combined: any[] = [];
+
+    allDataSettled.forEach((result, idx) => {
+      if (result.status === "fulfilled") {
+        combined.push(...result.value);
+      } else {
+        console.warn(
+          `⚠️ Missing or invalid stats file for week ${weekNumbers[idx]} (${getWeekStatsFileName(weekNumbers[idx])})`
+        );
+      }
+    });
+
+    console.log("✅ All weeks combined (weeks 1-22):", combined.length, "rows");
     res.json(combined);
   } catch (err) {
     console.error("❌ Failed to load all weeks:", err);

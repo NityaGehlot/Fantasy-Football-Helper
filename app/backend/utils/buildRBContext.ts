@@ -14,10 +14,10 @@ export function buildRBContext(rbWeeks: any[]): PlayerContext | { error: string 
     return { error: "No RB data available" };
   }
 
-  const filtered = filterByWeeks(rbWeeks, 16);
+  const filtered = filterByWeeks(rbWeeks, 22);
 
   if (filtered.length === 0) {
-    return { error: "No RB data available within weeks 1-16" };
+    return { error: "No RB data available within weeks 1-22" };
   }
 
   const sorted = [...filtered].sort((a, b) => Number(b.week) - Number(a.week));

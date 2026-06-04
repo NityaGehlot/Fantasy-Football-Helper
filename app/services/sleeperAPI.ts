@@ -45,6 +45,16 @@ export async function getTrendingPlayers(lookback_hours: number = 24, limit: num
   return res.json();
 }
 
+export async function getNFLState(): Promise<{
+  season?: string;
+  week?: number;
+  season_type?: string;
+}> {
+  const res = await fetch(`${SLEEPER_BASE}/state/nfl`);
+  if (!res.ok) throw new Error('Failed to fetch NFL state');
+  return res.json();
+}
+
 // ✅ Get league history by traversing previous_league_id
 export async function getLeagueHistory(leagueId: string): Promise<Array<{ league_id: string; season: number; name: string }>> {
   const history: Array<{ league_id: string; season: number; name: string }> = [];

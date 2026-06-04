@@ -32,7 +32,7 @@ export default function PlayerDetailsScreen({ route }: any) {
   const [playerNews, setPlayerNews] = useState<NewsArticle[]>([]);
   const [teamNews, setTeamNews] = useState<NewsArticle[]>([]);
 
-  const NEWS_BASE_URL = "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data";
+  const NEWS_BASE_URL = "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/news";
 
   const normalizeName = (value?: string) => String(value || "").trim().toLowerCase();
 
@@ -89,7 +89,7 @@ export default function PlayerDetailsScreen({ route }: any) {
   useEffect(() => {
     const fetchAllWeeks = async () => {
       try {
-        const weeks = Array.from({ length: 18 }, (_, i) => i + 1);
+        const weeks = Array.from({ length: 22 }, (_, i) => i + 1);
         const promises = weeks.map(w => getPlayerStatsByWeek(w));
         const results = await Promise.all(promises);
 

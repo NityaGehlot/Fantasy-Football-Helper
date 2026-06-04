@@ -61,8 +61,8 @@ export function getLastNWeeks(data: any[], n: number = 3) {
 }
 
 /**
- * Filter data to specific weeks (default 1-16)
+ * Filter data to specific weeks (default 1-22)
  */
-export function filterByWeeks(data: any[], maxWeek: number = 16) {
+export function filterByWeeks(data: any[], maxWeek: number = 22) {
   return data.filter(w => Number(w.week) <= maxWeek);
 }

@@ -77,7 +77,7 @@ Defense Strength Score (0-100, higher = stronger defense): Not available
 
   return `
 ${playerName.toUpperCase()}
---- SEASON (Wk 1-16) ---
+--- SEASON (Wk 1-22) ---
 Games Played:         ${ctx.gamesPlayed}
 Season Avg (PPR):     ${ctx.fantasyAvg}
 Completion %:         ${ctx.completionPct}%
@@ -123,7 +123,7 @@ export function buildWRAnalysisBlock(
 
   return `
 ${playerName.toUpperCase()} (WR)
---- SEASON (Wk 1-16) ---
+--- SEASON (Wk 1-22) ---
 Games Played:         ${ctx.gamesPlayed}
 Season Avg (PPR):     ${ctx.fantasyAvg}
 Total Rec Yds:        ${ctx.receivingYards}
@@ -162,7 +162,7 @@ export function buildTEAnalysisBlock(
 
   return `
 ${playerName.toUpperCase()} (TE)
---- SEASON (Wk 1-16) ---
+--- SEASON (Wk 1-22) ---
 Games Played:         ${ctx.gamesPlayed}
 Season Avg (PPR):     ${ctx.fantasyAvg}
 Total Rec Yds:        ${ctx.receivingYards}
@@ -200,7 +200,7 @@ export function buildRBAnalysisBlock(
 
   return `
 ${playerName.toUpperCase()} (RB)
---- SEASON (Wk 1-16) ---
+--- SEASON (Wk 1-22) ---
 Games Played:         ${ctx.gamesPlayed}
 Season Avg (PPR):     ${ctx.fantasyAvg}
 Total Rush Yds:       ${ctx.rushingYards}
@@ -243,7 +243,7 @@ export function buildKAnalysisBlock(
 
   return `
 ${playerName.toUpperCase()} (K)
---- SEASON (Wk 1-16) ---
+--- SEASON (Wk 1-22) ---
 Games Played:         ${ctx.gamesPlayed}
 Season Avg (PPR):     ${ctx.fantasyAvg}
 FG Made/Att:          ${ctx.fgMade}/${ctx.fgAtt}
@@ -279,7 +279,7 @@ export function buildDEFAnalysisBlock(
 ): string {
   return `
 ${playerName.toUpperCase()} (DEF)
---- SEASON (Wk 1-16) ---
+--- SEASON (Wk 1-22) ---
 Games Played:         ${ctx.gamesPlayed}
 Season Avg (PPR):     ${ctx.fantasyAvg}
 Sacks:                ${ctx.defSacks}

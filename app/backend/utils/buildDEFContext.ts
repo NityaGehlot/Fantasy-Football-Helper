@@ -14,9 +14,9 @@ export function buildDEFContext(defWeeks: any[]): PlayerContext | { error: strin
     return { error: "No DEF data available" };
   }
 
-  const filtered = filterByWeeks(defWeeks, 16);
+  const filtered = filterByWeeks(defWeeks, 22);
   if (filtered.length === 0) {
-    return { error: "No DEF data available within weeks 1-16" };
+    return { error: "No DEF data available within weeks 1-22" };
   }
 
   const sorted = [...filtered].sort((a, b) => Number(b.week) - Number(a.week));

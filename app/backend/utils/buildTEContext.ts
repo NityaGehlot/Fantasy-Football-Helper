@@ -14,10 +14,10 @@ export function buildTEContext(teWeeks: any[]): PlayerContext | { error: string 
     return { error: "No TE data available" };
   }
 
-  const filtered = filterByWeeks(teWeeks, 16);
+  const filtered = filterByWeeks(teWeeks, 22);
 
   if (filtered.length === 0) {
-    return { error: "No TE data available within weeks 1-16" };
+    return { error: "No TE data available within weeks 1-22" };
   }
 
   const sorted = [...filtered].sort((a, b) => Number(b.week) - Number(a.week));

@@ -17,7 +17,8 @@ import {
   getRosters,
   getPlayers,
   getMatchups,
-  getLeagueHistory
+  getLeagueHistory,
+  getNFLState
 } from '../services/sleeperAPI';
 
 // >>> ADDED
@@ -29,6 +30,22 @@ import { User, Roster } from '../types';
 import { useNavigation } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../AppNavigator";
+
+const MAX_FANTASY_WEEK_VISIBLE = 18;
+const OFFSEASON_DEFAULT_WEEK = 17;
+
+const clampWeek = (week: number) =>
+  Math.max(1, Math.min(MAX_FANTASY_WEEK_VISIBLE, Number(week) || 1));
+
+const isFantasyOffseason = (seasonType?: string) => {
+  const normalized = String(seasonType || '').toLowerCase();
+  if (normalized) {
+    return normalized !== 'regular';
+  }
+
+  const month = new Date().getMonth() + 1;
+  return month >= 2 && month <= 8;
+};
 
 export default function FantasyScreen() {
   const [league, setLeague] = useState<any>(null);
@@ -125,34 +142,64 @@ if (!activeLeagueId) {
   // =====================
   useEffect(() => {
     if (!activeLeagueId) return;
+    let cancelled = false;
 
     const loadSeasons = async () => {
       setLoadingSeasons(true);
       try {
         console.log('🔍 Loading league history for:', activeLeagueId);
-        const history = await getLeagueHistory(activeLeagueId);
+        const [history, nflState] = await Promise.all([
+          getLeagueHistory(activeLeagueId),
+          getNFLState().catch(() => null),
+        ]);
+
+        const sortedHistory = [...history].sort(
+          (a, b) => Number(b.season) - Number(a.season)
+        );
+
         console.log('✅ Found seasons:', history.map(h => h.season));
-        setAvailableSeasons(history);
-        // Auto-select the most recently completed season (season year < current year)
-        const currentYear = new Date().getFullYear();
-        const completedSeason = history.find(h => Number(h.season) < currentYear);
-        const defaultSeason = completedSeason ?? history[0];
-        if (defaultSeason) {
-          setSelectedSeasonLeagueId(defaultSeason.league_id);
+        if (cancelled) return;
+        setAvailableSeasons(sortedHistory);
+
+        if (sortedHistory.length > 0) {
+          const currentStateSeason = Number(nflState?.season) || new Date().getFullYear();
+          const offseason = isFantasyOffseason(nflState?.season_type);
+
+          const defaultSeason = offseason
+            ? sortedHistory.find(h => Number(h.season) < currentStateSeason) ?? sortedHistory[0]
+            : sortedHistory.find(h => Number(h.season) === currentStateSeason) ??
+              sortedHistory.find(h => Number(h.season) < currentStateSeason) ??
+              sortedHistory[0];
+
+          const nextWeek = offseason
+            ? OFFSEASON_DEFAULT_WEEK
+            : clampWeek(Number(nflState?.week) || OFFSEASON_DEFAULT_WEEK);
+
+          if (!cancelled) {
+            setSelectedSeasonLeagueId(defaultSeason.league_id);
+            setSelectedWeek(nextWeek);
+          }
         }
       } catch (err) {
         console.error('Error loading league history:', err);
       } finally {
-        setLoadingSeasons(false);
+        if (!cancelled) {
+          setLoadingSeasons(false);
+        }
       }
     };
 
     loadSeasons();
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeLeagueId]);
 
   // Load Sleeper + NFL stats JSON together
 useEffect(() => {
   if (!selectedSeasonLeagueId) return;
+  let cancelled = false;
   const leagueId: string = selectedSeasonLeagueId;
 
   const load = async () => {
@@ -173,6 +220,8 @@ useEffect(() => {
         getMatchups(leagueId, selectedWeek),
         getPlayerStatsByWeek(selectedWeek)  // ✅ fetches the selected week's file
       ]);
+
+      if (cancelled) return;
 
       setLeague(leagueData);
       setUsers(usersData);
@@ -205,32 +254,18 @@ useEffect(() => {
     } catch (err) {
       console.error("Error loading league data:", err);
     } finally {
-      setLoading(false);
+      if (!cancelled) {
+        setLoading(false);
+      }
     }
   };
 
   load();
+  return () => {
+    cancelled = true;
+  };
 }, [selectedSeasonLeagueId, selectedWeek]); // ✅ re-runs on season or week change
 
-
-
-
-
-  useEffect(() => {
-    async function loadWeek() {
-      if (!activeLeagueId) return;
-      setLoading(true);
-      try {
-        const weekData = await getMatchups(activeLeagueId, selectedWeek);
-        setWeekMatchups(weekData);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadWeek();
-  }, [selectedWeek]);
 
   useEffect(() => {
     if (users.length === 0) {
@@ -760,9 +795,9 @@ const formatPlayerStats = (position: string, stats: any) => {
           <Picker
             selectedValue={selectedWeek}
             style={{ height: 40 }}
-            onValueChange={(itemValue) => setSelectedWeek(itemValue)}
+            onValueChange={(itemValue) => setSelectedWeek(clampWeek(Number(itemValue)))}
           >
-            {[...Array(18)].map((_, i) => (
+            {[...Array(MAX_FANTASY_WEEK_VISIBLE)].map((_, i) => (
               <Picker.Item key={i + 1} label={`Week ${i + 1}`} value={i + 1} />
             ))}
           </Picker>

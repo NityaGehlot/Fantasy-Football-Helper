@@ -14,9 +14,9 @@ export function buildKContext(kWeeks: any[]): PlayerContext | { error: string } 
     return { error: "No K data available" };
   }
 
-  const filtered = filterByWeeks(kWeeks, 16);
+  const filtered = filterByWeeks(kWeeks, 22);
   if (filtered.length === 0) {
-    return { error: "No K data available within weeks 1-16" };
+    return { error: "No K data available within weeks 1-22" };
   }
 
   const sorted = [...filtered].sort((a, b) => Number(b.week) - Number(a.week));

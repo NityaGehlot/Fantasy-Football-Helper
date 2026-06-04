@@ -3,11 +3,11 @@ export function buildQBContext(qbWeeks: any[]) {
     return { error: "No QB data available" };
   }
 
-  // Cap at week 16
-  const filtered = qbWeeks.filter(w => Number(w.week) <= 16);
+  // Cap at week 22
+  const filtered = qbWeeks.filter(w => Number(w.week) <= 22);
 
   if (filtered.length === 0) {
-    return { error: "No QB data available within weeks 1-16" };
+    return { error: "No QB data available within weeks 1-22" };
   }
 
   const sorted = [...filtered].sort((a, b) => Number(b.week) - Number(a.week));

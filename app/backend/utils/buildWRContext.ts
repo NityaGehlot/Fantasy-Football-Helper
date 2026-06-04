@@ -14,10 +14,10 @@ export function buildWRContext(wrWeeks: any[]): PlayerContext | { error: string 
     return { error: "No WR data available" };
   }
 
-  const filtered = filterByWeeks(wrWeeks, 16);
+  const filtered = filterByWeeks(wrWeeks, 22);
 
   if (filtered.length === 0) {
-    return { error: "No WR data available within weeks 1-16" };
+    return { error: "No WR data available within weeks 1-22" };
   }
 
   const sorted = [...filtered].sort((a, b) => Number(b.week) - Number(a.week));
