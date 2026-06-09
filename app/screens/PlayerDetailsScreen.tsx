@@ -43,6 +43,14 @@ export default function PlayerDetailsScreen({ route }: any) {
     if (pos === 'WR') return 'wr';
     if (pos === 'TE') return 'te';
     if (pos === 'K') return 'k';
+    if (pos === 'CB') return 'cb';
+    if (pos === 'DB') return 'db';
+    if (pos === 'DL') return 'dl';
+    if (pos === 'LB') return 'lb';
+    if (pos === 'DE') return 'dl';
+    if (pos === 'DT') return 'dl';
+    if (pos === 'SS') return 'db';
+    if (pos === 'FS') return 'db';
     return null;
   };
 

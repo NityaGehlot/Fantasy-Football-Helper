@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, Image, TouchableOpacity, FlatList, ScrollView, ActivityIndicator, TextInput, Modal, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { getPlayers, getTrendingPlayers } from '../services/sleeperAPI';
+import { getPlayers, getTrendingPlayers, TrendType } from '../services/sleeperAPI';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../AppNavigator';
@@ -9,7 +9,9 @@ import { RootStackParamList } from '../AppNavigator';
 export default function HomeScreen() {
   const [players, setPlayers] = useState<any>({});
   const [trendingPlayers, setTrendingPlayers] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingPlayers, setLoadingPlayers] = useState(true);
+  const [loadingTrending, setLoadingTrending] = useState(true);
+  const [trendType, setTrendType] = useState<TrendType>('add');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterPosition, setFilterPosition] = useState('');
   const [filterTeam, setFilterTeam] = useState('');
@@ -18,7 +20,10 @@ export default function HomeScreen() {
   type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'MainTabs'>;
   const navigation = useNavigation<NavigationProp>();
 
-  const POSITIONS = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
+  const OFFENSE_POSITIONS = ['QB', 'RB', 'WR', 'TE', 'K'];
+  const DEFENSE_TRENCHES = ['DEF', 'DL', 'DE', 'DT'];
+  const DEFENSE_LINEBACKERS = ['LB'];
+  const DEFENSE_SECONDARY = ['CB', 'DB', 'SS', 'FS'];
   const NFL_TEAMS = [
     'ARI','ATL','BAL','BUF','CAR','CHI','CIN','CLE',
     'DAL','DEN','DET','GB','HOU','IND','JAX','KC',
@@ -47,23 +52,34 @@ export default function HomeScreen() {
   const activeFilterCount = (filterPosition ? 1 : 0) + (filterTeam ? 1 : 0);
 
   useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
+    const loadPlayers = async () => {
+      setLoadingPlayers(true);
       try {
-        const [playersData, trendingData] = await Promise.all([
-          getPlayers(),
-          getTrendingPlayers(24, 25)
-        ]);
+        const playersData = await getPlayers();
         setPlayers(playersData);
-        setTrendingPlayers(trendingData);
       } catch (err) {
-        console.error('Error loading data:', err);
+        console.error('Error loading players:', err);
       } finally {
-        setLoading(false);
+        setLoadingPlayers(false);
       }
     };
-    loadData();
+    loadPlayers();
   }, []);
+
+  useEffect(() => {
+    const loadTrending = async () => {
+      setLoadingTrending(true);
+      try {
+        const trendingData = await getTrendingPlayers(trendType, 25);
+        setTrendingPlayers(trendingData);
+      } catch (err) {
+        console.error('Error loading trending players:', err);
+      } finally {
+        setLoadingTrending(false);
+      }
+    };
+    loadTrending();
+  }, [trendType]);
 
   const getHeadshotUrl = (player: any) => {
     if (player?.espn_id) {
@@ -88,8 +104,9 @@ export default function HomeScreen() {
   };
 
   const renderTrendingItem = ({ item, index }: { item: any; index: number }) => {
-    const player = players[item.player_id];
+    const player = players[item.player_id] ?? item;
     if (!player) return null;
+    const isAdd = trendType === 'add';
 
     return (
       <TouchableOpacity
@@ -116,8 +133,16 @@ export default function HomeScreen() {
           <Text style={styles.playerTeam}>{player.position} • {player.team}</Text>
         </View>
         <View style={styles.trendInfo}>
-          <Text style={styles.trendCount}>+{item.count}</Text>
-          <Text style={styles.trendLabel}>adds</Text>
+          <View style={styles.trendCountRow}>
+            <Text style={[styles.trendCount, isAdd ? styles.trendCountAdd : styles.trendCountDrop]}>{item.count}</Text>
+            <Ionicons
+              name={isAdd ? 'arrow-up' : 'arrow-down'}
+              size={14}
+              color={isAdd ? '#16a34a' : '#dc2626'}
+              style={styles.trendArrow}
+            />
+          </View>
+          <Text style={styles.trendLabel}>{isAdd ? 'adds' : 'drops'}</Text>
         </View>
       </TouchableOpacity>
     );
@@ -147,7 +172,7 @@ export default function HomeScreen() {
     </TouchableOpacity>
   );
 
-  if (loading) {
+  if (loadingPlayers || loadingTrending) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.center}>
@@ -240,7 +265,23 @@ export default function HomeScreen() {
         {/* ── Trending heading ── */}
         <View style={styles.trendingSectionHeader}>
           <Text style={styles.title}>Player News & Trends</Text>
-          <Text style={styles.subtitle}>Top trending adds in the last 24 hours</Text>
+          <Text style={styles.subtitle}>
+            Top trending {trendType === 'add' ? 'adds' : 'drops'} in the last 24 hours
+          </Text>
+          <View style={styles.trendToggleRow}>
+            <TouchableOpacity
+              style={[styles.trendToggleBtn, trendType === 'add' && styles.trendToggleBtnAddActive]}
+              onPress={() => setTrendType('add')}
+            >
+              <Text style={[styles.trendToggleText, trendType === 'add' && styles.trendToggleTextActive]}>Adds</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.trendToggleBtn, trendType === 'drop' && styles.trendToggleBtnDropActive]}
+              onPress={() => setTrendType('drop')}
+            >
+              <Text style={[styles.trendToggleText, trendType === 'drop' && styles.trendToggleTextActive]}>Drops</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* ── Trending list (always shown) ── */}
@@ -263,17 +304,62 @@ export default function HomeScreen() {
           <View style={styles.modalHandle} />
           <Text style={styles.modalTitle}>Filter Players</Text>
 
-          <Text style={styles.filterSectionLabel}>Position</Text>
-          <View style={styles.pillRow}>
-            {POSITIONS.map(pos => (
-              <TouchableOpacity
-                key={pos}
-                style={[styles.pill, filterPosition === pos && styles.pillActive]}
-                onPress={() => setFilterPosition(prev => prev === pos ? '' : pos)}
-              >
-                <Text style={[styles.pillText, filterPosition === pos && styles.pillTextActive]}>{pos}</Text>
-              </TouchableOpacity>
-            ))}
+          <View style={styles.filterGroup}>
+            <Text style={styles.filterSectionLabel}>Offense</Text>
+            <View style={styles.pillRow}>
+              {OFFENSE_POSITIONS.map(pos => (
+                <TouchableOpacity
+                  key={pos}
+                  style={[styles.pill, filterPosition === pos && styles.pillActive]}
+                  onPress={() => setFilterPosition(prev => prev === pos ? '' : pos)}
+                >
+                  <Text style={[styles.pillText, filterPosition === pos && styles.pillTextActive]}>{pos}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.filterGroup}>
+            <Text style={styles.filterSectionLabel}>Defense</Text>
+
+            <Text style={styles.subFilterLabel}>Trenches</Text>
+            <View style={styles.pillRow}>
+              {DEFENSE_TRENCHES.map(pos => (
+                <TouchableOpacity
+                  key={pos}
+                  style={[styles.pill, filterPosition === pos && styles.pillActive]}
+                  onPress={() => setFilterPosition(prev => prev === pos ? '' : pos)}
+                >
+                  <Text style={[styles.pillText, filterPosition === pos && styles.pillTextActive]}>{pos}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={styles.subFilterLabel}>Linebackers</Text>
+            <View style={styles.pillRow}>
+              {DEFENSE_LINEBACKERS.map(pos => (
+                <TouchableOpacity
+                  key={pos}
+                  style={[styles.pill, filterPosition === pos && styles.pillActive]}
+                  onPress={() => setFilterPosition(prev => prev === pos ? '' : pos)}
+                >
+                  <Text style={[styles.pillText, filterPosition === pos && styles.pillTextActive]}>{pos}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={styles.subFilterLabel}>Secondary</Text>
+            <View style={styles.pillRow}>
+              {DEFENSE_SECONDARY.map(pos => (
+                <TouchableOpacity
+                  key={pos}
+                  style={[styles.pill, filterPosition === pos && styles.pillActive]}
+                  onPress={() => setFilterPosition(prev => prev === pos ? '' : pos)}
+                >
+                  <Text style={[styles.pillText, filterPosition === pos && styles.pillTextActive]}>{pos}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
 
           <Text style={styles.filterSectionLabel}>Team</Text>
@@ -339,6 +425,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 28,
     paddingBottom: 10,
+  },
+  trendToggleRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+  },
+  trendToggleBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    backgroundColor: '#fff',
+  },
+  trendToggleBtnAddActive: {
+    backgroundColor: '#dcfce7',
+    borderColor: '#16a34a',
+  },
+  trendToggleBtnDropActive: {
+    backgroundColor: '#fee2e2',
+    borderColor: '#dc2626',
+  },
+  trendToggleText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  trendToggleTextActive: {
+    color: '#111827',
   },
   title: {
     fontSize: 24,
@@ -411,10 +526,22 @@ const styles = StyleSheet.create({
   trendInfo: {
     alignItems: 'center',
   },
+  trendCountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   trendCount: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#4f46e5',
+  },
+  trendCountAdd: {
+    color: '#16a34a',
+  },
+  trendCountDrop: {
+    color: '#dc2626',
+  },
+  trendArrow: {
+    marginLeft: 4,
   },
   trendLabel: {
     fontSize: 12,
@@ -569,6 +696,18 @@ const styles = StyleSheet.create({
     marginTop: 12,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  subFilterLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#7c8797',
+    marginBottom: 8,
+    marginTop: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  filterGroup: {
+    marginBottom: 4,
   },
   pillRow: {
     flexDirection: 'row',
