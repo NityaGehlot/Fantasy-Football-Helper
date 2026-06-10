@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, Image, TouchableOpacity, FlatList, ScrollView, ActivityIndicator, TextInput, Modal, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { getPlayers, getTrendingPlayers, TrendType } from '../services/sleeperAPI';
+import { getPlayersFromGithub, getTrendingPlayers, TrendType } from '../services/sleeperAPI';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../AppNavigator';
@@ -55,7 +55,7 @@ export default function HomeScreen() {
     const loadPlayers = async () => {
       setLoadingPlayers(true);
       try {
-        const playersData = await getPlayers();
+        const playersData = await getPlayersFromGithub();
         setPlayers(playersData);
       } catch (err) {
         console.error('Error loading players:', err);

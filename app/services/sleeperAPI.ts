@@ -2,6 +2,7 @@
 
 const SLEEPER_BASE = 'https://api.sleeper.app/v1';
 const TRENDING_BASE_URL = 'https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/sleeperAPI';
+const PLAYERS_BASE_URL = 'https://raw.githubusercontent.com/NityaGehlot/nfl-data/refs/heads/main/data/sleeperAPI';
 
 export type TrendType = 'add' | 'drop';
 
@@ -15,6 +16,30 @@ function normalizeTrendingRows(raw: any): any[] {
       player_id: String(row?.player_id ?? ''),
     }))
     .filter((row: any) => row.player_id.length > 0);
+}
+
+function normalizePlayersToIndex(raw: any): Record<string, any> {
+  const rows = Array.isArray(raw)
+    ? raw
+    : Object.entries(raw ?? {}).map(([player_id, player]) => ({ player_id, ...(player as any) }));
+
+  return rows.reduce((acc: Record<string, any>, row: any) => {
+    const playerId = String(row?.player_id ?? '').trim();
+    if (!playerId) return acc;
+
+    const normalizedStatus = String(row?.status ?? '').toLowerCase();
+    const isActive = typeof row?.active === 'boolean'
+      ? row.active
+      : normalizedStatus === 'active';
+
+    acc[playerId] = {
+      ...row,
+      player_id: playerId,
+      active: isActive,
+    };
+
+    return acc;
+  }, {});
 }
 
 export async function getLeague(leagueId: string) {
@@ -39,6 +64,13 @@ export async function getPlayers() {
   const res = await fetch(`${SLEEPER_BASE}/players/nfl`);
   if (!res.ok) throw new Error('Failed to fetch players');
   return res.json();
+}
+
+export async function getPlayersFromGithub() {
+  const res = await fetch(`${PLAYERS_BASE_URL}/sleeper_players.json`);
+  if (!res.ok) throw new Error('Failed to fetch players from GitHub');
+  const source = await res.json();
+  return normalizePlayersToIndex(source);
 }
 
 export async function getMatchups(leagueId: string, week: number) {
