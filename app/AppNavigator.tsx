@@ -13,6 +13,7 @@ import FantasyScreen from './screens/FantasyScreen';
 import ChatBotScreen from './screens/ChatBotScreen';
 import MaddenScreen from './screens/MaddenScreen';
 import PlayerDetailsScreen from "./screens/PlayerDetailsScreen";
+import DefenseRosterScreen from "./screens/DefenseRosterScreen";
 
 import { FantasyProvider, useFantasy } from './context/FantasyContext';
 import { auth } from './services/firebase';
@@ -32,6 +33,10 @@ export type RootStackParamList = {
     stats: any;
     week: number;
     fantasyPoints: number;
+  };
+  DefenseRoster: {
+    team: string;
+    week: number;
   };
 };
 
@@ -223,6 +228,12 @@ export default function AppNavigator() {
               name="PlayerDetails"
               component={PlayerDetailsScreen}
               options={{ title: "Player Details" }}
+            />
+
+            <Stack.Screen
+              name="DefenseRoster"
+              component={DefenseRosterScreen}
+              options={{ title: "Defense Roster" }}
             />
 
           </Stack.Navigator>

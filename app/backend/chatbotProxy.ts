@@ -36,7 +36,9 @@ const PORT = 4000;
 const STATS_MIN_WEEK = 1;
 const STATS_MAX_WEEK = 22;
 const STATS_BASE_URL =
-  "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/2025%20stats";
+  "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/Stats/2025%20Season/2025%20Offense";
+const DEFENSIVE_STATS_BASE_URL =
+  "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/Stats/2025%20Season/2025%20Defense";
 
 function getWeekStatsFileName(week: number): string {
   return `player_stats_2025_week${String(week).padStart(2, "0")}.json`;
@@ -46,6 +48,50 @@ function getWeekStatsUrl(week: number): string {
   return `${STATS_BASE_URL}/${getWeekStatsFileName(week)}`;
 }
 
+function getDefensiveWeekStatsUrl(week: number): string {
+  return `${DEFENSIVE_STATS_BASE_URL}/${getWeekStatsFileName(week)}`;
+}
+
+async function getDefensiveStatsForWeek(week: number): Promise<any[]> {
+  try {
+    const url = getDefensiveWeekStatsUrl(week);
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.warn(`⚠️ Failed to fetch defensive stats for week ${week}`);
+      return [];
+    }
+
+    const rawData = await response.json();
+    // Normalize and flatten the defensive stats for the week
+    const rows = Array.isArray(rawData) ? rawData : (Object.values(rawData ?? {}).flat() as any[]);
+    
+    return rows.map((player: any) => ({
+      ...player,
+      week: Number(String(player.week).trim()),
+      fantasy_points_ppr: Number(player.fantasy_points_ppr) || 0,
+      // Defensive stats
+      def_tackles_solo: Number(player.def_tackles_solo) || 0,
+      def_tackles_with_assist: Number(player.def_tackles_with_assist) || 0,
+      def_tackles_for_loss: Number(player.def_tackles_for_loss) || 0,
+      def_tackles_for_loss_yards: Number(player.def_tackles_for_loss_yards) || 0,
+      def_sacks: Number(player.def_sacks) || 0,
+      def_sack_yards: Number(player.def_sack_yards) || 0,
+      def_qb_hits: Number(player.def_qb_hits) || 0,
+      def_fumbles_forced: Number(player.def_fumbles_forced) || 0,
+      def_safeties: Number(player.def_safeties) || 0,
+      def_tds: Number(player.def_tds) || 0,
+      def_interceptions: Number(player.def_interceptions) || 0,
+      def_interception_yards: Number(player.def_interception_yards) || 0,
+      def_pass_defended: Number(player.def_pass_defended) || 0,
+      fumble_recovery_opp: Number(player.fumble_recovery_opp) || 0,
+      fumble_recovery_yards_opp: Number(player.fumble_recovery_yards_opp) || 0,
+    }));
+  } catch (err) {
+    console.warn(`⚠️ Error loading defensive stats for week ${week}:`, err);
+    return [];
+  }
+}
+
 function normalizeWeekStats(raw: any): any[] {
   const rows = Array.isArray(raw) ? raw : (Object.values(raw ?? {}).flat() as any[]);
 
@@ -53,11 +99,31 @@ function normalizeWeekStats(raw: any): any[] {
     ...player,
     week: Number(String(player.week).trim()),
     fantasy_points_ppr: Number(player.fantasy_points_ppr) || 0,
+    // Passing stats
+    completions: Number(player.completions) || 0,
+    attempts: Number(player.attempts) || 0,
     passing_yards: Number(player.passing_yards) || 0,
     passing_tds: Number(player.passing_tds) || 0,
     passing_interceptions: Number(player.passing_interceptions) || 0,
+    // Rushing stats
+    carries: Number(player.carries) || 0,
     rushing_yards: Number(player.rushing_yards) || 0,
     rushing_tds: Number(player.rushing_tds) || 0,
+    // Receiving stats
+    receptions: Number(player.receptions) || 0,
+    targets: Number(player.targets) || 0,
+    receiving_yards: Number(player.receiving_yards) || 0,
+    receiving_tds: Number(player.receiving_tds) || 0,
+    // Kicker stats
+    fg_att: Number(player.fg_att) || 0,
+    fg_made_0_19: Number(player.fg_made_0_19) || 0,
+    fg_made_20_29: Number(player.fg_made_20_29) || 0,
+    fg_made_30_39: Number(player.fg_made_30_39) || 0,
+    fg_made_40_49: Number(player.fg_made_40_49) || 0,
+    fg_made_50_59: Number(player.fg_made_50_59) || 0,
+    fg_made_60_: Number(player.fg_made_60_) || 0,
+    pat_att: Number(player.pat_att) || 0,
+    pat_made: Number(player.pat_made) || 0,
   }));
 }
 
@@ -66,13 +132,26 @@ async function readWeekStatsFromSource(week: number): Promise<any[]> {
     throw new Error(`Week must be between ${STATS_MIN_WEEK} and ${STATS_MAX_WEEK}`);
   }
 
-  const response = await fetch(getWeekStatsUrl(week));
-  if (!response.ok) {
-    throw new Error(`Failed to fetch stats for week ${week}`);
-  }
+  try {
+    // Load offensive stats
+    const offensiveResponse = await fetch(getWeekStatsUrl(week));
+    const offensiveData = offensiveResponse.ok
+      ? await offensiveResponse.json()
+      : [];
 
-  const parsed = await response.json();
-  return normalizeWeekStats(parsed);
+    const offensiveStats = normalizeWeekStats(offensiveData);
+
+    // Load defensive stats
+    const defensiveStats = await getDefensiveStatsForWeek(week);
+
+    // Merge both offensive and defensive stats
+    const combinedStats = [...offensiveStats, ...defensiveStats];
+
+    return combinedStats;
+  } catch (err) {
+    console.error(`Error loading stats for week ${week}:`, err);
+    throw err;
+  }
 }
 
 type OpponentDefenseContext = {

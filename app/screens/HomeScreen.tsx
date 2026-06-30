@@ -13,8 +13,8 @@ export default function HomeScreen() {
   const [loadingTrending, setLoadingTrending] = useState(true);
   const [trendType, setTrendType] = useState<TrendType>('add');
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterPosition, setFilterPosition] = useState('');
-  const [filterTeam, setFilterTeam] = useState('');
+  const [filterPositions, setFilterPositions] = useState<string[]>([]);
+  const [filterTeams, setFilterTeams] = useState<string[]>([]);
   const [showFilterModal, setShowFilterModal] = useState(false);
 
   type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'MainTabs'>;
@@ -31,25 +31,28 @@ export default function HomeScreen() {
     'NYJ','PHI','PIT','SEA','SF','TB','TEN','WAS'
   ];
 
+  const toggleValue = (values: string[], value: string) =>
+    values.includes(value) ? values.filter(v => v !== value) : [...values, value];
+
   const searchResults = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q && !filterPosition && !filterTeam) return [];
+    if (!q && filterPositions.length === 0 && filterTeams.length === 0) return [];
     return Object.entries(players)
       .filter(([id, p]: [string, any]) => {
         const matchesQuery = !q ||
           (p.full_name?.toLowerCase().includes(q)) ||
           (p.position?.toLowerCase() === q);
-        const matchesPos = !filterPosition || p.position === filterPosition;
-        const matchesTeam = !filterTeam || p.team === filterTeam;
+        const matchesPos = filterPositions.length === 0 || filterPositions.includes(String(p.position || ''));
+        const matchesTeam = filterTeams.length === 0 || filterTeams.includes(String(p.team || ''));
         return matchesQuery && matchesPos && matchesTeam && p.active;
       })
       .map(([id, p]: [string, any]) => ({ ...p, player_id: id }))
       .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
       .slice(0, 30);
-  }, [searchQuery, filterPosition, filterTeam, players]);
+  }, [searchQuery, filterPositions, filterTeams, players]);
 
-  const isSearchActive = searchQuery.trim().length > 0 || !!filterPosition || !!filterTeam;
-  const activeFilterCount = (filterPosition ? 1 : 0) + (filterTeam ? 1 : 0);
+  const isSearchActive = searchQuery.trim().length > 0 || filterPositions.length > 0 || filterTeams.length > 0;
+  const activeFilterCount = filterPositions.length + filterTeams.length;
 
   useEffect(() => {
     const loadPlayers = async () => {
@@ -91,6 +94,11 @@ export default function HomeScreen() {
     return 'https://upload.wikimedia.org/wikipedia/commons/1/14/No_Image_Available.jpg';
   };
 
+  const getTeamLogo = (teamAbbrev: string) => {
+    if (!teamAbbrev) return 'https://upload.wikimedia.org/wikipedia/commons/1/14/No_Image_Available.jpg';
+    return `https://static.www.nfl.com/t_q-best/league/api/clubs/logos/${teamAbbrev.trim()}`;
+  };
+
   const getPositionColor = (pos: string) => {
     switch (pos) {
       case 'QB': return '#ff6b6b';
@@ -127,7 +135,12 @@ export default function HomeScreen() {
         <View style={[styles.positionBadge, { backgroundColor: getPositionColor(player.position) }]}>
           <Text style={styles.positionText}>{player.position}</Text>
         </View>
-        <Image source={{ uri: getHeadshotUrl(player) }} style={styles.playerImage} />
+        <Image
+          source={{
+            uri: player.position === 'DEF' ? getTeamLogo(player.team) : getHeadshotUrl(player)
+          }}
+          style={styles.playerImage}
+        />
         <View style={styles.playerInfo}>
           <Text style={styles.playerName}>{player.full_name}</Text>
           <Text style={styles.playerTeam}>{player.position} • {player.team}</Text>
@@ -163,7 +176,12 @@ export default function HomeScreen() {
       <View style={[styles.positionBadge, { backgroundColor: getPositionColor(item.position) }]}>
         <Text style={styles.positionText}>{item.position}</Text>
       </View>
-      <Image source={{ uri: getHeadshotUrl(item) }} style={styles.searchResultImage} />
+      <Image
+        source={{
+          uri: item.position === 'DEF' ? getTeamLogo(item.team) : getHeadshotUrl(item)
+        }}
+        style={styles.searchResultImage}
+      />
       <View style={styles.playerInfo}>
         <Text style={styles.playerName}>{item.full_name}</Text>
         <Text style={styles.playerTeam}>{item.position} • {item.team || '—'}</Text>
@@ -227,20 +245,20 @@ export default function HomeScreen() {
         </View>
 
         {/* ── Active filter chips ── */}
-        {!!(filterPosition || filterTeam) && (
+        {!!(filterPositions.length || filterTeams.length) && (
           <View style={styles.chipRow}>
-            {filterPosition ? (
-              <TouchableOpacity style={styles.chip} onPress={() => setFilterPosition('')}>
-                <Text style={styles.chipText}>{filterPosition}</Text>
+            {filterPositions.map((pos) => (
+              <TouchableOpacity key={`pos-${pos}`} style={styles.chip} onPress={() => setFilterPositions(prev => prev.filter(v => v !== pos))}>
+                <Text style={styles.chipText}>{pos}</Text>
                 <Ionicons name="close" size={13} color="#4f46e5" />
               </TouchableOpacity>
-            ) : null}
-            {filterTeam ? (
-              <TouchableOpacity style={styles.chip} onPress={() => setFilterTeam('')}>
-                <Text style={styles.chipText}>{filterTeam}</Text>
+            ))}
+            {filterTeams.map((team) => (
+              <TouchableOpacity key={`team-${team}`} style={styles.chip} onPress={() => setFilterTeams(prev => prev.filter(v => v !== team))}>
+                <Text style={styles.chipText}>{team}</Text>
                 <Ionicons name="close" size={13} color="#4f46e5" />
               </TouchableOpacity>
-            ) : null}
+            ))}
           </View>
         )}
 
@@ -310,10 +328,10 @@ export default function HomeScreen() {
               {OFFENSE_POSITIONS.map(pos => (
                 <TouchableOpacity
                   key={pos}
-                  style={[styles.pill, filterPosition === pos && styles.pillActive]}
-                  onPress={() => setFilterPosition(prev => prev === pos ? '' : pos)}
+                  style={[styles.pill, filterPositions.includes(pos) && styles.pillActive]}
+                  onPress={() => setFilterPositions(prev => toggleValue(prev, pos))}
                 >
-                  <Text style={[styles.pillText, filterPosition === pos && styles.pillTextActive]}>{pos}</Text>
+                  <Text style={[styles.pillText, filterPositions.includes(pos) && styles.pillTextActive]}>{pos}</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -327,10 +345,10 @@ export default function HomeScreen() {
               {DEFENSE_TRENCHES.map(pos => (
                 <TouchableOpacity
                   key={pos}
-                  style={[styles.pill, filterPosition === pos && styles.pillActive]}
-                  onPress={() => setFilterPosition(prev => prev === pos ? '' : pos)}
+                  style={[styles.pill, filterPositions.includes(pos) && styles.pillActive]}
+                  onPress={() => setFilterPositions(prev => toggleValue(prev, pos))}
                 >
-                  <Text style={[styles.pillText, filterPosition === pos && styles.pillTextActive]}>{pos}</Text>
+                  <Text style={[styles.pillText, filterPositions.includes(pos) && styles.pillTextActive]}>{pos}</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -340,10 +358,10 @@ export default function HomeScreen() {
               {DEFENSE_LINEBACKERS.map(pos => (
                 <TouchableOpacity
                   key={pos}
-                  style={[styles.pill, filterPosition === pos && styles.pillActive]}
-                  onPress={() => setFilterPosition(prev => prev === pos ? '' : pos)}
+                  style={[styles.pill, filterPositions.includes(pos) && styles.pillActive]}
+                  onPress={() => setFilterPositions(prev => toggleValue(prev, pos))}
                 >
-                  <Text style={[styles.pillText, filterPosition === pos && styles.pillTextActive]}>{pos}</Text>
+                  <Text style={[styles.pillText, filterPositions.includes(pos) && styles.pillTextActive]}>{pos}</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -353,10 +371,10 @@ export default function HomeScreen() {
               {DEFENSE_SECONDARY.map(pos => (
                 <TouchableOpacity
                   key={pos}
-                  style={[styles.pill, filterPosition === pos && styles.pillActive]}
-                  onPress={() => setFilterPosition(prev => prev === pos ? '' : pos)}
+                  style={[styles.pill, filterPositions.includes(pos) && styles.pillActive]}
+                  onPress={() => setFilterPositions(prev => toggleValue(prev, pos))}
                 >
-                  <Text style={[styles.pillText, filterPosition === pos && styles.pillTextActive]}>{pos}</Text>
+                  <Text style={[styles.pillText, filterPositions.includes(pos) && styles.pillTextActive]}>{pos}</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -367,17 +385,17 @@ export default function HomeScreen() {
             {NFL_TEAMS.map(team => (
               <TouchableOpacity
                 key={team}
-                style={[styles.pill, filterTeam === team && styles.pillActive]}
-                onPress={() => setFilterTeam(prev => prev === team ? '' : team)}
+                style={[styles.pill, filterTeams.includes(team) && styles.pillActive]}
+                onPress={() => setFilterTeams(prev => toggleValue(prev, team))}
               >
-                <Text style={[styles.pillText, filterTeam === team && styles.pillTextActive]}>{team}</Text>
+                <Text style={[styles.pillText, filterTeams.includes(team) && styles.pillTextActive]}>{team}</Text>
               </TouchableOpacity>
             ))}
           </View>
 
           <TouchableOpacity
             style={styles.clearBtn}
-            onPress={() => { setFilterPosition(''); setFilterTeam(''); }}
+            onPress={() => { setFilterPositions([]); setFilterTeams([]); }}
           >
             <Text style={styles.clearBtnText}>Clear All Filters</Text>
           </TouchableOpacity>
