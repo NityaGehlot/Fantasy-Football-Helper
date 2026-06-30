@@ -11,7 +11,6 @@ import { signOut } from 'firebase/auth';
 import HomeScreen from './screens/HomeScreen';
 import FantasyScreen from './screens/FantasyScreen';
 import ChatBotScreen from './screens/ChatBotScreen';
-import MaddenScreen from './screens/MaddenScreen';
 import PlayerDetailsScreen from "./screens/PlayerDetailsScreen";
 import DefenseRosterScreen from "./screens/DefenseRosterScreen";
 
