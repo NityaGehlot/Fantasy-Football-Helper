@@ -23,7 +23,7 @@ export function buildKContext(kWeeks: any[]): PlayerContext | { error: string } 
   const last3 = getLastNWeeks(sorted, 3);
   const latest = sorted[0];
 
-  const totalGames = sorted.length;
+  const totalGames = sorted.filter(w => Boolean(w.game_played)).length;
 
   const fgMade = sum(sorted, "fgMade");
   const fgAtt = sum(sorted, "fgAtt");

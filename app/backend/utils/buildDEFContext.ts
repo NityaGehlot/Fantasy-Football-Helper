@@ -23,7 +23,7 @@ export function buildDEFContext(defWeeks: any[]): PlayerContext | { error: strin
   const last3 = getLastNWeeks(sorted, 3);
   const latest = sorted[0];
 
-  const totalGames = sorted.length;
+  const totalGames = sorted.filter(w => Boolean(w.game_played)).length;
 
   const defSacks = sum(sorted, "defSacks");
   const defInterceptions = sum(sorted, "defInterceptions");

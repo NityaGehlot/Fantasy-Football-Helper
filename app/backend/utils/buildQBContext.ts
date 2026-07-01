@@ -11,10 +11,11 @@ export function buildQBContext(qbWeeks: any[]) {
   }
 
   const sorted = [...filtered].sort((a, b) => Number(b.week) - Number(a.week));
-  const last3 = sorted.slice(0, 3);
+  const last3 = getLastNWeeks(sorted, 3);
   const latest = sorted[0];
 
-  const totalGames = sorted.length;
+  // Count only weeks where the player actually played
+  const totalGames = sorted.filter(w => Boolean(w.game_played)).length;
 
   const sum = (arr: any[], key: string) =>
     arr.reduce((s, w) => s + (Number(w[key]) || 0), 0);

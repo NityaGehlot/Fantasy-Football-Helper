@@ -54,10 +54,11 @@ export function calculateConsistency(
  * Get last N weeks of data
  */
 export function getLastNWeeks(data: any[], n: number = 3) {
-  const sorted = [...data].sort(
-    (a, b) => Number(b.week) - Number(a.week)
-  );
-  return sorted.slice(0, n);
+  // Return the last N weeks where the player actually played (game_played === true)
+  const played = [...data]
+    .filter(w => Boolean(w.game_played))
+    .sort((a, b) => Number(b.week) - Number(a.week));
+  return played.slice(0, n);
 }
 
 /**

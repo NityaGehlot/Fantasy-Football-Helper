@@ -13,6 +13,7 @@ import FantasyScreen from './screens/FantasyScreen';
 import ChatBotScreen from './screens/ChatBotScreen';
 import PlayerDetailsScreen from "./screens/PlayerDetailsScreen";
 import DefenseRosterScreen from "./screens/DefenseRosterScreen";
+import ComparePlayerScreen from "./screens/ComparePlayerScreen";
 
 import { FantasyProvider, useFantasy } from './context/FantasyContext';
 import { auth } from './services/firebase';
@@ -36,6 +37,10 @@ export type RootStackParamList = {
   DefenseRoster: {
     team: string;
     week: number;
+  };
+  ComparePlayer: {
+    player: any;
+    allWeeksStats: any;
   };
 };
 
@@ -233,6 +238,12 @@ export default function AppNavigator() {
               name="DefenseRoster"
               component={DefenseRosterScreen}
               options={{ title: "Defense Roster" }}
+            />
+
+            <Stack.Screen
+              name="ComparePlayer"
+              component={ComparePlayerScreen}
+              options={{ title: "Compare Players" }}
             />
 
           </Stack.Navigator>

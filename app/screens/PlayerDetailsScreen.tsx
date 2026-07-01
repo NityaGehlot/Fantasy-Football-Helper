@@ -179,7 +179,10 @@ export default function PlayerDetailsScreen({ route }: any) {
         results.forEach((data, index) => {
           const w = index + 1;
           const playerStats = getPlayerNFLStats(player.player_id, w, data);
-          if (playerStats && (hasMeaningfulStats(playerStats) || hasInjuryInfo(playerStats))) {
+
+          // Include rows that have meaningful stats, injury info, or an explicit team_status
+          const hasTeamStatus = playerStats && String(playerStats?.team_status ?? '').trim() !== '';
+          if (playerStats && (hasMeaningfulStats(playerStats) || hasInjuryInfo(playerStats) || hasTeamStatus)) {
             statsMap[w] = playerStats;
           }
 
@@ -678,7 +681,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         rushing_yards: sum('rushing_yards'),
         rushing_tds: sum('rushing_tds'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.length,
+        games: weeks.filter((w: any) => Boolean(w.game_played)).length,
+        bye_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'bye-week').length,
+        eliminated_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (pos === 'RB') {
@@ -691,7 +696,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         receiving_yards: sum('receiving_yards'),
         receiving_tds: sum('receiving_tds'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.length,
+        games: weeks.filter((w: any) => Boolean(w.game_played)).length,
+        bye_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'bye-week').length,
+        eliminated_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (pos === 'WR' || pos === 'TE') {
@@ -704,7 +711,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         rushing_yards: sum('rushing_yards'),
         rushing_tds: sum('rushing_tds'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.length,
+        games: weeks.filter((w: any) => Boolean(w.game_played)).length,
+        bye_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'bye-week').length,
+        eliminated_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (pos === 'K') {
@@ -714,7 +723,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         pat_made: sum('pat_made'),
         pat_att: sum('pat_att'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.length,
+        games: weeks.filter((w: any) => Boolean(w.game_played)).length,
+        bye_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'bye-week').length,
+        eliminated_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (pos === 'DEF') {
@@ -727,7 +738,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         def_safeties: sum('def_safeties'),
         points_allowed: sum('points_allowed'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.length,
+        games: weeks.filter((w: any) => Boolean(w.game_played)).length,
+        bye_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'bye-week').length,
+        eliminated_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (isIndividualDefensivePosition(pos)) {
@@ -742,7 +755,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         def_tds: sum('def_tds'),
         def_qb_hits: sum('def_qb_hits'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.length,
+        games: weeks.filter((w: any) => Boolean(w.game_played)).length,
+        bye_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'bye-week').length,
+        eliminated_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'eliminated').length,
       };
     }
     return null;
@@ -779,6 +794,8 @@ export default function PlayerDetailsScreen({ route }: any) {
 
     if (s) {
       rows.push({ label: 'Games', value: String(s.games) });
+      if (Number(s.bye_weeks) > 0) rows.push({ label: 'Bye Weeks', value: String(s.bye_weeks) });
+      if (Number(s.eliminated_weeks) > 0) rows.push({ label: 'Eliminated Weeks', value: String(s.eliminated_weeks) });
       if (!isIndividualDefensiveSeasonView) {
         rows.push({
           label: seasonViewMode === 'totals' ? 'Fantasy Pts' : 'Fantasy Pts/G',
@@ -991,6 +1008,22 @@ export default function PlayerDetailsScreen({ route }: any) {
 
       {renderSeasonStats()}
 
+      <View style={styles.section}>
+        <TouchableOpacity
+          style={styles.compareButton}
+          onPress={() =>
+            navigation.navigate("ComparePlayer", {
+              player,
+              allWeeksStats,
+            })
+          }
+        >
+          <Text style={styles.compareButtonText}>
+            Compare Player
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       {String(player.position || '').toUpperCase().trim() === 'DEF' && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Defense Roster</Text>
@@ -1043,7 +1076,7 @@ export default function PlayerDetailsScreen({ route }: any) {
             const weekStats = allWeeksStats[w];
             const statLines = weekStats ? formatPlayerStats(player.position, weekStats) : [];
             const isIndividualDefender = isIndividualDefensivePosition(player.position);
-            
+
             // Try to get injury info from stats, or provide placeholder
             const injuryStatus = weekStats ? String(weekStats?.injury_status ?? "").toUpperCase().trim() : "";
             const isOut = ["OUT", "IR", "IR-R", "INJURED RESERVE"].includes(injuryStatus);
@@ -1051,26 +1084,61 @@ export default function PlayerDetailsScreen({ route }: any) {
             const hasInjury = isOut || isQuestionable;
             const injuryType = weekStats ? (weekStats?.primary_injury || weekStats?.practice_primary_injury || weekStats?.secondary_injury || "") : "";
             const statusLabel = isOut ? "Out" : isQuestionable ? "Questionable" : "";
-            const teamDidNotPlayPostseasonRound = w >= 19 && w <= 22 && !weekStats && teamPlayedPostseasonByWeek[w] === false;
+
+            // Team status flags (explicit in JSON when available)
+            const teamStatusRaw = weekStats ? String(weekStats?.team_status ?? '').toLowerCase().trim() : '';
+            const isByeWeek = teamStatusRaw === 'bye-week';
+            const isEliminatedWeek = teamStatusRaw === 'eliminated';
+
+            // If postseason week and no weekStats found or schedule indicates team didn't play, infer eliminated
+            const postseasonMissingAndEliminated = w >= 19 && w <= 22 && (!weekStats || teamPlayedPostseasonByWeek[w] === false);
 
             return (
-              <View key={w} style={[styles.weekBlock, { backgroundColor: getWeekCardBackground(weekStats) }]}>
+              <View
+                key={w}
+                style={[
+                  styles.weekBlock,
+                  (isByeWeek || isEliminatedWeek || postseasonMissingAndEliminated)
+                    ? { backgroundColor: '#e5e7eb' }
+                    : { backgroundColor: getWeekCardBackground(weekStats) },
+                ]}
+              >
                 <Text style={styles.weekTitle}>{getWeekLabel(w)}</Text>
-                
+
+                {/* Show explicit bye / eliminated labels when present in the data */}
+                {isByeWeek && (
+                  <Text style={styles.byeEliminatedText}>
+                    Bye Week
+                  </Text>
+                )}
+
+                {isEliminatedWeek && (
+                  <Text style={styles.byeEliminatedText}>
+                    Eliminated
+                  </Text>
+                )}
+
+                {/* If postseason and no data row, show eliminated message inferred from schedule */}
+                {postseasonMissingAndEliminated && (
+                  <Text style={styles.byeEliminatedText}>
+                    Team eliminated (did not play this round)
+                  </Text>
+                )}
+
                 {/* Show injury info if applicable */}
                 {hasInjury && (
                   <Text style={{ fontSize: 16, color: isOut ? "#e53e3e" : "#d69e2e", marginBottom: 4 }}>
                     {statusLabel}: {injuryType || "Unknown injury"}
                   </Text>
                 )}
-                
-                {/* Show fantasy points if stats exist */}
-                {weekStats && !isIndividualDefender && (
+
+                {/* Show fantasy points if stats exist and NOT a bye/eliminated week */}
+                {weekStats && !isIndividualDefender && !isByeWeek && !isEliminatedWeek && !postseasonMissingAndEliminated && (
                   <Text style={styles.weekFantasyPoints}>
                     {weekStats.fantasy_points_ppr ? Number(weekStats.fantasy_points_ppr).toFixed(2) : '0.00'} pts
                   </Text>
                 )}
-                
+
                 {/* Show stats or message */}
                 {statLines.length > 0 ? (
                   statLines.map((line: string, index: number) => (
@@ -1081,10 +1149,11 @@ export default function PlayerDetailsScreen({ route }: any) {
                 ) : hasInjury ? (
                   // Injury info already shown above, no additional message needed
                   null
-                ) : teamDidNotPlayPostseasonRound ? (
-                  <Text style={styles.statLine}>
-                    Team did not play this round
-                  </Text>
+                ) : postseasonMissingAndEliminated ? (
+                  // Already showed eliminated message above; no extra message
+                  null
+                ) : isByeWeek ? (
+                  null
                 ) : (
                   <Text style={styles.statLine}>
                     No stats recorded
@@ -1348,6 +1417,26 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: '#3730a3',
+  },
+  byeEliminatedText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#6b7280',
+    marginBottom: 6,
+  },
+  compareButton: {
+    backgroundColor: "#4f46e5",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 5,
+  },
+
+  compareButtonText: {
+    color: "#fff",
+    fontSize: 17,
+    fontWeight: "700",
   },
 
 });

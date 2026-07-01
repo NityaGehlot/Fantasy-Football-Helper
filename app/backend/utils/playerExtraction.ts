@@ -115,6 +115,9 @@ export function getPlayerWeeks(
       secondary_injury: p.secondary_injury ?? "",
       practice_primary_injury: p.practice_primary_injury ?? "",
       practice_secondary_injury: p.practice_secondary_injury ?? "",
+      // New flags from JSON
+      game_played: Boolean(p.game_played),
+      team_status: p.team_status ?? "",
     }));
 }
 
@@ -202,5 +205,6 @@ export function getPlayerInjuryStatus(
       injuryRow?.primary_injury ||
       injuryRow?.practice_primary_injury ||
       "None",
+    teamStatus: injuryRow?.team_status ?? "",
   };
 }
