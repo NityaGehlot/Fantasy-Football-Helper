@@ -39,8 +39,8 @@ export type RootStackParamList = {
     week: number;
   };
   ComparePlayer: {
-    player: any;
-    allWeeksStats: any;
+    player?: any;
+    allWeeksStats?: any;
   };
 };
 

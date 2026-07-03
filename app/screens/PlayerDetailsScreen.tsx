@@ -61,6 +61,7 @@ export default function PlayerDetailsScreen({ route }: any) {
     if (pos === 'WR') return 'wr';
     if (pos === 'TE') return 'te';
     if (pos === 'K') return 'k';
+    if (pos === 'C') return 'c';
     if (pos === 'CB') return 'cb';
     if (pos === 'DB') return 'db';
     if (pos === 'DL') return 'dl';
@@ -69,6 +70,13 @@ export default function PlayerDetailsScreen({ route }: any) {
     if (pos === 'DT') return 'dl';
     if (pos === 'SS') return 'db';
     if (pos === 'FS') return 'db';
+    // Offensive line / tackle / guard positions
+    if (pos === 'G') return 'g';
+    if (pos === 'OG') return 'og';
+    if (pos === 'OL') return 'ol';
+    if (pos === 'OT') return 'ot';
+    if (pos === 'T') return 't';
+
     return null;
   };
 
@@ -189,6 +197,18 @@ export default function PlayerDetailsScreen({ route }: any) {
           if (w >= 19 && w <= 22) {
             const rows = Array.isArray(data) ? data : (Object.values(data ?? {}).flat() as any[]);
             postseasonPlayed[w] = rows.some((row: any) => normalizeTeam(row?.team) === playerTeam);
+          }
+        });
+        // Attach team defense rows (if present) to the stats map so we can show team DEF per-week
+        results.forEach((data, index) => {
+          const w = index + 1;
+          const rows = Array.isArray(data) ? data : (Object.values(data ?? {}).flat() as any[]);
+          const defId = `DEF_${playerTeam}`;
+          const teamDef = rows.find((r: any) => String(r.player_id) === defId) || null;
+          if (teamDef) {
+            statsMap[w] = statsMap[w] || {};
+            // store under a dedicated key to avoid clobbering player row
+            (statsMap[w] as any)._team_def = teamDef;
           }
         });
         setAllWeeksStats(statsMap);
@@ -375,7 +395,7 @@ export default function PlayerDetailsScreen({ route }: any) {
                   },
                 ]}
               >
-                <Text style={[styles.impactBadgeText, { color: impactMeta.textColor }]}>
+                <Text style={[styles.impactBadgeText, { color: impactMeta.textColor }]}> 
                   {impactMeta.label}
                 </Text>
               </View>
@@ -638,10 +658,40 @@ export default function PlayerDetailsScreen({ route }: any) {
       if (stats.def_fumbles_forced > 0)
         defense.push(`${stats.def_fumbles_forced} FF`);
 
+      // fumble recoveries may appear as `def_fumbles_recovered` or `fumble_recovery_opp`
+      const defFumbleRecovered = Number(stats.def_fumbles_recovered ?? stats.fumble_recovery_opp ?? 0);
+      if (defFumbleRecovered > 0) defense.push(`${defFumbleRecovered} FR`);
+
       if (stats.def_tds > 0)
         defense.push(`${stats.def_tds} TD`);
 
       if (defense.length) lines.push(defense.join(", "));
+    }
+
+    // Team DEF (aggregate defensive team row)
+    if (pos === 'DEF') {
+      const sacks             = Number(stats.def_sacks ?? 0);
+      const interceptions     = Number(stats.def_interceptions ?? 0);
+      const fumblesForced     = Number(stats.def_fumbles_forced ?? 0);
+      // fumble recoveries may be under `fumbles_recovered` or `fumble_recovery_opp`
+      const fumblesRecovered  = Number(stats.fumbles_recovered ?? stats.fumble_recovery_opp ?? 0);
+      const defTDs            = Number(stats.def_tds ?? 0);
+      const stTDs             = Number(stats.special_teams_tds ?? 0);
+      const safeties          = Number(stats.def_safeties ?? 0);
+      const pointsAllowed     = Number(stats.points_allowed ?? 0);
+
+      const defenseLines: string[] = [];
+      if (sacks > 0)            defenseLines.push(`${sacks} SACK`);
+      if (interceptions > 0)    defenseLines.push(`${interceptions} INT`);
+      if (fumblesForced > 0)    defenseLines.push(`${fumblesForced} FF`);
+      if (fumblesRecovered > 0) defenseLines.push(`${fumblesRecovered} FR`);
+      if (defTDs + stTDs > 0)   defenseLines.push(`${defTDs + stTDs} TD`);
+      if (safeties > 0)         defenseLines.push(`${safeties} SFTY`);
+      if (defenseLines.length)  lines.push(defenseLines.join(", "));
+
+      // always show points allowed (can be zero)
+      lines.push(`${pointsAllowed} PTS ALLOWED`);
+      return lines;
     }
 
     return lines;
@@ -663,12 +713,40 @@ export default function PlayerDetailsScreen({ route }: any) {
 
     const weeks = filteredWeekNumbers
       .sort((a, b) => a - b)
-      .map((w) => allWeeksStats[w]);
+      .map((w) => ({ num: w, data: allWeeksStats[w] }));
 
     if (weeks.length === 0) return null;
 
     const pos = String(player.position).trim().toUpperCase();
-    const sum = (key: string) => weeks.reduce((acc: number, w: any) => acc + (Number(w[key]) || 0), 0);
+    const playedWC = Boolean(teamPlayedPostseasonByWeek[19]);
+    const playedDiv = Boolean(teamPlayedPostseasonByWeek[20]);
+
+    const sum = (key: string) => weeks.reduce((acc: number, wk: any) => acc + (Number(wk.data?.[key]) || 0), 0);
+
+    const isWeekBye = (wkNum: number, wkData: any) => {
+      const teamStatus = String(wkData?.team_status ?? wkData?._team_def?.team_status ?? '').toLowerCase().trim();
+      if (teamStatus.includes('bye')) return true;
+      // postseason inference
+      if (wkNum >= 19 && wkNum <= 22) {
+        const playedThisWeek = teamPlayedPostseasonByWeek[wkNum] === true;
+        if (!playedThisWeek && (!wkData || Object.keys(wkData).length === 0)) {
+          if (wkNum === 19 && !playedWC && playedDiv) return true; // wildcard bye
+        }
+      }
+      return false;
+    };
+
+    const countGames = () => weeks.reduce((acc: number, wk: any) => {
+      const wkNum = wk.num;
+      const wkData = wk.data || {};
+      if (isWeekBye(wkNum, wkData)) return acc; // exclude bye weeks
+      // count as game if main row indicates game_played OR team DEF row exists
+      if (Boolean(wkData.game_played)) return acc + 1;
+      if (wkData._team_def) return acc + 1;
+      // fallback: if any meaningful stat present for player
+      if (hasMeaningfulStats(wkData)) return acc + 1;
+      return acc;
+    }, 0);
 
     if (pos === 'QB') {
       return {
@@ -681,9 +759,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         rushing_yards: sum('rushing_yards'),
         rushing_tds: sum('rushing_tds'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.filter((w: any) => Boolean(w.game_played)).length,
-        bye_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'bye-week').length,
-        eliminated_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'eliminated').length,
+        games: countGames(),
+        bye_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
+        eliminated_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (pos === 'RB') {
@@ -696,9 +774,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         receiving_yards: sum('receiving_yards'),
         receiving_tds: sum('receiving_tds'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.filter((w: any) => Boolean(w.game_played)).length,
-        bye_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'bye-week').length,
-        eliminated_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'eliminated').length,
+        games: countGames(),
+        bye_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
+        eliminated_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (pos === 'WR' || pos === 'TE') {
@@ -711,9 +789,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         rushing_yards: sum('rushing_yards'),
         rushing_tds: sum('rushing_tds'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.filter((w: any) => Boolean(w.game_played)).length,
-        bye_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'bye-week').length,
-        eliminated_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'eliminated').length,
+        games: countGames(),
+        bye_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
+        eliminated_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (pos === 'K') {
@@ -723,9 +801,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         pat_made: sum('pat_made'),
         pat_att: sum('pat_att'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.filter((w: any) => Boolean(w.game_played)).length,
-        bye_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'bye-week').length,
-        eliminated_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'eliminated').length,
+        games: countGames(),
+        bye_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
+        eliminated_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (pos === 'DEF') {
@@ -733,7 +811,8 @@ export default function PlayerDetailsScreen({ route }: any) {
         def_sacks: sum('def_sacks'),
         def_interceptions: sum('def_interceptions'),
         def_fumbles_forced: sum('def_fumbles_forced'),
-        fumbles_recovered: sum('fumbles_recovered'),
+        // fumble recoveries may appear under `fumbles_recovered` or `fumble_recovery_opp`
+        fumbles_recovered: sum('fumbles_recovered') + sum('fumble_recovery_opp'),
         def_tds: sum('def_tds') + sum('special_teams_tds'),
         def_safeties: sum('def_safeties'),
         points_allowed: sum('points_allowed'),
@@ -752,6 +831,8 @@ export default function PlayerDetailsScreen({ route }: any) {
         def_interceptions: sum('def_interceptions'),
         def_pass_defended: sum('def_pass_defended'),
         def_fumbles_forced: sum('def_fumbles_forced'),
+        // include fumble recoveries from either key
+        fumbles_recovered: sum('fumbles_recovered') + sum('fumble_recovery_opp'),
         def_tds: sum('def_tds'),
         def_qb_hits: sum('def_qb_hits'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
@@ -794,7 +875,6 @@ export default function PlayerDetailsScreen({ route }: any) {
 
     if (s) {
       rows.push({ label: 'Games', value: String(s.games) });
-      if (Number(s.bye_weeks) > 0) rows.push({ label: 'Bye Weeks', value: String(s.bye_weeks) });
       if (Number(s.eliminated_weeks) > 0) rows.push({ label: 'Eliminated Weeks', value: String(s.eliminated_weeks) });
       if (!isIndividualDefensiveSeasonView) {
         rows.push({
@@ -819,11 +899,15 @@ export default function PlayerDetailsScreen({ route }: any) {
         rows.push({ label: 'Carries', value: formatStat(s.carries) });
         rows.push({ label: 'Rush Yards', value: formatStat(s.rushing_yards) });
         rows.push({ label: 'Rush TDs', value: formatStat(s.rushing_tds) });
-        rows.push({ label: seasonViewMode === 'totals' ? 'Receptions' : 'Rec/Tgt (Avg)', value: formatPair(s.receptions, s.targets) });
+        // Show receptions and targets in separate boxes
+        rows.push({ label: seasonViewMode === 'totals' ? 'Receptions' : 'Receptions (Avg)', value: formatStat(s.receptions) });
+        rows.push({ label: seasonViewMode === 'totals' ? 'Targets' : 'Targets (Avg)', value: formatStat(s.targets) });
         rows.push({ label: 'Rec Yards', value: formatStat(s.receiving_yards) });
         rows.push({ label: 'Rec TDs', value: formatStat(s.receiving_tds) });
       } else if (pos === 'WR' || pos === 'TE') {
-        rows.push({ label: seasonViewMode === 'totals' ? 'Receptions' : 'Rec/Tgt (Avg)', value: formatPair(s.receptions, s.targets) });
+        // Show receptions and targets in separate boxes
+        rows.push({ label: seasonViewMode === 'totals' ? 'Receptions' : 'Receptions (Avg)', value: formatStat(s.receptions) });
+        rows.push({ label: seasonViewMode === 'totals' ? 'Targets' : 'Targets (Avg)', value: formatStat(s.targets) });
         rows.push({ label: 'Rec Yards', value: formatStat(s.receiving_yards) });
         rows.push({ label: 'Rec TDs', value: formatStat(s.receiving_tds) });
         if ((s.carries ?? 0) > 0) {
@@ -849,6 +933,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         rows.push({ label: 'INTs', value: formatStat(s.def_interceptions) });
         rows.push({ label: 'Pass Def', value: formatStat(s.def_pass_defended) });
         rows.push({ label: 'Forced Fum', value: formatStat(s.def_fumbles_forced) });
+        rows.push({ label: 'Fumbles Rec', value: formatStat(s.fumbles_recovered) });
         if ((s.def_tds ?? 0) > 0) rows.push({ label: 'TDs', value: formatStat(s.def_tds) });
         if ((s.def_qb_hits ?? 0) > 0) rows.push({ label: 'QB Hits', value: formatStat(s.def_qb_hits) });
       }
@@ -959,6 +1044,11 @@ export default function PlayerDetailsScreen({ route }: any) {
           <Text style={styles.statLine}>Loading Stats...</Text>
         ) : allWeeksStats[week] ? (() => {
           const currentStats = allWeeksStats[week];
+          const teamStatusRaw = currentStats
+            ? String(currentStats?.team_status ?? (currentStats as any)?._team_def?.team_status ?? '').toLowerCase().trim()
+            : '';
+          const isByeWeek = teamStatusRaw.includes('bye');
+          const isEliminatedWeek = teamStatusRaw === 'eliminated';
           const statLines = formatPlayerStats(player.position, currentStats);
           const isIndividualDefender = isIndividualDefensivePosition(player.position);
           const injuryStatus = String(currentStats?.injury_status ?? "").toUpperCase().trim();
@@ -975,7 +1065,7 @@ export default function PlayerDetailsScreen({ route }: any) {
                   {statusLabel}: {injuryType || "Unknown injury"}
                 </Text>
               )}
-              {statLines.length > 0 ? (
+              {statLines.length > 0 && !isByeWeek ? (
                 <>
                   {statLines.map((line: string, index: number) => (
                     <Text key={index} style={styles.statLine}>
@@ -1077,21 +1167,51 @@ export default function PlayerDetailsScreen({ route }: any) {
             const statLines = weekStats ? formatPlayerStats(player.position, weekStats) : [];
             const isIndividualDefender = isIndividualDefensivePosition(player.position);
 
-            // Try to get injury info from stats, or provide placeholder
-            const injuryStatus = weekStats ? String(weekStats?.injury_status ?? "").toUpperCase().trim() : "";
+            // Try to get injury info only from the main row (do not consider team DEF injury status)
+            const injuryStatus = weekStats
+              ? String(weekStats?.injury_status ?? "").toUpperCase().trim()
+              : "";
             const isOut = ["OUT", "IR", "IR-R", "INJURED RESERVE"].includes(injuryStatus);
             const isQuestionable = ["QUESTIONABLE", "DOUBTFUL"].includes(injuryStatus);
             const hasInjury = isOut || isQuestionable;
             const injuryType = weekStats ? (weekStats?.primary_injury || weekStats?.practice_primary_injury || weekStats?.secondary_injury || "") : "";
             const statusLabel = isOut ? "Out" : isQuestionable ? "Questionable" : "";
 
-            // Team status flags (explicit in JSON when available)
-            const teamStatusRaw = weekStats ? String(weekStats?.team_status ?? '').toLowerCase().trim() : '';
-            const isByeWeek = teamStatusRaw === 'bye-week';
+            // Team status flags (explicit in JSON when available). Prefer team_status from the main row, fall back to team DEF row
+            const teamStatusRaw = weekStats
+              ? String(weekStats?.team_status ?? (weekStats as any)?._team_def?.team_status ?? '').toLowerCase().trim()
+              : '';
+            // Be flexible: treat any value containing 'bye' as a bye-week (e.g. 'bye-week', 'bye')
+            const isByeWeek = teamStatusRaw.includes('bye');
             const isEliminatedWeek = teamStatusRaw === 'eliminated';
 
-            // If postseason week and no weekStats found or schedule indicates team didn't play, infer eliminated
-            const postseasonMissingAndEliminated = w >= 19 && w <= 22 && (!weekStats || teamPlayedPostseasonByWeek[w] === false);
+            // If postseason week and no weekStats found, infer bye vs eliminated using schedule info
+            const playedWC = Boolean(teamPlayedPostseasonByWeek[19]);
+            const playedDiv = Boolean(teamPlayedPostseasonByWeek[20]);
+            const isPostseasonWeek = w >= 19 && w <= 22;
+
+            // Special handling:
+            // - If team did not play Wild Card (week 19) but did play Divisional (week 20),
+            //   then week 19 should be shown as a playoff bye (they were a 1-seed).
+            // - If team did not play both WC and Divisional, show eliminated for those rounds.
+            // - Otherwise, if a week has no stats and schedule says they didn't play, mark eliminated.
+            let postseasonMissingAndEliminated = false;
+            let postseasonMissingAndBye = false;
+
+            if (isPostseasonWeek) {
+              const playedThisWeek = teamPlayedPostseasonByWeek[w] === true;
+              if (!playedThisWeek && (weekStats == null || Object.keys(weekStats).length === 0)) {
+                // Wild Card (19) special: if didn't play WC but did play Divisional, it's a bye
+                if (w === 19 && !playedWC && playedDiv) {
+                  postseasonMissingAndBye = true;
+                } else {
+                  postseasonMissingAndEliminated = true;
+                }
+              }
+            }
+
+            // effective bye: either explicit bye flag or inferred postseason bye
+            const effectiveIsBye = isByeWeek || postseasonMissingAndBye;
 
             return (
               <View
@@ -1118,7 +1238,13 @@ export default function PlayerDetailsScreen({ route }: any) {
                   </Text>
                 )}
 
-                {/* If postseason and no data row, show eliminated message inferred from schedule */}
+                {/* If postseason and no data row, show inferred message from schedule */}
+                {postseasonMissingAndBye && (
+                  <Text style={styles.byeEliminatedText}>
+                    Playoff bye (did not play this round)
+                  </Text>
+                )}
+
                 {postseasonMissingAndEliminated && (
                   <Text style={styles.byeEliminatedText}>
                     Team eliminated (did not play this round)
@@ -1133,14 +1259,14 @@ export default function PlayerDetailsScreen({ route }: any) {
                 )}
 
                 {/* Show fantasy points if stats exist and NOT a bye/eliminated week */}
-                {weekStats && !isIndividualDefender && !isByeWeek && !isEliminatedWeek && !postseasonMissingAndEliminated && (
+                {weekStats && !isIndividualDefender && !effectiveIsBye && !isEliminatedWeek && !postseasonMissingAndEliminated && (
                   <Text style={styles.weekFantasyPoints}>
                     {weekStats.fantasy_points_ppr ? Number(weekStats.fantasy_points_ppr).toFixed(2) : '0.00'} pts
                   </Text>
                 )}
 
                 {/* Show stats or message */}
-                {statLines.length > 0 ? (
+                {statLines.length > 0 && !effectiveIsBye ? (
                   statLines.map((line: string, index: number) => (
                     <Text key={index} style={styles.statLine}>
                       {line}
@@ -1152,13 +1278,29 @@ export default function PlayerDetailsScreen({ route }: any) {
                 ) : postseasonMissingAndEliminated ? (
                   // Already showed eliminated message above; no extra message
                   null
-                ) : isByeWeek ? (
+                ) : effectiveIsBye ? (
                   null
                 ) : (
                   <Text style={styles.statLine}>
                     No stats recorded
                   </Text>
                 )}
+
+                {/* Show team defense stats for this week when available (only when viewing a team DEF) */}
+                {String(player.position || '').toUpperCase().trim() === 'DEF' && weekStats && (weekStats as any)._team_def && !effectiveIsBye && !isEliminatedWeek && !postseasonMissingAndEliminated ? (() => {
+                  const teamDef = (weekStats as any)._team_def;
+                  // Avoid duplicating when the main weekStats is the team DEF row itself
+                  if (String((weekStats as any).player_id || '') === String(teamDef?.player_id || '')) return null;
+                  const defLines = formatPlayerStats('DEF', teamDef);
+                  return (
+                    <View style={{ marginTop: 8 }}>
+                      <Text style={{ fontSize: 14, fontWeight: '700', marginBottom: 4 }}>Team Defense</Text>
+                      {defLines.map((line: string, idx: number) => (
+                        <Text key={`def-${w}-${idx}`} style={styles.statLine}>{line}</Text>
+                      ))}
+                    </View>
+                  );
+                })() : null}
               </View>
             );
           })}

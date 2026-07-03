@@ -302,6 +302,17 @@ export default function HomeScreen() {
           </View>
         </View>
 
+        {/* Quick Compare shortcut: navigates to ComparePlayer screen allowing user to pick two players */}
+        <View style={{ paddingHorizontal: 16, marginTop: 12 }}>
+          <TouchableOpacity
+            style={{ backgroundColor: '#eef2ff', padding: 12, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: '#dbe7ff' }}
+            onPress={() => navigation.navigate('ComparePlayer', {})}
+          >
+            <Text style={{ color: '#3730a3', fontWeight: '700' }}>Compare Players</Text>
+            <Text style={{ color: '#6b7280', fontSize: 12 }}>Select two players to compare</Text>
+          </TouchableOpacity>
+        </View>
+
         {/* ── Trending list (always shown) ── */}
         <View style={styles.trendingContainer}>
           <FlatList

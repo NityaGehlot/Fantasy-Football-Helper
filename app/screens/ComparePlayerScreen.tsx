@@ -27,8 +27,9 @@ type NavigationProp = NativeStackNavigationProp<
 
 export default function ComparePlayerScreen({ route }: any) {
   const navigation = useNavigation<NavigationProp>();
-
-  const { player } = route.params;
+  const player = route?.params?.player ?? null;
+  // Support entry with no initial player: allow user to pick two players from this screen
+  const [playerOne, setPlayerOne] = useState<any>(player || null);
 
   const [allPlayers, setAllPlayers] = useState<any[]>([]);
   const [search, setSearch] = useState("");
@@ -189,8 +190,8 @@ export default function ComparePlayerScreen({ route }: any) {
   }, []);
 
   useEffect(() => {
-    loadStats(player, true);
-  }, []);
+    if (playerOne) loadStats(playerOne, true);
+  }, [playerOne]);
 
   useEffect(() => {
     if (selectedPlayer) {
@@ -277,6 +278,9 @@ export default function ComparePlayerScreen({ route }: any) {
         });
       }
 
+      // Normalize fumble recovery totals: some feeds use `fumble_recovery_opp`
+      totals.fumbles_recovered = (totals.fumbles_recovered || 0) + (totals.fumble_recovery_opp || 0);
+
       totals.games = gamesCount;
       totals.bye_weeks = byeCount;
       totals.eliminated_weeks = eliminatedCount;
@@ -293,14 +297,19 @@ export default function ComparePlayerScreen({ route }: any) {
   const filteredPlayers = useMemo(() => {
     if (!search.length) return [];
 
-    const group = getPositionGroup(player?.position);
+    const group = getPositionGroup(playerOne?.position || player?.position);
+    const applyGroupFilter = Boolean(group && group !== 'OTHER');
 
     return allPlayers
-      .filter((p: any) =>
-        p.full_name.toLowerCase().includes(search.toLowerCase()) && getPositionGroup(p.position) === group
-      )
+      .filter((p: any) => {
+        if (!p.full_name) return false;
+        const matchesQuery = p.full_name.toLowerCase().includes(search.toLowerCase());
+        if (!matchesQuery) return false;
+        if (!applyGroupFilter) return true; // no position-group restriction
+        return getPositionGroup(p.position) === group;
+      })
       .slice(0, 15);
-  }, [search, allPlayers]);
+  }, [search, allPlayers, playerOne, player]);
 
   function compareColor(
     one: number,
@@ -372,14 +381,21 @@ export default function ComparePlayerScreen({ route }: any) {
         ];
 
       default:
-        return [
+        // For individual defensive positions, omit fantasy points row per user preference.
+        const rows: any[] = [
           ["Solo Tackles", "def_tackles_solo"],
           ["Assists", "def_tackles_with_assist"],
           ["Sacks", "def_sacks"],
           ["Interceptions", "def_interceptions"],
           ["Forced Fumbles", "def_fumbles_forced"],
-          ["Fantasy Points", "fantasy_points_ppr"],
+          ["Fumbles Rec", "fumbles_recovered"],
         ];
+
+        if (!isIndividualDefensivePosition(position)) {
+          rows.push(["Fantasy Points", "fantasy_points_ppr"]);
+        }
+
+        return rows;
     }
   }
     return (
@@ -405,14 +421,28 @@ export default function ComparePlayerScreen({ route }: any) {
 
         <View style={styles.playerCard}>
 
-          <Image
-            source={{ uri: getHeadshot(player) }}
-            style={styles.headshot}
-          />
+          {playerOne ? (
+            <>
+              <Image
+                source={{ uri: getHeadshot(playerOne) }}
+                style={styles.headshot}
+              />
 
-          <Text style={styles.playerName}>{player.full_name}</Text>
+              <Text style={styles.playerName}>{playerOne.full_name}</Text>
 
-          <Text style={styles.playerInfo}>{player.position} • {player.team}</Text>
+              <Text style={styles.playerInfo}>{playerOne.position} • {playerOne.team}</Text>
+            </>
+          ) : (
+            <>
+              <View style={styles.emptyCircle}>
+                <Text style={styles.emptyCircleText}>?</Text>
+              </View>
+
+              <Text style={styles.playerName}>Select Player</Text>
+
+              <Text style={styles.playerInfo}>Search below</Text>
+            </>
+          )}
 
         </View>
 
@@ -425,9 +455,7 @@ export default function ComparePlayerScreen({ route }: any) {
                 style={styles.headshot}
               />
 
-              <Text style={styles.playerName}>
-                {selectedPlayer.full_name}
-              </Text>
+              <Text style={styles.playerName}>{selectedPlayer.full_name}</Text>
 
               <Text style={styles.playerInfo}>{selectedPlayer.position} • {selectedPlayer.team}</Text>
             </>
@@ -437,13 +465,9 @@ export default function ComparePlayerScreen({ route }: any) {
                 <Text style={styles.emptyCircleText}>?</Text>
               </View>
 
-              <Text style={styles.playerName}>
-                Select Player
-              </Text>
+              <Text style={styles.playerName}>Select Player</Text>
 
-              <Text style={styles.playerInfo}>
-                Search below
-              </Text>
+              <Text style={styles.playerInfo}>Search below</Text>
             </>
           )}
 
@@ -475,7 +499,11 @@ export default function ComparePlayerScreen({ route }: any) {
 
 
             renderItem={({ item }: any) => {
-              const allowed = canCompare(player?.position, item.position);
+              // If no playerOne selected yet, allow picking any player as first
+              // When opened without an initial player, don't enforce position-group filtering
+              const group = getPositionGroup(playerOne?.position || player?.position);
+              const applyGroupFilter = Boolean(group && group !== 'OTHER');
+              const allowed = !applyGroupFilter || canCompare((playerOne || player || {}).position, item.position);
 
               return (
                 <TouchableOpacity
@@ -489,7 +517,11 @@ export default function ComparePlayerScreen({ route }: any) {
                       return;
                     }
 
-                    setSelectedPlayer(item);
+                    if (!playerOne) {
+                      setPlayerOne(item);
+                    } else {
+                      setSelectedPlayer(item);
+                    }
                     setSearch("");
                   }}
                 >
@@ -622,7 +654,7 @@ export default function ComparePlayerScreen({ route }: any) {
               <Text style={{ textAlign: 'center', color: '#6b7280', paddingVertical: 12 }}>Stats list</Text>
 
               {/* Games + per-position stat comparison rows */}
-              {([['Games', 'games'] as any].concat(statRows(player.position) as any)).map((row) => {
+              {([['Games', 'games'] as any].concat(statRows((playerOne || player || {}).position || '') as any)).map((row) => {
                 const [label, key, lowerIsBetter] = row as any;
                 const oneVal = Number(playerOneStats[key] || 0);
                 const twoVal = Number(playerTwoStats[key] || 0);
@@ -634,7 +666,7 @@ export default function ComparePlayerScreen({ route }: any) {
                     <View style={styles.compareRow}>
                       <View style={[styles.valueBox, { backgroundColor: leftColor }]}> 
                         <Text style={styles.valueText}>{formatNumber(oneVal)}</Text>
-                        <Text style={styles.gamesText}>{player.full_name}</Text>
+                        <Text style={styles.gamesText}>{(playerOne && playerOne.full_name) || 'Player 1'}</Text>
                       </View>
 
                       <View style={[styles.valueBox, { backgroundColor: rightColor }]}> 
