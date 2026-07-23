@@ -116,6 +116,7 @@ export default function HomeScreen() {
     if (!player) return null;
     const isAdd = trendType === 'add';
 
+    const posToUse = String(player.position_for_FFHelper || player.position || player.position_listed_on_sleeper || '').toUpperCase().trim();
     return (
       <TouchableOpacity
         key={item.player_id}
@@ -132,18 +133,18 @@ export default function HomeScreen() {
         <View style={styles.rankBadge}>
           <Text style={styles.rankText}>{index + 1}</Text>
         </View>
-        <View style={[styles.positionBadge, { backgroundColor: getPositionColor(player.position) }]}>
-          <Text style={styles.positionText}>{player.position}</Text>
+        <View style={[styles.positionBadge, { backgroundColor: getPositionColor(posToUse) }]}> 
+          <Text style={styles.positionText}>{posToUse || player.position}</Text>
         </View>
         <Image
           source={{
-            uri: player.position === 'DEF' ? getTeamLogo(player.team) : getHeadshotUrl(player)
+            uri: posToUse === 'DEF' || player.position === 'DEF' ? getTeamLogo(player.team) : getHeadshotUrl(player)
           }}
           style={styles.playerImage}
         />
         <View style={styles.playerInfo}>
           <Text style={styles.playerName}>{player.full_name}</Text>
-          <Text style={styles.playerTeam}>{player.position} • {player.team}</Text>
+          <Text style={styles.playerTeam}>{posToUse || player.position} • {player.team}</Text>
         </View>
         <View style={styles.trendInfo}>
           <View style={styles.trendCountRow}>
@@ -173,18 +174,18 @@ export default function HomeScreen() {
         })
       }
     >
-      <View style={[styles.positionBadge, { backgroundColor: getPositionColor(item.position) }]}>
-        <Text style={styles.positionText}>{item.position}</Text>
+      <View style={[styles.positionBadge, { backgroundColor: getPositionColor(String(item.position_for_FFHelper || item.position || item.position_listed_on_sleeper || '').toUpperCase().trim()) }]}>
+      <Text style={styles.positionText}>{String(item.position_for_FFHelper || item.position || item.position_listed_on_sleeper || '').toUpperCase().trim() || item.position}</Text>
       </View>
       <Image
         source={{
-          uri: item.position === 'DEF' ? getTeamLogo(item.team) : getHeadshotUrl(item)
+          uri: (String(item.position_for_FFHelper || item.position || '').toUpperCase().trim() === 'DEF' || item.position === 'DEF') ? getTeamLogo(item.team) : getHeadshotUrl(item)
         }}
         style={styles.searchResultImage}
       />
       <View style={styles.playerInfo}>
         <Text style={styles.playerName}>{item.full_name}</Text>
-        <Text style={styles.playerTeam}>{item.position} • {item.team || '—'}</Text>
+          <Text style={styles.playerTeam}>{String(item.position_for_FFHelper || item.position || '').toUpperCase().trim() || item.position} • {item.team || '—'}</Text>
       </View>
       <Ionicons name="chevron-forward" size={18} color="#aaa" />
     </TouchableOpacity>

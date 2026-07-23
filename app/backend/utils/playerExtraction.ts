@@ -1,7 +1,7 @@
 // app/backend/utils/playerExtraction.ts
 // Generic player extraction utilities for all positions
 
-export type Position = "QB" | "WR" | "TE" | "RB" | "DEF" | "K";
+export type Position = string;
 
 /**
  * Extract player names of a given position from player stats
@@ -30,7 +30,28 @@ export function extractAllPlayers(
   playerStats: any[]
 ): { name: string; position: Position }[] {
   const lowerMessage = message.toLowerCase();
-  const positions: Position[] = ["QB", "WR", "TE", "RB", "DEF", "K"];
+  const positions: Position[] = [
+    "QB",
+    "WR",
+    "TE",
+    "RB",
+    "DEF",
+    "K",
+    // Defensive individual positions
+    "CB",
+    "S",
+    "FS",
+    "SS",
+    "DB",
+    "DT",
+    "DE",
+    "DL",
+    "NT",
+    "LB",
+    "ILB",
+    "OLB",
+    "EDGE",
+  ];
   const mentionedPlayers: { name: string; position: Position }[] = [];
   const seen = new Set<string>();
 

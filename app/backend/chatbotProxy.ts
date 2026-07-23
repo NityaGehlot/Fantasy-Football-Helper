@@ -327,7 +327,7 @@ function getRosterStartCount(
     DEF: 1,
   };
 
-  const configured = myTeam?.starterSlotsByPosition?.[position];
+  const configured = (myTeam?.starterSlotsByPosition as any)?.[position];
   const rawCount = Number.isFinite(configured) && Number(configured) > 0
     ? Number(configured)
     : defaults[position];

@@ -70,9 +70,14 @@ export default function DefenseRosterScreen() {
     const defTeam = normalizeTeam(team);
     const playersForTeam = Object.entries(allPlayersById || {})
       .map(([id, p]: [string, any]) => ({ ...p, player_id: id }))
-      .filter((p: any) => normalizeTeam(p?.team) === defTeam && isIndividualDefensivePosition(p?.position))
+      .filter((p: any) => {
+        const pos = String(p?.position_for_FFHelper || p?.position || p?.position_listed_on_sleeper || '').toUpperCase().trim();
+        return normalizeTeam(p?.team) === defTeam && isIndividualDefensivePosition(pos);
+      })
       .sort((a: any, b: any) => {
-        const posRank = getPositionSortRank(a?.position) - getPositionSortRank(b?.position);
+        const posA = String(a?.position_for_FFHelper || a?.position || a?.position_listed_on_sleeper || '').toUpperCase().trim();
+        const posB = String(b?.position_for_FFHelper || b?.position || b?.position_listed_on_sleeper || '').toUpperCase().trim();
+        const posRank = getPositionSortRank(posA) - getPositionSortRank(posB);
         if (posRank !== 0) return posRank;
 
         const depthA = Number(a?.depth_chart_order);
@@ -86,7 +91,7 @@ export default function DefenseRosterScreen() {
 
     const grouped = new Map<string, any[]>();
     playersForTeam.forEach((p: any) => {
-      const pos = String(p?.position || '').toUpperCase().trim() || 'OTHER';
+      const pos = String(p?.position_for_FFHelper || p?.position || p?.position_listed_on_sleeper || '').toUpperCase().trim() || 'OTHER';
       if (!grouped.has(pos)) grouped.set(pos, []);
       grouped.get(pos)!.push(p);
     });

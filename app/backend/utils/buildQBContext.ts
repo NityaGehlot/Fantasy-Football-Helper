@@ -10,7 +10,13 @@ export function buildQBContext(qbWeeks: any[]) {
     return { error: "No QB data available within weeks 1-22" };
   }
 
-  const sorted = [...filtered].sort((a, b) => Number(b.week) - Number(a.week));
+  const sorted = [...filtered].sort((a: any, b: any) => Number(b.week) - Number(a.week));
+  // helper: return the most recent N week objects from the already-sorted list
+  const getLastNWeeks = (weeks: any[], n: number) => {
+    if (!weeks || weeks.length === 0) return [];
+    return weeks.slice(0, n);
+  };
+
   const last3 = getLastNWeeks(sorted, 3);
   const latest = sorted[0];
 
@@ -53,7 +59,7 @@ export function buildQBContext(qbWeeks: any[]) {
 
   const last3Summary = {
     gamesIncluded: last3Games,
-    weeksIncluded: last3.map(w => w.week).sort((a, b) => b - a),
+    weeksIncluded: last3.map((w: any) => Number(w.week)).sort((a: number, b: number) => b - a),
     avgFantasyPts: Number((sum(last3, "fantasyPoints") / last3Games).toFixed(2)),
     avgPassYards: Number((last3PassYards / last3Games).toFixed(1)),
     avgRushYards: Number((last3RushYards / last3Games).toFixed(1)),

@@ -41,11 +41,17 @@ export default function ComparePlayerScreen({ route }: any) {
   const [loadingStatsTwo, setLoadingStatsTwo] = useState<boolean>(false);
 
   const [selectedPlayer, setSelectedPlayer] = useState<any>(null);
+  // which player card is currently active for selection: 'one' or 'two'
+  const [activeSlot, setActiveSlot] = useState<'one' | 'two' | null>(null);
 
   const [loading, setLoading] = useState(true);
+  const [comparing, setComparing] = useState<boolean>(false);
+  const [comparedOnce, setComparedOnce] = useState<boolean>(false);
+  const [lastComparedPair, setLastComparedPair] = useState<{one?: string|number, two?: string|number}>({});
 
   const [viewMode, setViewMode] = useState<"season" | "week">("season");
   const [selectedWeek, setSelectedWeek] = useState(1);
+  const [statScope, setStatScope] = useState<'regular' | 'post' | 'all'>('regular');
 
   const getHeadshot = (p: any) => {
     if (p?.espn_id)
@@ -68,6 +74,9 @@ export default function ComparePlayerScreen({ route }: any) {
     // Defensive line group
     if (p === "DT" || p === "DE" || p === "DL" || p === "NT") return "DL";
 
+    // Linebackers group
+    if (p === "LB" || p === "ILB" || p === "MLB" || p === "OLB") return "LB";
+
     // Defensive backs group (CB, S, FS, SS, DB)
     if (p === "CB" || p === "S" || p === "FS" || p === "SS" || p === "DB") return "DB";
 
@@ -81,7 +90,16 @@ export default function ComparePlayerScreen({ route }: any) {
   }
 
   function canCompare(aPos: string | undefined, bPos: string | undefined) {
-    return getPositionGroup(aPos) === getPositionGroup(bPos);
+    const aGroup = getPositionGroup(aPos);
+    const bGroup = getPositionGroup(bPos);
+
+    if (aGroup === bGroup) return true;
+
+    // Allow defensive linemen (DL) to be compared with linebackers (LB)
+    const dlLbCompatible = (aGroup === 'DL' && bGroup === 'LB') || (aGroup === 'LB' && bGroup === 'DL');
+    if (dlLbCompatible) return true;
+
+    return false;
   }
 
   const normalizeName = (value?: string) => String(value || "").trim().toLowerCase();
@@ -104,16 +122,17 @@ export default function ComparePlayerScreen({ route }: any) {
     ].includes(pos);
   };
 
-  const getPlayerNFLStats = (playerId: string | number, week: number, playerStatsData: any[]) => {
+  const getPlayerNFLStats = (playerId: string | number, week: number, playerStatsData: any[], sleeperPlayerProp?: any) => {
     if (!playerStatsData) return null;
 
-    const sleeperPlayer = currentPlayerForMatch || player; // fallback to main player
+    const sleeperPlayer = sleeperPlayerProp || currentPlayerForMatch || player; // explicit override preferred
 
     const weekMatches = playerStatsData.filter(
       (p: any) => Number(String(p.week).trim()) === Number(week)
     );
 
-    if (sleeperPlayer.position === "DEF") {
+    const sleeperPosition = String(sleeperPlayer.position_for_FFHelper || sleeperPlayer.position || sleeperPlayer.position_listed_on_sleeper || "").toUpperCase().trim();
+    if (sleeperPosition === "DEF") {
       const defId = `DEF_${sleeperPlayer.team}`;
       return weekMatches.find((p: any) => String(p.player_id) === defId) || null;
     }
@@ -125,7 +144,6 @@ export default function ComparePlayerScreen({ route }: any) {
 
     const fullName = sleeperPlayer.full_name?.toLowerCase().trim();
     if (!fullName) return null;
-    const sleeperPosition = String(sleeperPlayer.position || "").toUpperCase().trim();
     const sleeperTeam = String(sleeperPlayer.team || "").toUpperCase().trim();
 
     const normalize = (name: string) =>
@@ -161,7 +179,7 @@ export default function ComparePlayerScreen({ route }: any) {
       if (defenseNameOnly) return defenseNameOnly;
     }
 
-    const nameTeamMatch = weekMatches.find((p: any) => byName(p) && byTeam(p));
+    const nameTeamMatch = weekMatches.find((p: any) => byName(p) && byTeam(p) && String(p?.position || "").toUpperCase().trim() === sleeperPosition);
     if (nameTeamMatch) return nameTeamMatch;
 
     const namePositionMatch = weekMatches.find(
@@ -169,10 +187,10 @@ export default function ComparePlayerScreen({ route }: any) {
     );
     if (namePositionMatch) return namePositionMatch;
 
-    const nameOnlyMatch = weekMatches.find((p: any) => byName(p));
+    const nameOnlyMatch = weekMatches.find((p: any) => byName(p) && String(p?.position || "").toUpperCase().trim() === sleeperPosition);
     if (nameOnlyMatch) return nameOnlyMatch;
 
-    const partialTeamMatch = weekMatches.find((p: any) => byPartialName(p) && byTeam(p));
+    const partialTeamMatch = weekMatches.find((p: any) => byPartialName(p) && byTeam(p) && String(p?.position || "").toUpperCase().trim() === sleeperPosition);
     if (partialTeamMatch) return partialTeamMatch;
 
     const nameMatch = weekMatches.find(
@@ -189,25 +207,20 @@ export default function ComparePlayerScreen({ route }: any) {
     loadPlayers();
   }, []);
 
-  useEffect(() => {
-    if (playerOne) loadStats(playerOne, true);
-  }, [playerOne]);
-
-  useEffect(() => {
-    if (selectedPlayer) {
-      loadStats(selectedPlayer, false);
-    }
-  }, [selectedPlayer]);
-
   async function loadPlayers() {
     const players = await getPlayersFromGithub();
 
-    const arr = Object.values(players || {}).filter(
-      (p: any) =>
-        p.position &&
-        p.full_name &&
-        p.team
-    );
+    // Normalize players to ensure a `position` field exists (some feeds use
+    // `position_listed_on_nflreadr` or `position_listed_on_sleeper`). Also
+    // keep only entries with a name and team.
+    const arr = Object.values(players || {}).map((p: any) => {
+      const normalizedPos = (p.position || p.position_for_FFHelper || p.position_listed_on_sleeper || p.position_listed_on_sleeper || '').toString().trim();
+
+      return {
+        ...p,
+        position: normalizedPos || undefined,
+      };
+    }).filter((p: any) => p.position && p.full_name && p.team);
 
     arr.sort((a: any, b: any) =>
       a.full_name.localeCompare(b.full_name)
@@ -241,7 +254,7 @@ export default function ComparePlayerScreen({ route }: any) {
     setLoading(false);
   }
 
-  async function loadStats(currentPlayer: any, first: boolean) {
+  async function loadStats(currentPlayer: any, first: boolean, scope: 'regular' | 'post' | 'all' = 'all', weekOverride?: number) {
     if (first) setLoadingStatsOne(true);
     else setLoadingStatsTwo(true);
 
@@ -253,29 +266,52 @@ export default function ComparePlayerScreen({ route }: any) {
       let byeCount = 0;
       let eliminatedCount = 0;
 
-      for (let week = 1; week <= 22; week++) {
+      // determine week range based on scope unless a specific week is requested
+      if (typeof weekOverride === 'number') {
+        const week = weekOverride;
         const stats = await getPlayerStatsByWeek(week);
+        const row = getPlayerNFLStats(currentPlayer.player_id, week, stats, currentPlayer);
+        if (row) {
+          // played flag
+          totals.played = row?.game_played ? 1 : 0;
+          // capture an injury/team status string if available
+          totals.injury_status = row?.team_status || row?.injury_status || '';
 
-        const row = getPlayerNFLStats(currentPlayer.player_id, week, stats);
-
-        if (!row) continue;
-
-        // Count played games using `game_played` flag (explicit)
-        if (row?.game_played) {
-          gamesCount++;
+          Object.keys(row).forEach((key) => {
+            const value = Number(row[key]);
+            if (!isNaN(value)) {
+              totals[key] = (totals[key] || 0) + value;
+            }
+          });
         }
+      } else {
+        const start = scope === 'post' ? 19 : 1;
+        const end = scope === 'regular' ? 18 : 22;
 
-        const teamStatus = String(row?.team_status ?? '').toLowerCase().trim();
-        if (teamStatus === 'bye-week') byeCount++;
-        if (teamStatus === 'eliminated') eliminatedCount++;
+        for (let week = start; week <= end; week++) {
+          const stats = await getPlayerStatsByWeek(week);
 
-        Object.keys(row).forEach((key) => {
-          const value = Number(row[key]);
+          const row = getPlayerNFLStats(currentPlayer.player_id, week, stats, currentPlayer);
 
-          if (!isNaN(value)) {
-            totals[key] = (totals[key] || 0) + value;
+          if (!row) continue;
+
+          // Count played games using `game_played` flag (explicit)
+          if (row?.game_played) {
+            gamesCount++;
           }
-        });
+
+          const teamStatus = String(row?.team_status ?? '').toLowerCase().trim();
+          if (teamStatus === 'bye-week') byeCount++;
+          if (teamStatus === 'eliminated') eliminatedCount++;
+
+          Object.keys(row).forEach((key) => {
+            const value = Number(row[key]);
+
+            if (!isNaN(value)) {
+              totals[key] = (totals[key] || 0) + value;
+            }
+          });
+        }
       }
 
       // Normalize fumble recovery totals: some feeds use `fumble_recovery_opp`
@@ -294,19 +330,75 @@ export default function ComparePlayerScreen({ route }: any) {
     }
   }
 
+  // Note: removed background preload — stats load only when Compare is pressed
+
+  // Auto-reload stats when user has previously compared this exact pair
+  useEffect(() => {
+    if (!comparedOnce) return;
+    if (!playerOne || !selectedPlayer) return;
+    // ensure it's the same pair
+    if (String(lastComparedPair.one) !== String(playerOne.player_id) || String(lastComparedPair.two) !== String(selectedPlayer.player_id)) return;
+
+    const weekOverride = viewMode === 'week' ? selectedWeek : undefined;
+
+    (async () => {
+      setComparing(true);
+      setPlayerOneStats(null);
+      setPlayerTwoStats(null);
+      try {
+        if (typeof weekOverride === 'number') {
+          await Promise.all([loadStats(playerOne, true, statScope, weekOverride), loadStats(selectedPlayer, false, statScope, weekOverride)]);
+        } else {
+          await Promise.all([loadStats(playerOne, true, statScope), loadStats(selectedPlayer, false, statScope)]);
+        }
+      } catch (err) {
+        console.warn('Auto-reload after compare failed', err);
+      } finally {
+        setComparing(false);
+      }
+    })();
+  }, [comparedOnce, statScope, selectedWeek, viewMode, playerOne, selectedPlayer, lastComparedPair]);
+
+  // Reset comparedOnce when either player changes to a different player
+  useEffect(() => {
+    if (!lastComparedPair.one || !lastComparedPair.two) return;
+    if (!playerOne || !selectedPlayer) {
+      setComparedOnce(false);
+      return;
+    }
+    if (String(lastComparedPair.one) !== String(playerOne.player_id) || String(lastComparedPair.two) !== String(selectedPlayer.player_id)) {
+      setComparedOnce(false);
+      setLastComparedPair({});
+      setPlayerOneStats(null);
+      setPlayerTwoStats(null);
+    }
+  }, [playerOne, selectedPlayer]);
+
+  
+
+  // Clear preloaded stats when scope changes so we don't show wrong-scope data
+  useEffect(() => {
+    setPlayerOneStats(null);
+    setPlayerTwoStats(null);
+  }, [statScope]);
+
   const filteredPlayers = useMemo(() => {
     if (!search.length) return [];
-
-    const group = getPositionGroup(playerOne?.position || player?.position);
+    const referencePlayer = playerOne || selectedPlayer || player;
+    const group = getPositionGroup(referencePlayer?.position || referencePlayer?.position);
     const applyGroupFilter = Boolean(group && group !== 'OTHER');
 
-    return allPlayers
+        return allPlayers
       .filter((p: any) => {
+        // don't show players already selected in either slot
+        if (playerOne && String(p.player_id) === String(playerOne.player_id)) return false;
+        if (selectedPlayer && String(p.player_id) === String(selectedPlayer.player_id)) return false;
         if (!p.full_name) return false;
         const matchesQuery = p.full_name.toLowerCase().includes(search.toLowerCase());
         if (!matchesQuery) return false;
         if (!applyGroupFilter) return true; // no position-group restriction
-        return getPositionGroup(p.position) === group;
+        // Use canCompare to allow compatible groups (e.g. DL <-> LB)
+        return canCompare(referencePlayer?.position, p.position);
       })
       .slice(0, 15);
   }, [search, allPlayers, playerOne, player]);
@@ -334,6 +426,9 @@ export default function ComparePlayerScreen({ route }: any) {
     const n = Number(value);
     if (!Number.isFinite(n)) return '0';
     if (Number.isInteger(n)) return String(n);
+    // If value is precise to a single tenth (e.g. x.5), show one decimal
+    const tenth = Math.round(n * 10) / 10;
+    if (Math.abs(n - tenth) < 1e-9) return tenth.toFixed(1);
     return (Math.round(n * 100) / 100).toFixed(2);
   }
 
@@ -344,11 +439,11 @@ export default function ComparePlayerScreen({ route }: any) {
           ["Passing Yards", "passing_yards"],
           ["Passing TD", "passing_tds"],
           ["Interceptions", "passing_interceptions", true],
+          ["Completion %", "completion_pct"],
           ["Completions", "completions"],
           ["Attempts", "attempts"],
           ["Rush Yards", "rushing_yards"],
           ["Rush TD", "rushing_tds"],
-          ["Fantasy Points", "fantasy_points_ppr"],
         ];
 
       case "RB":
@@ -359,7 +454,6 @@ export default function ComparePlayerScreen({ route }: any) {
           ["Receptions", "receptions"],
           ["Receiving Yards", "receiving_yards"],
           ["Receiving TD", "receiving_tds"],
-          ["Fantasy Points", "fantasy_points_ppr"],
         ];
 
       case "WR":
@@ -369,7 +463,6 @@ export default function ComparePlayerScreen({ route }: any) {
           ["Receptions", "receptions"],
           ["Receiving Yards", "receiving_yards"],
           ["Receiving TD", "receiving_tds"],
-          ["Fantasy Points", "fantasy_points_ppr"],
         ];
 
       case "K":
@@ -377,7 +470,6 @@ export default function ComparePlayerScreen({ route }: any) {
           ["FG Made", "fg_made"],
           ["FG Attempted", "fg_att"],
           ["XP Made", "pat_made"],
-          ["Fantasy Points", "fantasy_points_ppr"],
         ];
 
       default:
@@ -391,14 +483,26 @@ export default function ComparePlayerScreen({ route }: any) {
           ["Fumbles Rec", "fumbles_recovered"],
         ];
 
-        if (!isIndividualDefensivePosition(position)) {
-          rows.push(["Fantasy Points", "fantasy_points_ppr"]);
-        }
+        // omit fantasy points row to avoid duplicate final row
 
         return rows;
     }
   }
-    return (
+  // header rows depend on whether we're viewing a single week or a season
+  // Note: remove the top-level Fantasy Points row so it doesn't appear above the
+  // main stats list. Fantasy points will be shown in the stats area as requested.
+  const headerRows = viewMode === 'week'
+    ? [['Played', 'played'], ['Injury Status', 'injury_status'], ['Fantasy Points', 'fantasy_points_ppr']]
+    : [['Games', 'games'], ['Fantasy Points', 'fantasy_points_ppr']];
+
+  // When both compared players are individual defensive positions, omit fantasy points
+  const bothDefensive = isIndividualDefensivePosition((playerOne || {}).position) && isIndividualDefensivePosition((selectedPlayer || {}).position);
+  const headerRowsFiltered = (headerRows as any).filter((r: any) => {
+    if (bothDefensive && String(r[1]) === 'fantasy_points_ppr') return false;
+    return true;
+  });
+
+  return (
     <ScrollView style={styles.container}>
 
       {/* Header */}
@@ -413,14 +517,23 @@ export default function ComparePlayerScreen({ route }: any) {
           Compare season or weekly statistics side-by-side.
         </Text>
 
+        <Text style={styles.hint}>
+          Select a box to add or change a player
+        </Text>
+
       </View>
 
       {/* Player Cards */}
 
       <View style={styles.playerRow}>
 
-        <View style={styles.playerCard}>
-
+        <TouchableOpacity
+          style={styles.playerCard}
+          activeOpacity={0.8}
+          onPress={() => {
+            setActiveSlot('one');
+          }}
+        >
           {playerOne ? (
             <>
               <Image
@@ -431,6 +544,18 @@ export default function ComparePlayerScreen({ route }: any) {
               <Text style={styles.playerName}>{playerOne.full_name}</Text>
 
               <Text style={styles.playerInfo}>{playerOne.position} • {playerOne.team}</Text>
+
+              <TouchableOpacity
+                style={styles.removeBtn}
+                onPress={() => {
+                  setPlayerOne(null);
+                  setPlayerOneStats(null);
+                  // if removing the currently active slot, clear it
+                  if (activeSlot === 'one') setActiveSlot(null);
+                }}
+              >
+                <Text style={styles.removeText}>✕</Text>
+              </TouchableOpacity>
             </>
           ) : (
             <>
@@ -440,14 +565,19 @@ export default function ComparePlayerScreen({ route }: any) {
 
               <Text style={styles.playerName}>Select Player</Text>
 
-              <Text style={styles.playerInfo}>Search below</Text>
+              <Text style={styles.playerInfo}>Tap to search</Text>
             </>
           )}
 
-        </View>
+        </TouchableOpacity>
 
-        <View style={styles.playerCard}>
-
+        <TouchableOpacity
+          style={styles.playerCard}
+          activeOpacity={0.8}
+          onPress={() => {
+            setActiveSlot('two');
+          }}
+        >
           {selectedPlayer ? (
             <>
               <Image
@@ -458,6 +588,17 @@ export default function ComparePlayerScreen({ route }: any) {
               <Text style={styles.playerName}>{selectedPlayer.full_name}</Text>
 
               <Text style={styles.playerInfo}>{selectedPlayer.position} • {selectedPlayer.team}</Text>
+
+              <TouchableOpacity
+                style={styles.removeBtn}
+                onPress={() => {
+                  setSelectedPlayer(null);
+                  setPlayerTwoStats(null);
+                  if (activeSlot === 'two') setActiveSlot(null);
+                }}
+              >
+                <Text style={styles.removeText}>✕</Text>
+              </TouchableOpacity>
             </>
           ) : (
             <>
@@ -467,131 +608,160 @@ export default function ComparePlayerScreen({ route }: any) {
 
               <Text style={styles.playerName}>Select Player</Text>
 
-              <Text style={styles.playerInfo}>Search below</Text>
+              <Text style={styles.playerInfo}>Tap to search</Text>
             </>
           )}
 
-        </View>
+        </TouchableOpacity>
 
+      </View>
+
+      {/* Compare button below player boxes */}
+      <View style={{ paddingHorizontal: 20, marginTop: 12, alignItems: 'center' }}>
+        <TouchableOpacity
+          style={[styles.toggleButton, { paddingHorizontal: 28, backgroundColor: '#4f46e5' }]}
+          onPress={async () => {
+            if (!playerOne || !selectedPlayer) {
+              Alert.alert('Select players', 'Please select two players to compare.');
+              return;
+            }
+            // Ensure positions are comparable
+            if (!canCompare(playerOne.position, selectedPlayer.position)) {
+              Alert.alert('Cannot compare', 'Players must be of the same position group (e.g. QB, RB, WR/TE, DL, LB, DB).');
+              return;
+            }
+
+            setComparing(true);
+            setPlayerOneStats(null);
+            setPlayerTwoStats(null);
+
+              try {
+              const weekOverride = viewMode === 'week' ? selectedWeek : undefined;
+              if (typeof weekOverride === 'number') {
+                await Promise.all([loadStats(playerOne, true, statScope, weekOverride), loadStats(selectedPlayer, false, statScope, weekOverride)]);
+              } else {
+                await Promise.all([loadStats(playerOne, true, statScope), loadStats(selectedPlayer, false, statScope)]);
+              }
+              setComparedOnce(true);
+              setLastComparedPair({ one: playerOne.player_id, two: selectedPlayer.player_id });
+            } catch (err) {
+              console.warn('Compare failed', err);
+            } finally {
+              setComparing(false);
+            }
+          }}
+        >
+          <Text style={{ color: '#fff', fontWeight: '700' }}>Compare</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Stat scope selector + Week toggle */}
+      <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 10, marginTop: 10 }}>
+        <TouchableOpacity
+          style={[styles.toggleButton, statScope === 'regular' && viewMode !== 'week' && styles.toggleActive]}
+          onPress={() => { setStatScope('regular'); setViewMode('season'); }}
+        >
+          <Text style={[styles.toggleText, statScope === 'regular' && viewMode !== 'week' && styles.toggleTextActive]}>Regular Season</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.toggleButton, statScope === 'post' && viewMode !== 'week' && styles.toggleActive]}
+          onPress={() => { setStatScope('post'); setViewMode('season'); }}
+        >
+          <Text style={[styles.toggleText, statScope === 'post' && viewMode !== 'week' && styles.toggleTextActive]}>Post Season</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.toggleButton, statScope === 'all' && viewMode !== 'week' && styles.toggleActive]}
+          onPress={() => { setStatScope('all'); setViewMode('season'); }}
+        >
+          <Text style={[styles.toggleText, statScope === 'all' && viewMode !== 'week' && styles.toggleTextActive]}>Whole Season</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.toggleButton, viewMode === 'week' && styles.toggleActive]}
+          onPress={() => { setViewMode('week'); }}
+        >
+          <Text style={[styles.toggleText, viewMode === 'week' && styles.toggleTextActive]}>By Week</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Search */}
 
       <View style={styles.searchSection}>
+        {activeSlot !== null && (
+          <>
+            <TextInput
+              placeholder="Search player..."
+              placeholderTextColor="#999"
+              value={search}
+              onChangeText={setSearch}
+              style={styles.searchInput}
+            />
 
-        <TextInput
-          placeholder="Search player..."
-          placeholderTextColor="#999"
-          value={search}
-          onChangeText={setSearch}
-          style={styles.searchInput}
-        />
+            {search.length > 0 && (
+              <FlatList
+                data={filteredPlayers}
+                keyExtractor={(item: any) => String(item.player_id)}
+                keyboardShouldPersistTaps="handled"
+                style={styles.searchResults}
+                renderItem={({ item }: any) => {
+                  const referencePlayer = playerOne || selectedPlayer || player;
+                  const group = getPositionGroup(referencePlayer?.position || referencePlayer?.position);
+                  const applyGroupFilter = Boolean(group && group !== 'OTHER');
+                  const allowed = !applyGroupFilter || canCompare(referencePlayer?.position, item.position);
 
-        {search.length > 0 && (
+                  return (
+                      <TouchableOpacity
+                      style={[styles.searchRow, !allowed && { opacity: 0.5 }]}
+                      onPress={() => {
+                        if (!allowed) {
+                          Alert.alert("Cannot compare", "You can only compare players of the same position group.");
+                          return;
+                        }
 
-          <FlatList
-            data={filteredPlayers}
-            keyExtractor={(item: any) => item.player_id}
+                        // Determine target slot
+                        const targetSlot = activeSlot ? activeSlot : (!playerOne ? 'one' : 'two');
 
-            keyboardShouldPersistTaps="handled"
+                        // If assigning to an empty slot while the other slot already has a player,
+                        // ensure the groups match.
+                        if (targetSlot === 'one' && selectedPlayer) {
+                          if (!canCompare(item.position, selectedPlayer.position)) {
+                            Alert.alert('Cannot compare', 'Players must be of the same position group.');
+                            return;
+                          }
+                        }
 
-            style={styles.searchResults}
+                        if (targetSlot === 'two' && playerOne) {
+                          if (!canCompare(playerOne.position, item.position)) {
+                            Alert.alert('Cannot compare', 'Players must be of the same position group.');
+                            return;
+                          }
+                        }
 
+                        if (targetSlot === 'one') setPlayerOne(item);
+                        else setSelectedPlayer(item);
 
-            renderItem={({ item }: any) => {
-              // If no playerOne selected yet, allow picking any player as first
-              // When opened without an initial player, don't enforce position-group filtering
-              const group = getPositionGroup(playerOne?.position || player?.position);
-              const applyGroupFilter = Boolean(group && group !== 'OTHER');
-              const allowed = !applyGroupFilter || canCompare((playerOne || player || {}).position, item.position);
+                        setSearch("");
+                        setActiveSlot(null);
+                      }}
+                    >
+                      <Image source={{ uri: getHeadshot(item) }} style={styles.searchHeadshot} />
 
-              return (
-                <TouchableOpacity
-                  style={[styles.searchRow, !allowed && { opacity: 0.5 }]}
-                  onPress={() => {
-                    if (!allowed) {
-                      Alert.alert(
-                        "Cannot compare",
-                        "You can only compare players of the same position group."
-                      );
-                      return;
-                    }
-
-                    if (!playerOne) {
-                      setPlayerOne(item);
-                    } else {
-                      setSelectedPlayer(item);
-                    }
-                    setSearch("");
-                  }}
-                >
-                  <Image
-                    source={{ uri: getHeadshot(item) }}
-                    style={styles.searchHeadshot}
-                  />
-
-                  <View>
-                    <Text style={styles.searchName}>{item.full_name}</Text>
-                    <Text style={styles.searchTeam}>{item.position} • {item.team}</Text>
-                  </View>
-                </TouchableOpacity>
-              );
-            }}
-          />
-
+                      <View>
+                        <Text style={styles.searchName}>{item.full_name}</Text>
+                        <Text style={styles.searchTeam}>{item.position} • {item.team}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+            )}
+          </>
         )}
-
       </View>
 
-      {/* View Toggle */}
-
-      <View style={styles.toggleRow}>
-
-        <TouchableOpacity
-
-          style={[
-            styles.toggleButton,
-            viewMode === "season" && styles.toggleActive,
-          ]}
-
-          onPress={() => setViewMode("season")}
-
-        >
-
-          <Text
-            style={[
-              styles.toggleText,
-              viewMode === "season" && styles.toggleTextActive,
-            ]}
-          >
-            Season
-          </Text>
-
-        </TouchableOpacity>
-
-        <TouchableOpacity
-
-          style={[
-            styles.toggleButton,
-            viewMode === "week" && styles.toggleActive,
-          ]}
-
-          onPress={() => setViewMode("week")}
-
-        >
-
-          <Text
-            style={[
-              styles.toggleText,
-              viewMode === "week" && styles.toggleTextActive,
-            ]}
-          >
-            Week
-          </Text>
-
-        </TouchableOpacity>
-
-      </View>
+      
 
       {viewMode === "week" && (
 
@@ -605,7 +775,7 @@ export default function ComparePlayerScreen({ route }: any) {
 
         >
 
-          {Array.from({ length: 18 }, (_, i) => i + 1).map((week) => (
+          {Array.from({ length: 22 }, (_, i) => i + 1).map((week) => (
 
             <TouchableOpacity
 
@@ -654,24 +824,54 @@ export default function ComparePlayerScreen({ route }: any) {
               <Text style={{ textAlign: 'center', color: '#6b7280', paddingVertical: 12 }}>Stats list</Text>
 
               {/* Games + per-position stat comparison rows */}
-              {([['Games', 'games'] as any].concat(statRows((playerOne || player || {}).position || '') as any)).map((row) => {
+              {([].concat(headerRowsFiltered as any).concat(statRows((playerOne || player || {}).position || '') as any)).map((row) => {
                 const [label, key, lowerIsBetter] = row as any;
                 const oneVal = Number(playerOneStats[key] || 0);
                 const twoVal = Number(playerTwoStats[key] || 0);
-                const [leftColor, rightColor] = compareColor(oneVal, twoVal, !!lowerIsBetter);
-
+                // Disable comparison coloring only for injury status rows
+                const neutralColors: [string, string] = ["#ececec", "#ececec"];
+                let [leftColor, rightColor] = (key === 'injury_status')
+                  ? neutralColors
+                  : compareColor(oneVal, twoVal, !!lowerIsBetter);
+                // compute completion percentage when needed
+                const oneComp = Number(playerOneStats.completions || 0);
+                const oneAtt = Number(playerOneStats.attempts || 0);
+                const onePct = oneAtt > 0 ? (oneComp / oneAtt) * 100 : 0;
+                const twoComp = Number(playerTwoStats.completions || 0);
+                const twoAtt = Number(playerTwoStats.attempts || 0);
+                const twoPct = twoAtt > 0 ? (twoComp / twoAtt) * 100 : 0;
+                // For completion percentage, re-evaluate colors based on pct
+                if (key === 'completion_pct') {
+                  const colors = compareColor(Math.round(onePct * 10) / 10, Math.round(twoPct * 10) / 10, false);
+                  leftColor = colors[0];
+                  rightColor = colors[1];
+                }
                 return (
                   <View key={key} style={styles.statCard}>
                     <Text style={styles.statTitle}>{label}</Text>
                     <View style={styles.compareRow}>
                       <View style={[styles.valueBox, { backgroundColor: leftColor }]}> 
-                        <Text style={styles.valueText}>{formatNumber(oneVal)}</Text>
-                        <Text style={styles.gamesText}>{(playerOne && playerOne.full_name) || 'Player 1'}</Text>
+                        {key === 'injury_status' ? (
+                          <Text style={styles.valueText}>{(String(playerOneStats[key]) || '').toLowerCase().trim() === 'played' ? 'No Injury' : (String(playerOneStats[key]) ? String(playerOneStats[key]) : 'Not Injured')}</Text>
+                        ) : key === 'played' ? (
+                          <Text style={styles.valueText}>{playerOneStats.played ? 'Yes' : 'No'}</Text>
+                        ) : key === 'completion_pct' ? (
+                          <Text style={styles.valueText}>{(Math.round(onePct * 10) / 10).toFixed(1)}%</Text>
+                        ) : (
+                          <Text style={styles.valueText}>{formatNumber(oneVal)}</Text>
+                        )}
                       </View>
-
+                      
                       <View style={[styles.valueBox, { backgroundColor: rightColor }]}> 
-                        <Text style={styles.valueText}>{formatNumber(twoVal)}</Text>
-                        <Text style={styles.gamesText}>{selectedPlayer.full_name}</Text>
+                        {key === 'injury_status' ? (
+                          <Text style={styles.valueText}>{(String(playerTwoStats[key]) || '').toLowerCase().trim() === 'played' ? 'No Injury' : (String(playerTwoStats[key]) ? String(playerTwoStats[key]) : 'Not Injured')}</Text>
+                        ) : key === 'played' ? (
+                          <Text style={styles.valueText}>{playerTwoStats.played ? 'Yes' : 'No'}</Text>
+                        ) : key === 'completion_pct' ? (
+                          <Text style={styles.valueText}>{(Math.round(twoPct * 10) / 10).toFixed(1)}%</Text>
+                        ) : (
+                          <Text style={styles.valueText}>{formatNumber(twoVal)}</Text>
+                        )}
                       </View>
                     </View>
                   </View>
@@ -1003,6 +1203,32 @@ const styles = StyleSheet.create({
     fontSize: 15,
     textAlign: "center",
     color: "#6b7280",
+  },
+
+  hint: {
+    marginTop: 8,
+    fontSize: 13,
+    color: '#6b7280',
+  },
+
+  removeBtn: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+
+  removeText: {
+    color: '#6b7280',
+    fontSize: 14,
+    fontWeight: '700',
   },
 
 });

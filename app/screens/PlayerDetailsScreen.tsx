@@ -54,6 +54,8 @@ export default function PlayerDetailsScreen({ route }: any) {
     return aliases[team] || team;
   };
 
+  const basePosition = String(player?.position_for_FFHelper || player?.position || player?.position_listed_on_sleeper || '').toUpperCase().trim();
+
   const getNewsFileKey = (position?: string) => {
     const pos = String(position || '').toUpperCase().trim();
     if (pos === 'QB') return 'qb';
@@ -151,7 +153,8 @@ export default function PlayerDetailsScreen({ route }: any) {
 
   const getWeekCardBackground = (weekStats: any) => {
     const defaultColor = '#f9f9f9';
-    if (isIndividualDefensivePosition(player?.position)) return defaultColor;
+    const posForWeek = String(weekStats?.position || player?.position_for_FFHelper || player?.position || '').toUpperCase().trim();
+    if (isIndividualDefensivePosition(posForWeek)) return defaultColor;
     if (!weekStats || seasonAvgFantasyPoints === null) return defaultColor;
 
     const weekFantasyPoints = Number(weekStats?.fantasy_points_ppr);
@@ -199,15 +202,26 @@ export default function PlayerDetailsScreen({ route }: any) {
             postseasonPlayed[w] = rows.some((row: any) => normalizeTeam(row?.team) === playerTeam);
           }
         });
-        // Attach team defense rows (if present) to the stats map so we can show team DEF per-week
+        // Attach team defense rows (if present) to the stats map so we can show team DEF per-week.
+        // Important: do not create an empty statsMap[w] entry when only the team DEF row exists
+        // for an individual player — that causes games to be counted for players with no data
+        // (e.g., rookies). Only attach `_team_def` when the main player row already exists,
+        // or when we're viewing a team DEF player.
         results.forEach((data, index) => {
           const w = index + 1;
           const rows = Array.isArray(data) ? data : (Object.values(data ?? {}).flat() as any[]);
           const defId = `DEF_${playerTeam}`;
           const teamDef = rows.find((r: any) => String(r.player_id) === defId) || null;
-          if (teamDef) {
+          if (!teamDef) return;
+
+          const isViewingTeamDef = String(player.position || player.position_for_FFHelper || '').toUpperCase().trim() === 'DEF';
+
+          if (statsMap[w] && Object.keys(statsMap[w]).length > 0) {
+            // main player row exists for this week — attach team DEF for reference
+            (statsMap[w] as any)._team_def = teamDef;
+          } else if (isViewingTeamDef) {
+            // if the page is for a team DEF, create the week entry using the team DEF row
             statsMap[w] = statsMap[w] || {};
-            // store under a dedicated key to avoid clobbering player row
             (statsMap[w] as any)._team_def = teamDef;
           }
         });
@@ -418,7 +432,8 @@ export default function PlayerDetailsScreen({ route }: any) {
     );
 
     // DEFENSE MATCH
-    if (sleeperPlayer.position === "DEF") {
+    const sleeperPosition = String(sleeperPlayer.position_for_FFHelper || sleeperPlayer.position || sleeperPlayer.position_listed_on_sleeper || '').toUpperCase().trim();
+    if (sleeperPosition === "DEF") {
       const defId = `DEF_${sleeperPlayer.team}`;
       return weekMatches.find((p: any) => String(p.player_id) === defId) || null;
     }
@@ -432,7 +447,6 @@ export default function PlayerDetailsScreen({ route }: any) {
     // FALLBACK: NAME MATCH with normalization
     const fullName = sleeperPlayer.full_name?.toLowerCase().trim();
     if (!fullName) return null;
-    const sleeperPosition = String(sleeperPlayer.position || "").toUpperCase().trim();
     const sleeperTeam = String(sleeperPlayer.team || "").toUpperCase().trim();
 
     // Normalize names for comparison (remove extra spaces, punctuation)
@@ -717,7 +731,7 @@ export default function PlayerDetailsScreen({ route }: any) {
 
     if (weeks.length === 0) return null;
 
-    const pos = String(player.position).trim().toUpperCase();
+    const pos = String(player.position_for_FFHelper || player.position || '').trim().toUpperCase();
     const playedWC = Boolean(teamPlayedPostseasonByWeek[19]);
     const playedDiv = Boolean(teamPlayedPostseasonByWeek[20]);
 
@@ -817,9 +831,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         def_safeties: sum('def_safeties'),
         points_allowed: sum('points_allowed'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.filter((w: any) => Boolean(w.game_played)).length,
-        bye_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'bye-week').length,
-        eliminated_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'eliminated').length,
+        games: weeks.filter((w: any) => Boolean(w.data?.game_played)).length,
+        bye_weeks: weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase().includes('bye')).length,
+        eliminated_weeks: weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (isIndividualDefensivePosition(pos)) {
@@ -836,16 +850,16 @@ export default function PlayerDetailsScreen({ route }: any) {
         def_tds: sum('def_tds'),
         def_qb_hits: sum('def_qb_hits'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.filter((w: any) => Boolean(w.game_played)).length,
-        bye_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'bye-week').length,
-        eliminated_weeks: weeks.filter((w: any) => String(w.team_status || '').toLowerCase() === 'eliminated').length,
+        games: weeks.filter((w: any) => Boolean(w.data?.game_played)).length,
+        bye_weeks: weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase().includes('bye')).length,
+        eliminated_weeks: weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase() === 'eliminated').length,
       };
     }
     return null;
   };
 
   const renderSeasonStats = () => {
-    const pos = String(player.position).trim().toUpperCase();
+    const pos = String(player.position_for_FFHelper || player.position || '').trim().toUpperCase();
     const s = computeSeasonStats();
     const games = Number(s?.games) || 0;
     const isIndividualDefensiveSeasonView = isIndividualDefensivePosition(pos);
@@ -1016,9 +1030,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         <Image
           source={{
             uri:
-              player.position === "DEF"
-                ? getTeamLogo(displayTeam)
-                : stats?.headshot_url || getHeadshotUrl(player)
+                  basePosition === "DEF"
+                    ? getTeamLogo(displayTeam)
+                    : stats?.headshot_url || getHeadshotUrl(player)
           }}
           style={styles.headshot}
         />
@@ -1026,7 +1040,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         <Text style={styles.playerName}>{player.full_name}</Text>
 
         <Text style={styles.playerInfo}>
-          {player.position} • {displayTeam}
+          {basePosition || player.position} • {displayTeam}
         </Text>
 
       </View>
@@ -1049,8 +1063,9 @@ export default function PlayerDetailsScreen({ route }: any) {
             : '';
           const isByeWeek = teamStatusRaw.includes('bye');
           const isEliminatedWeek = teamStatusRaw === 'eliminated';
-          const statLines = formatPlayerStats(player.position, currentStats);
-          const isIndividualDefender = isIndividualDefensivePosition(player.position);
+          const posToUse = String(currentStats?.position || player.position || '').toUpperCase().trim();
+          const statLines = formatPlayerStats(posToUse, currentStats);
+          const isIndividualDefender = isIndividualDefensivePosition(posToUse);
           const injuryStatus = String(currentStats?.injury_status ?? "").toUpperCase().trim();
           const isOut = ["OUT", "IR", "IR-R", "INJURED RESERVE"].includes(injuryStatus);
           const isQuestionable = ["QUESTIONABLE", "DOUBTFUL"].includes(injuryStatus);
@@ -1164,8 +1179,9 @@ export default function PlayerDetailsScreen({ route }: any) {
             <Text style={styles.statLine}>Loading Stats...</Text>
           ) : Array.from({ length: 22 }, (_, i) => i + 1).map((w: number) => {
             const weekStats = allWeeksStats[w];
-            const statLines = weekStats ? formatPlayerStats(player.position, weekStats) : [];
-            const isIndividualDefender = isIndividualDefensivePosition(player.position);
+            const posToUse = String(weekStats?.position || player.position || '').toUpperCase().trim();
+            const statLines = weekStats ? formatPlayerStats(posToUse, weekStats) : [];
+            const isIndividualDefender = isIndividualDefensivePosition(posToUse);
 
             // Try to get injury info only from the main row (do not consider team DEF injury status)
             const injuryStatus = weekStats
@@ -1266,7 +1282,7 @@ export default function PlayerDetailsScreen({ route }: any) {
                 )}
 
                 {/* Show stats or message */}
-                {statLines.length > 0 && !effectiveIsBye ? (
+                {statLines.length > 0 && !effectiveIsBye && !isEliminatedWeek && !postseasonMissingAndEliminated ? (
                   statLines.map((line: string, index: number) => (
                     <Text key={index} style={styles.statLine}>
                       {line}
@@ -1275,10 +1291,8 @@ export default function PlayerDetailsScreen({ route }: any) {
                 ) : hasInjury ? (
                   // Injury info already shown above, no additional message needed
                   null
-                ) : postseasonMissingAndEliminated ? (
-                  // Already showed eliminated message above; no extra message
-                  null
-                ) : effectiveIsBye ? (
+                ) : (postseasonMissingAndEliminated || isEliminatedWeek || effectiveIsBye) ? (
+                  // Already showed bye/eliminated info above; no extra message
                   null
                 ) : (
                   <Text style={styles.statLine}>

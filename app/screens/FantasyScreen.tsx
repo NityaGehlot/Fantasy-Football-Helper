@@ -403,7 +403,8 @@ const getPlayerNFLStats = (playerId: string | number, week: number) => {
   // ======================
   // DEFENSE MATCH
   // ======================
-  if (sleeperPlayer.position === "DEF") {
+  const sleeperPosition = String(sleeperPlayer.position_for_FFHelper || sleeperPlayer.position || sleeperPlayer.position_listed_on_sleeper || '').toUpperCase().trim();
+  if (sleeperPosition === "DEF") {
     const defId = `DEF_${sleeperPlayer.team}`;
     return weekMatches.find(p => String(p.player_id) === defId) ?? EMPTY_STATS;
   }
@@ -427,7 +428,7 @@ const getPlayerNFLStats = (playerId: string | number, week: number) => {
     if (!jsonName) return false;
     return (
       (jsonName.includes(fullName) || fullName.includes(jsonName)) &&
-      p.position === sleeperPlayer.position
+      p.position === sleeperPosition
     );
   });
 
