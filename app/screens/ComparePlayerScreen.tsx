@@ -72,10 +72,9 @@ export default function ComparePlayerScreen({ route }: any) {
     if (p === "WR" || p === "TE") return "WRTE";
 
     // Defensive line group
-    if (p === "DT" || p === "DE" || p === "DL" || p === "NT") return "DL";
-
-    // Linebackers group
-    if (p === "LB" || p === "ILB" || p === "MLB" || p === "OLB") return "LB";
+    // Group frontline defensive and linebacker positions together so they
+    // are all comparable to one another (DL/DE/DT/NT/EDGE/LB/ILB/OLB/etc).
+    if (["DT", "DE", "DL", "NT", "EDGE", "LB", "ILB", "MLB", "OLB"].includes(p)) return "FRONT";
 
     // Defensive backs group (CB, S, FS, SS, DB)
     if (p === "CB" || p === "S" || p === "FS" || p === "SS" || p === "DB") return "DB";
@@ -220,7 +219,7 @@ export default function ComparePlayerScreen({ route }: any) {
         ...p,
         position: normalizedPos || undefined,
       };
-    }).filter((p: any) => p.position && p.full_name && p.team);
+    }).filter((p: any) => p.position && p.full_name);
 
     arr.sort((a: any, b: any) =>
       a.full_name.localeCompare(b.full_name)
@@ -272,8 +271,14 @@ export default function ComparePlayerScreen({ route }: any) {
         const stats = await getPlayerStatsByWeek(week);
         const row = getPlayerNFLStats(currentPlayer.player_id, week, stats, currentPlayer);
         if (row) {
-          // played flag
-          totals.played = row?.game_played ? 1 : 0;
+          // played flag: count as played if explicit or if kicker had any FG/XP activity
+          const pos = String(currentPlayer.position || currentPlayer.position_for_FFHelper || '').toUpperCase().trim();
+          const rowPlayed = Boolean(row?.game_played) || (
+            pos === 'K' && (
+              Number(row?.fg_att || 0) > 0 || Number(row?.fg_made || 0) > 0 || Number(row?.pat_att || 0) > 0 || Number(row?.pat_made || 0) > 0
+            )
+          );
+          totals.played = rowPlayed ? 1 : 0;
           // capture an injury/team status string if available
           totals.injury_status = row?.team_status || row?.injury_status || '';
 
@@ -295,8 +300,14 @@ export default function ComparePlayerScreen({ route }: any) {
 
           if (!row) continue;
 
-          // Count played games using `game_played` flag (explicit)
-          if (row?.game_played) {
+          // Count played games: explicit flag or infer for kickers with FG/XP activity
+          const pos = String(currentPlayer.position || currentPlayer.position_for_FFHelper || '').toUpperCase().trim();
+          const rowPlayed = Boolean(row?.game_played) || (
+            pos === 'K' && (
+              Number(row?.fg_att || 0) > 0 || Number(row?.fg_made || 0) > 0 || Number(row?.pat_att || 0) > 0 || Number(row?.pat_made || 0) > 0
+            )
+          );
+          if (rowPlayed) {
             gamesCount++;
           }
 
@@ -824,7 +835,10 @@ export default function ComparePlayerScreen({ route }: any) {
               <Text style={{ textAlign: 'center', color: '#6b7280', paddingVertical: 12 }}>Stats list</Text>
 
               {/* Games + per-position stat comparison rows */}
-              {([].concat(headerRowsFiltered as any).concat(statRows((playerOne || player || {}).position || '') as any)).map((row) => {
+              {(() => {
+                const leftPos = (playerOne || player || {}).position || '';
+                const rightPos = (selectedPlayer || {}).position || '';
+                return ([].concat(headerRowsFiltered as any).concat(statRows((playerOne || player || {}).position || '') as any)).map((row) => {
                 const [label, key, lowerIsBetter] = row as any;
                 const oneVal = Number(playerOneStats[key] || 0);
                 const twoVal = Number(playerTwoStats[key] || 0);
@@ -847,7 +861,8 @@ export default function ComparePlayerScreen({ route }: any) {
                   rightColor = colors[1];
                 }
                 return (
-                  <View key={key} style={styles.statCard}>
+                  <React.Fragment key={key}>
+                  <View style={styles.statCard}>
                     <Text style={styles.statTitle}>{label}</Text>
                     <View style={styles.compareRow}>
                       <View style={[styles.valueBox, { backgroundColor: leftColor }]}> 
@@ -875,8 +890,78 @@ export default function ComparePlayerScreen({ route }: any) {
                       </View>
                     </View>
                   </View>
+                  {key === 'fantasy_points_ppr' && (String(leftPos).toUpperCase() === 'K' || String(rightPos).toUpperCase() === 'K') ? (
+                    <View style={styles.statCard}>
+                      <Text style={styles.statTitle}>FG %</Text>
+                      <View style={styles.compareRow}>
+                        {(() => {
+                          const oneMade = Number(playerOneStats.fg_made || 0);
+                          const oneAtt = Number(playerOneStats.fg_att || 0) || 0;
+                          const twoMade = Number(playerTwoStats.fg_made || 0);
+                          const twoAtt = Number(playerTwoStats.fg_att || 0) || 0;
+                          const onePct = oneAtt > 0 ? (oneMade / oneAtt) * 100 : 0;
+                          const twoPct = twoAtt > 0 ? (twoMade / twoAtt) * 100 : 0;
+                          const colors = compareColor(onePct, twoPct, false);
+                          return (
+                            <>
+                              <View style={[styles.valueBox, { backgroundColor: colors[0] }]}> 
+                                <Text style={styles.valueText}>{oneAtt > 0 ? `${formatNumber(onePct)}%` : '0%'}</Text>
+                              </View>
+                              <View style={[styles.valueBox, { backgroundColor: colors[1] }]}> 
+                                <Text style={styles.valueText}>{twoAtt > 0 ? `${formatNumber(twoPct)}%` : '0%'}</Text>
+                              </View>
+                            </>
+                          );
+                        })()}
+                      </View>
+                    </View>
+                  ) : null}
+                  {key === 'pat_made' && (String(leftPos).toUpperCase() === 'K' || String(rightPos).toUpperCase() === 'K') ? (
+                    <>
+                      <View style={styles.statCard}>
+                        <Text style={styles.statTitle}>XP Attempted</Text>
+                        <View style={styles.compareRow}>
+                          <View style={[styles.valueBox, { backgroundColor: compareColor(Number(playerOneStats.pat_att || 0), Number(playerTwoStats.pat_att || 0))[0] }]}> 
+                            <Text style={styles.valueText}>{formatNumber(Number(playerOneStats.pat_att || 0))}</Text>
+                          </View>
+                          <View style={[styles.valueBox, { backgroundColor: compareColor(Number(playerOneStats.pat_att || 0), Number(playerTwoStats.pat_att || 0))[1] }]}> 
+                            <Text style={styles.valueText}>{formatNumber(Number(playerTwoStats.pat_att || 0))}</Text>
+                          </View>
+                        </View>
+                      </View>
+                    </>
+                  ) : null}
+
+                  {key === 'fg_att' && (String(leftPos).toUpperCase() === 'K' || String(rightPos).toUpperCase() === 'K') ? (
+                    <View style={styles.statCard}>
+                      <Text style={styles.statTitle}>XP %</Text>
+                      <View style={styles.compareRow}>
+                        {(() => {
+                          const oneMade = Number(playerOneStats.pat_made || 0);
+                          const oneAtt = Number(playerOneStats.pat_att || 0) || 0;
+                          const twoMade = Number(playerTwoStats.pat_made || 0);
+                          const twoAtt = Number(playerTwoStats.pat_att || 0) || 0;
+                          const onePct = oneAtt > 0 ? (oneMade / oneAtt) * 100 : 0;
+                          const twoPct = twoAtt > 0 ? (twoMade / twoAtt) * 100 : 0;
+                          const colors = compareColor(onePct, twoPct, false);
+                          return (
+                            <>
+                              <View style={[styles.valueBox, { backgroundColor: colors[0] }]}> 
+                                <Text style={styles.valueText}>{oneAtt > 0 ? `${formatNumber(onePct)}%` : '0%'}</Text>
+                              </View>
+                              <View style={[styles.valueBox, { backgroundColor: colors[1] }]}> 
+                                <Text style={styles.valueText}>{twoAtt > 0 ? `${formatNumber(twoPct)}%` : '0%'}</Text>
+                              </View>
+                            </>
+                          );
+                        })()}
+                      </View>
+                    </View>
+                  ) : null}
+                  </React.Fragment>
                 );
-              })}
+                });
+              })()}
 
               </View>
 

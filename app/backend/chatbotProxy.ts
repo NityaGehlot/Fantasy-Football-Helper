@@ -116,6 +116,8 @@ function normalizeWeekStats(raw: any): any[] {
     receiving_tds: Number(player.receiving_tds) || 0,
     // Kicker stats
     fg_att: Number(player.fg_att) || 0,
+    fg_made: Number(player.fg_made) || 0,
+    fg_missed: Number(player.fg_missed) || 0,
     fg_made_0_19: Number(player.fg_made_0_19) || 0,
     fg_made_20_29: Number(player.fg_made_20_29) || 0,
     fg_made_30_39: Number(player.fg_made_30_39) || 0,

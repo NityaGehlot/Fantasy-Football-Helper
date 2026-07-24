@@ -725,9 +725,17 @@ export default function PlayerDetailsScreen({ route }: any) {
       return true;
     });
 
-    const weeks = filteredWeekNumbers
+    let weeks = filteredWeekNumbers
       .sort((a, b) => a - b)
       .map((w) => ({ num: w, data: allWeeksStats[w] }));
+
+    // For postseason view, exclude weeks where the player's row explicitly marks the team as eliminated
+    if (seasonScope === 'post') {
+      weeks = weeks.filter((wk: any) => {
+        const teamStatus = String(wk.data?.team_status ?? wk.data?._team_def?.team_status ?? '').toLowerCase().trim();
+        return teamStatus !== 'eliminated';
+      });
+    }
 
     if (weeks.length === 0) return null;
 
@@ -755,12 +763,30 @@ export default function PlayerDetailsScreen({ route }: any) {
       const wkData = wk.data || {};
       if (isWeekBye(wkNum, wkData)) return acc; // exclude bye weeks
       // count as game if main row indicates game_played OR team DEF row exists
-      if (Boolean(wkData.game_played)) return acc + 1;
+      const teamStatus = String(wkData?.team_status ?? wkData?._team_def?.team_status ?? '').toLowerCase().trim();
+      if (Boolean(wkData.game_played) || teamStatus === 'played') return acc + 1;
       if (wkData._team_def) return acc + 1;
       // fallback: if any meaningful stat present for player
       if (hasMeaningfulStats(wkData)) return acc + 1;
       return acc;
     }, 0);
+
+    // If viewing only postseason, compute games played during postseason weeks (19-22)
+    const postseasonGamesPlayed = () => {
+      return weeks.filter((wk: any) => {
+        const wkNum = wk.num;
+        if (wkNum < 19 || wkNum > 22) return false;
+        const wkData = wk.data || {};
+        const teamStatus = String(wkData?.team_status ?? wkData?._team_def?.team_status ?? '').toLowerCase().trim();
+        if (Boolean(wkData.game_played) || teamStatus === 'played') return true;
+        if (wkData._team_def) return true;
+        if (hasMeaningfulStats(wkData)) return true;
+        return false;
+      }).length;
+    };
+
+    // gamesPlayed respects the selected seasonScope
+    const gamesPlayed = seasonScope === 'post' ? postseasonGamesPlayed() : countGames();
 
     if (pos === 'QB') {
       return {
@@ -773,9 +799,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         rushing_yards: sum('rushing_yards'),
         rushing_tds: sum('rushing_tds'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: countGames(),
-        bye_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
-        eliminated_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
+        games: gamesPlayed,
+        bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
+        eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (pos === 'RB') {
@@ -788,9 +814,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         receiving_yards: sum('receiving_yards'),
         receiving_tds: sum('receiving_tds'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: countGames(),
-        bye_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
-        eliminated_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
+        games: gamesPlayed,
+        bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
+        eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (pos === 'WR' || pos === 'TE') {
@@ -803,9 +829,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         rushing_yards: sum('rushing_yards'),
         rushing_tds: sum('rushing_tds'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: countGames(),
-        bye_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
-        eliminated_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
+        games: gamesPlayed,
+        bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
+        eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (pos === 'K') {
@@ -815,9 +841,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         pat_made: sum('pat_made'),
         pat_att: sum('pat_att'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: countGames(),
-        bye_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
-        eliminated_weeks: weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
+        games: gamesPlayed,
+        bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
+        eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (pos === 'DEF') {
@@ -831,9 +857,13 @@ export default function PlayerDetailsScreen({ route }: any) {
         def_safeties: sum('def_safeties'),
         points_allowed: sum('points_allowed'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.filter((w: any) => Boolean(w.data?.game_played)).length,
-        bye_weeks: weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase().includes('bye')).length,
-        eliminated_weeks: weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase() === 'eliminated').length,
+        games: seasonScope === 'post' ? postseasonGamesPlayed() : weeks.filter((w: any) => {
+          const wkData = w.data || {};
+          const teamStatus = String(wkData?.team_status ?? wkData?._team_def?.team_status ?? '').toLowerCase().trim();
+          return Boolean(wkData?.game_played) || teamStatus === 'played' || Boolean(wkData?._team_def);
+        }).length,
+        bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase().includes('bye')).length,
+        eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase() === 'eliminated').length,
       };
     }
     if (isIndividualDefensivePosition(pos)) {
@@ -850,9 +880,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         def_tds: sum('def_tds'),
         def_qb_hits: sum('def_qb_hits'),
         fantasy_points_ppr: sum('fantasy_points_ppr'),
-        games: weeks.filter((w: any) => Boolean(w.data?.game_played)).length,
-        bye_weeks: weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase().includes('bye')).length,
-        eliminated_weeks: weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase() === 'eliminated').length,
+        games: seasonScope === 'post' ? postseasonGamesPlayed() : weeks.filter((w: any) => Boolean(w.data?.game_played)).length,
+        bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase().includes('bye')).length,
+        eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase() === 'eliminated').length,
       };
     }
     return null;
@@ -1094,9 +1124,50 @@ export default function PlayerDetailsScreen({ route }: any) {
                   )}
                 </>
               ) : (
-                <Text style={styles.statLine}>
-                  No stats recorded
-                </Text>
+                (() => {
+                  if (posToUse === 'K') {
+                    const fgMade = Number(currentStats?.fg_made || 0);
+                    const fgAtt = Number(currentStats?.fg_att || 0);
+                    const patMade = Number(currentStats?.pat_made || 0);
+                    const patAtt = Number(currentStats?.pat_att || 0);
+
+                    const fgBuckets: string[] = [];
+                    const sum = (k: string) => Number(currentStats?.[k] || 0);
+                    const totalFG = sum('fg_made_0_19') + sum('fg_made_20_29') + sum('fg_made_30_39') + sum('fg_made_40_49') + sum('fg_made_50_59') + sum('fg_made_60_');
+                    if (sum('fg_made_0_19') > 0) fgBuckets.push(`${sum('fg_made_0_19')} FG (0-19)`);
+                    if (sum('fg_made_20_29') > 0) fgBuckets.push(`${sum('fg_made_20_29')} FG (20-29)`);
+                    if (sum('fg_made_30_39') > 0) fgBuckets.push(`${sum('fg_made_30_39')} FG (30-39)`);
+                    if (sum('fg_made_40_49') > 0) fgBuckets.push(`${sum('fg_made_40_49')} FG (40-49)`);
+                    if (sum('fg_made_50_59') > 0) fgBuckets.push(`${sum('fg_made_50_59')} FG (50-59)`);
+                    if (sum('fg_made_60_') > 0) fgBuckets.push(`${sum('fg_made_60_')} FG (60+)`);
+
+                    return (
+                      <View>
+                        {/* show made FG buckets and missed FG distances if present */}
+                        {(() => {
+                          const missedBuckets: string[] = [];
+                          if (sum('fg_missed_0_19') > 0) missedBuckets.push(`${sum('fg_missed_0_19')} (0-19)`);
+                          if (sum('fg_missed_20_29') > 0) missedBuckets.push(`${sum('fg_missed_20_29')} (20-29)`);
+                          if (sum('fg_missed_30_39') > 0) missedBuckets.push(`${sum('fg_missed_30_39')} (30-39)`);
+                          if (sum('fg_missed_40_49') > 0) missedBuckets.push(`${sum('fg_missed_40_49')} (40-49)`);
+                          if (sum('fg_missed_50_59') > 0) missedBuckets.push(`${sum('fg_missed_50_59')} (50-59)`);
+                          if (sum('fg_missed_60_') > 0) missedBuckets.push(`${sum('fg_missed_60_')} (60+)`);
+
+                          const madePart = fgBuckets.length ? `— ${fgBuckets.join(', ')}` : '';
+                          const missedPart = missedBuckets.length ? ` — Missed: ${missedBuckets.join(', ')}` : '';
+                          return <Text style={styles.statLine}>FG: {fgMade}/{fgAtt} {madePart}{missedPart}</Text>;
+                        })()}
+                        <Text style={styles.statLine}>XP: {patMade}/{patAtt}</Text>
+                      </View>
+                    );
+                  }
+
+                  return (
+                    <Text style={styles.statLine}>
+                      No stats recorded
+                    </Text>
+                  );
+                })()
               )}
             </>
           );
@@ -1295,9 +1366,47 @@ export default function PlayerDetailsScreen({ route }: any) {
                   // Already showed bye/eliminated info above; no extra message
                   null
                 ) : (
-                  <Text style={styles.statLine}>
-                    No stats recorded
-                  </Text>
+                  (() => {
+                    const pos = posToUse;
+                    if (pos === 'K') {
+                      const sum = (k: string) => Number(weekStats?.[k] || 0);
+                      const fgMade = sum('fg_made_0_19') + sum('fg_made_20_29') + sum('fg_made_30_39') + sum('fg_made_40_49') + sum('fg_made_50_59') + sum('fg_made_60_');
+                      const fgAtt = Number(weekStats?.fg_att || 0) || (fgMade > 0 ? fgMade : 0);
+                      const patMade = Number(weekStats?.pat_made || 0);
+                      const patAtt = Number(weekStats?.pat_att || 0);
+                      const fgBuckets: string[] = [];
+                      if (sum('fg_made_0_19') > 0) fgBuckets.push(`${sum('fg_made_0_19')} (0-19)`);
+                      if (sum('fg_made_20_29') > 0) fgBuckets.push(`${sum('fg_made_20_29')} (20-29)`);
+                      if (sum('fg_made_30_39') > 0) fgBuckets.push(`${sum('fg_made_30_39')} (30-39)`);
+                      if (sum('fg_made_40_49') > 0) fgBuckets.push(`${sum('fg_made_40_49')} (40-49)`);
+                      if (sum('fg_made_50_59') > 0) fgBuckets.push(`${sum('fg_made_50_59')} (50-59)`);
+                      if (sum('fg_made_60_') > 0) fgBuckets.push(`${sum('fg_made_60_')} (60+)`);
+
+                        return (
+                          <View>
+                            {(() => {
+                              const missedBuckets: string[] = [];
+                              if (sum('fg_missed_0_19') > 0) missedBuckets.push(`${sum('fg_missed_0_19')} (0-19)`);
+                              if (sum('fg_missed_20_29') > 0) missedBuckets.push(`${sum('fg_missed_20_29')} (20-29)`);
+                              if (sum('fg_missed_30_39') > 0) missedBuckets.push(`${sum('fg_missed_30_39')} (30-39)`);
+                              if (sum('fg_missed_40_49') > 0) missedBuckets.push(`${sum('fg_missed_40_49')} (40-49)`);
+                              if (sum('fg_missed_50_59') > 0) missedBuckets.push(`${sum('fg_missed_50_59')} (50-59)`);
+                              if (sum('fg_missed_60_') > 0) missedBuckets.push(`${sum('fg_missed_60_')} (60+)`);
+
+                              const madePart = fgBuckets.length ? ` — ${fgBuckets.join(', ')}` : '';
+                              const missedPart = missedBuckets.length ? ` — Missed: ${missedBuckets.join(', ')}` : '';
+                              return <Text style={styles.statLine}>FG: {fgMade}/{fgAtt}{madePart}{missedPart}</Text>;
+                            })()}
+                            <Text style={styles.statLine}>XP: {patMade}/{patAtt}</Text>
+                          </View>
+                        );
+                    }
+                    return (
+                      <Text style={styles.statLine}>
+                        No stats recorded
+                      </Text>
+                    );
+                  })()
                 )}
 
                 {/* Show team defense stats for this week when available (only when viewing a team DEF) */}

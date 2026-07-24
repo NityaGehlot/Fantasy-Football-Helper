@@ -21,9 +21,9 @@ export default function HomeScreen() {
   const navigation = useNavigation<NavigationProp>();
 
   const OFFENSE_POSITIONS = ['QB', 'RB', 'WR', 'TE', 'K'];
-  const DEFENSE_TRENCHES = ['DEF', 'DL', 'DE', 'DT'];
-  const DEFENSE_LINEBACKERS = ['LB'];
-  const DEFENSE_SECONDARY = ['CB', 'DB', 'SS', 'FS'];
+  const DEFENSE_TRENCHES = ['DL', 'DE', 'DT', 'NT'];
+  const DEFENSE_LINEBACKERS = ['LB', 'ILB', 'MLB', 'OLB'];
+  const DEFENSE_SECONDARY = ['CB', 'DB', 'S', 'SS', 'FS'];
   const NFL_TEAMS = [
     'ARI','ATL','BAL','BUF','CAR','CHI','CIN','CLE',
     'DAL','DEN','DET','GB','HOU','IND','JAX','KC',
@@ -42,9 +42,10 @@ export default function HomeScreen() {
         const matchesQuery = !q ||
           (p.full_name?.toLowerCase().includes(q)) ||
           (p.position?.toLowerCase() === q);
-        const matchesPos = filterPositions.length === 0 || filterPositions.includes(String(p.position || ''));
+        const matchesPos = filterPositions.length === 0 || filterPositions.includes(String(p.position_for_FFHelper || p.position || ''));
         const matchesTeam = filterTeams.length === 0 || filterTeams.includes(String(p.team || ''));
-        return matchesQuery && matchesPos && matchesTeam && p.active;
+        const isTeamDef = String((p.position_for_FFHelper || p.position || '').toUpperCase()).trim() === 'DEF';
+        return matchesQuery && matchesPos && matchesTeam && (p.active || isTeamDef);
       })
       .map(([id, p]: [string, any]) => ({ ...p, player_id: id }))
       .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
@@ -351,6 +352,14 @@ export default function HomeScreen() {
 
           <View style={styles.filterGroup}>
             <Text style={styles.filterSectionLabel}>Defense</Text>
+            <View style={{ flexDirection: 'row', marginBottom: 8 }}>
+              <TouchableOpacity
+                style={[styles.pill, filterPositions.includes('DEF') && styles.pillActive, { marginRight: 8 }]}
+                onPress={() => setFilterPositions(prev => toggleValue(prev, 'DEF'))}
+              >
+                <Text style={[styles.pillText, filterPositions.includes('DEF') && styles.pillTextActive]}>DEF</Text>
+              </TouchableOpacity>
+            </View>
 
             <Text style={styles.subFilterLabel}>Trenches</Text>
             <View style={styles.pillRow}>
