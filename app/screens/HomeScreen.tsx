@@ -1,10 +1,12 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, Image, TouchableOpacity, FlatList, ScrollView, ActivityIndicator, TextInput, Modal, Pressable } from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, Image, TouchableOpacity, FlatList, ScrollView, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { getPlayersFromGithub, getTrendingPlayers, TrendType } from '../services/sleeperAPI';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../AppNavigator';
+import PlayerCard from '../components/PlayerCard';
+import SearchBarAndFilter from '../components/SearchBarAndFilter';
 
 export default function HomeScreen() {
   const [players, setPlayers] = useState<any>({});
@@ -12,10 +14,7 @@ export default function HomeScreen() {
   const [loadingPlayers, setLoadingPlayers] = useState(true);
   const [loadingTrending, setLoadingTrending] = useState(true);
   const [trendType, setTrendType] = useState<TrendType>('add');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterPositions, setFilterPositions] = useState<string[]>([]);
-  const [filterTeams, setFilterTeams] = useState<string[]>([]);
-  const [showFilterModal, setShowFilterModal] = useState(false);
+  
 
   type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'MainTabs'>;
   const navigation = useNavigation<NavigationProp>();
@@ -31,29 +30,7 @@ export default function HomeScreen() {
     'NYJ','PHI','PIT','SEA','SF','TB','TEN','WAS'
   ];
 
-  const toggleValue = (values: string[], value: string) =>
-    values.includes(value) ? values.filter(v => v !== value) : [...values, value];
-
-  const searchResults = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q && filterPositions.length === 0 && filterTeams.length === 0) return [];
-    return Object.entries(players)
-      .filter(([id, p]: [string, any]) => {
-        const matchesQuery = !q ||
-          (p.full_name?.toLowerCase().includes(q)) ||
-          (p.position?.toLowerCase() === q);
-        const matchesPos = filterPositions.length === 0 || filterPositions.includes(String(p.position_for_FFHelper || p.position || ''));
-        const matchesTeam = filterTeams.length === 0 || filterTeams.includes(String(p.team || ''));
-        const isTeamDef = String((p.position_for_FFHelper || p.position || '').toUpperCase()).trim() === 'DEF';
-        return matchesQuery && matchesPos && matchesTeam && (p.active || isTeamDef);
-      })
-      .map(([id, p]: [string, any]) => ({ ...p, player_id: id }))
-      .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
-      .slice(0, 30);
-  }, [searchQuery, filterPositions, filterTeams, players]);
-
-  const isSearchActive = searchQuery.trim().length > 0 || filterPositions.length > 0 || filterTeams.length > 0;
-  const activeFilterCount = filterPositions.length + filterTeams.length;
+  
 
   useEffect(() => {
     const loadPlayers = async () => {
@@ -134,19 +111,15 @@ export default function HomeScreen() {
         <View style={styles.rankBadge}>
           <Text style={styles.rankText}>{index + 1}</Text>
         </View>
-        <View style={[styles.positionBadge, { backgroundColor: getPositionColor(posToUse) }]}> 
-          <Text style={styles.positionText}>{posToUse || player.position}</Text>
-        </View>
-        <Image
-          source={{
-            uri: posToUse === 'DEF' || player.position === 'DEF' ? getTeamLogo(player.team) : getHeadshotUrl(player)
-          }}
-          style={styles.playerImage}
+
+        <PlayerCard
+          player={{ ...player, player_id: item.player_id }}
+          compact
+          position={posToUse}
+          positionColor={getPositionColor(posToUse)}
+          imageUri={posToUse === 'DEF' || player.position === 'DEF' ? getTeamLogo(player.team) : getHeadshotUrl(player)}
         />
-        <View style={styles.playerInfo}>
-          <Text style={styles.playerName}>{player.full_name}</Text>
-          <Text style={styles.playerTeam}>{posToUse || player.position} • {player.team}</Text>
-        </View>
+
         <View style={styles.trendInfo}>
           <View style={styles.trendCountRow}>
             <Text style={[styles.trendCount, isAdd ? styles.trendCountAdd : styles.trendCountDrop]}>{item.count}</Text>
@@ -165,31 +138,27 @@ export default function HomeScreen() {
 
   const renderSearchResult = ({ item }: { item: any }) => (
     <TouchableOpacity
-      style={styles.searchResultItem}
-      onPress={() =>
-        navigation.navigate('PlayerDetails', {
-          player: item,
-          stats: {},
-          week: 1,
-          fantasyPoints: 0,
-        })
-      }
-    >
-      <View style={[styles.positionBadge, { backgroundColor: getPositionColor(String(item.position_for_FFHelper || item.position || item.position_listed_on_sleeper || '').toUpperCase().trim()) }]}>
-      <Text style={styles.positionText}>{String(item.position_for_FFHelper || item.position || item.position_listed_on_sleeper || '').toUpperCase().trim() || item.position}</Text>
-      </View>
-      <Image
-        source={{
-          uri: (String(item.position_for_FFHelper || item.position || '').toUpperCase().trim() === 'DEF' || item.position === 'DEF') ? getTeamLogo(item.team) : getHeadshotUrl(item)
-        }}
-        style={styles.searchResultImage}
-      />
-      <View style={styles.playerInfo}>
-        <Text style={styles.playerName}>{item.full_name}</Text>
-          <Text style={styles.playerTeam}>{String(item.position_for_FFHelper || item.position || '').toUpperCase().trim() || item.position} • {item.team || '—'}</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={18} color="#aaa" />
-    </TouchableOpacity>
+        style={styles.searchResultItem}
+        onPress={() =>
+          navigation.navigate('PlayerDetails', {
+            player: item,
+            stats: {},
+            week: 1,
+            fantasyPoints: 0,
+          })
+        }
+      >
+        <View style={{ flex: 1 }}>
+          <PlayerCard
+            player={item}
+            compact
+            position={String(item.position_for_FFHelper || item.position || item.position_listed_on_sleeper || '').toUpperCase().trim()}
+            positionColor={getPositionColor(String(item.position_for_FFHelper || item.position || item.position_listed_on_sleeper || '').toUpperCase().trim())}
+            imageUri={(String(item.position_for_FFHelper || item.position || '').toUpperCase().trim() === 'DEF' || item.position === 'DEF') ? getTeamLogo(item.team) : getHeadshotUrl(item)}
+          />
+        </View>
+        <Ionicons name="chevron-forward" size={20} color="#aaa" style={{ marginLeft: 10 }} />
+      </TouchableOpacity>
   );
 
   if (loadingPlayers || loadingTrending) {
@@ -206,81 +175,11 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="handled">
-        {/* ── Search heading ── */}
         <View style={styles.sectionHeader}>
           <Text style={styles.title}>Search for Players</Text>
         </View>
 
-        {/* ── Search bar ── */}
-        <View style={styles.searchRow}>
-          <View style={styles.searchInputWrap}>
-            <Ionicons name="search" size={18} color="#999" style={{ marginRight: 8 }} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search players by name or position…"
-              placeholderTextColor="#999"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              clearButtonMode="while-editing"
-            />
-            {searchQuery.trim().length > 0 && (
-              <TouchableOpacity
-                onPress={() => setSearchQuery('')}
-                style={styles.searchClearBtn}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Ionicons name="close-circle" size={18} color="#999" />
-              </TouchableOpacity>
-            )}
-          </View>
-          <TouchableOpacity
-            style={[styles.filterBtn, activeFilterCount > 0 && styles.filterBtnActive]}
-            onPress={() => setShowFilterModal(true)}
-          >
-            <Ionicons name="options-outline" size={20} color={activeFilterCount > 0 ? '#fff' : '#4f46e5'} />
-            {activeFilterCount > 0 && (
-              <View style={styles.filterBadge}>
-                <Text style={styles.filterBadgeText}>{activeFilterCount}</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-        </View>
-
-        {/* ── Active filter chips ── */}
-        {!!(filterPositions.length || filterTeams.length) && (
-          <View style={styles.chipRow}>
-            {filterPositions.map((pos) => (
-              <TouchableOpacity key={`pos-${pos}`} style={styles.chip} onPress={() => setFilterPositions(prev => prev.filter(v => v !== pos))}>
-                <Text style={styles.chipText}>{pos}</Text>
-                <Ionicons name="close" size={13} color="#4f46e5" />
-              </TouchableOpacity>
-            ))}
-            {filterTeams.map((team) => (
-              <TouchableOpacity key={`team-${team}`} style={styles.chip} onPress={() => setFilterTeams(prev => prev.filter(v => v !== team))}>
-                <Text style={styles.chipText}>{team}</Text>
-                <Ionicons name="close" size={13} color="#4f46e5" />
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
-
-        {/* ── Search results (shown while searching) ── */}
-        {isSearchActive && (
-          <View style={styles.searchResultsContainer}>
-            {searchResults.length === 0 ? (
-              <Text style={styles.emptyText}>No players found</Text>
-            ) : (
-              <FlatList
-                data={searchResults}
-                keyExtractor={(item) => item.player_id}
-                renderItem={renderSearchResult}
-                showsVerticalScrollIndicator={true}
-                nestedScrollEnabled={true}
-                scrollEnabled={true}
-              />
-            )}
-          </View>
-        )}
+        <SearchBarAndFilter players={players} onSelect={(p) => navigation.navigate('PlayerDetails', { player: p, stats: {}, week: 1, fantasyPoints: 0 })} />
 
         {/* ── Trending heading ── */}
         <View style={styles.trendingSectionHeader}>
@@ -328,104 +227,7 @@ export default function HomeScreen() {
         </View>
       </ScrollView>
 
-      {/* ── Filter Modal ── */}
-      <Modal visible={showFilterModal} animationType="slide" transparent>
-        <Pressable style={styles.modalOverlay} onPress={() => setShowFilterModal(false)} />
-        <View style={styles.modalSheet}>
-          <View style={styles.modalHandle} />
-          <Text style={styles.modalTitle}>Filter Players</Text>
-
-          <View style={styles.filterGroup}>
-            <Text style={styles.filterSectionLabel}>Offense</Text>
-            <View style={styles.pillRow}>
-              {OFFENSE_POSITIONS.map(pos => (
-                <TouchableOpacity
-                  key={pos}
-                  style={[styles.pill, filterPositions.includes(pos) && styles.pillActive]}
-                  onPress={() => setFilterPositions(prev => toggleValue(prev, pos))}
-                >
-                  <Text style={[styles.pillText, filterPositions.includes(pos) && styles.pillTextActive]}>{pos}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          <View style={styles.filterGroup}>
-            <Text style={styles.filterSectionLabel}>Defense</Text>
-            <View style={{ flexDirection: 'row', marginBottom: 8 }}>
-              <TouchableOpacity
-                style={[styles.pill, filterPositions.includes('DEF') && styles.pillActive, { marginRight: 8 }]}
-                onPress={() => setFilterPositions(prev => toggleValue(prev, 'DEF'))}
-              >
-                <Text style={[styles.pillText, filterPositions.includes('DEF') && styles.pillTextActive]}>DEF</Text>
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.subFilterLabel}>Trenches</Text>
-            <View style={styles.pillRow}>
-              {DEFENSE_TRENCHES.map(pos => (
-                <TouchableOpacity
-                  key={pos}
-                  style={[styles.pill, filterPositions.includes(pos) && styles.pillActive]}
-                  onPress={() => setFilterPositions(prev => toggleValue(prev, pos))}
-                >
-                  <Text style={[styles.pillText, filterPositions.includes(pos) && styles.pillTextActive]}>{pos}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <Text style={styles.subFilterLabel}>Linebackers</Text>
-            <View style={styles.pillRow}>
-              {DEFENSE_LINEBACKERS.map(pos => (
-                <TouchableOpacity
-                  key={pos}
-                  style={[styles.pill, filterPositions.includes(pos) && styles.pillActive]}
-                  onPress={() => setFilterPositions(prev => toggleValue(prev, pos))}
-                >
-                  <Text style={[styles.pillText, filterPositions.includes(pos) && styles.pillTextActive]}>{pos}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <Text style={styles.subFilterLabel}>Secondary</Text>
-            <View style={styles.pillRow}>
-              {DEFENSE_SECONDARY.map(pos => (
-                <TouchableOpacity
-                  key={pos}
-                  style={[styles.pill, filterPositions.includes(pos) && styles.pillActive]}
-                  onPress={() => setFilterPositions(prev => toggleValue(prev, pos))}
-                >
-                  <Text style={[styles.pillText, filterPositions.includes(pos) && styles.pillTextActive]}>{pos}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          <Text style={styles.filterSectionLabel}>Team</Text>
-          <View style={styles.pillRow}>
-            {NFL_TEAMS.map(team => (
-              <TouchableOpacity
-                key={team}
-                style={[styles.pill, filterTeams.includes(team) && styles.pillActive]}
-                onPress={() => setFilterTeams(prev => toggleValue(prev, team))}
-              >
-                <Text style={[styles.pillText, filterTeams.includes(team) && styles.pillTextActive]}>{team}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <TouchableOpacity
-            style={styles.clearBtn}
-            onPress={() => { setFilterPositions([]); setFilterTeams([]); }}
-          >
-            <Text style={styles.clearBtnText}>Clear All Filters</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.applyBtn} onPress={() => setShowFilterModal(false)}>
-            <Text style={styles.applyBtnText}>Apply</Text>
-          </TouchableOpacity>
-        </View>
-      </Modal>
+      {/* Filter modal moved into SearchBarAndFilter component */}
     </SafeAreaView>
   );
 }
@@ -563,11 +365,13 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   trendInfo: {
-    alignItems: 'center',
+    flex: 1,
+    alignItems: 'flex-end',
   },
   trendCountRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'flex-end',
   },
   trendCount: {
     fontSize: 18,
@@ -686,6 +490,7 @@ const styles = StyleSheet.create({
     padding: 14,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
+    justifyContent: 'space-between',
   },
   searchResultImage: {
     width: 44,

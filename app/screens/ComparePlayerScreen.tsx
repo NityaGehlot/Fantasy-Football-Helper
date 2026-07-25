@@ -18,6 +18,7 @@ import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../AppNavigator";
 
 import { getPlayersFromGithub } from "../services/sleeperAPI";
+import SearchBarAndFilter from '../components/SearchBarAndFilter';
 import { getPlayerStatsByWeek } from "../services/nflApi";
 
 type NavigationProp = NativeStackNavigationProp<
@@ -32,7 +33,6 @@ export default function ComparePlayerScreen({ route }: any) {
   const [playerOne, setPlayerOne] = useState<any>(player || null);
 
   const [allPlayers, setAllPlayers] = useState<any[]>([]);
-  const [search, setSearch] = useState("");
 
   const [playerOneStats, setPlayerOneStats] = useState<any>(null);
   const [playerTwoStats, setPlayerTwoStats] = useState<any>(null);
@@ -393,26 +393,7 @@ export default function ComparePlayerScreen({ route }: any) {
     setPlayerTwoStats(null);
   }, [statScope]);
 
-  const filteredPlayers = useMemo(() => {
-    if (!search.length) return [];
-    const referencePlayer = playerOne || selectedPlayer || player;
-    const group = getPositionGroup(referencePlayer?.position || referencePlayer?.position);
-    const applyGroupFilter = Boolean(group && group !== 'OTHER');
-
-        return allPlayers
-      .filter((p: any) => {
-        // don't show players already selected in either slot
-        if (playerOne && String(p.player_id) === String(playerOne.player_id)) return false;
-        if (selectedPlayer && String(p.player_id) === String(selectedPlayer.player_id)) return false;
-        if (!p.full_name) return false;
-        const matchesQuery = p.full_name.toLowerCase().includes(search.toLowerCase());
-        if (!matchesQuery) return false;
-        if (!applyGroupFilter) return true; // no position-group restriction
-        // Use canCompare to allow compatible groups (e.g. DL <-> LB)
-        return canCompare(referencePlayer?.position, p.position);
-      })
-      .slice(0, 15);
-  }, [search, allPlayers, playerOne, player]);
+ 
 
   function compareColor(
     one: number,
@@ -698,77 +679,30 @@ export default function ComparePlayerScreen({ route }: any) {
       </View>
 
       {/* Search */}
-
       <View style={styles.searchSection}>
         {activeSlot !== null && (
-          <>
-            <TextInput
-              placeholder="Search player..."
-              placeholderTextColor="#999"
-              value={search}
-              onChangeText={setSearch}
-              style={styles.searchInput}
-            />
-
-            {search.length > 0 && (
-              <FlatList
-                data={filteredPlayers}
-                keyExtractor={(item: any) => String(item.player_id)}
-                keyboardShouldPersistTaps="handled"
-                style={styles.searchResults}
-                renderItem={({ item }: any) => {
-                  const referencePlayer = playerOne || selectedPlayer || player;
-                  const group = getPositionGroup(referencePlayer?.position || referencePlayer?.position);
-                  const applyGroupFilter = Boolean(group && group !== 'OTHER');
-                  const allowed = !applyGroupFilter || canCompare(referencePlayer?.position, item.position);
-
-                  return (
-                      <TouchableOpacity
-                      style={[styles.searchRow, !allowed && { opacity: 0.5 }]}
-                      onPress={() => {
-                        if (!allowed) {
-                          Alert.alert("Cannot compare", "You can only compare players of the same position group.");
-                          return;
-                        }
-
-                        // Determine target slot
-                        const targetSlot = activeSlot ? activeSlot : (!playerOne ? 'one' : 'two');
-
-                        // If assigning to an empty slot while the other slot already has a player,
-                        // ensure the groups match.
-                        if (targetSlot === 'one' && selectedPlayer) {
-                          if (!canCompare(item.position, selectedPlayer.position)) {
-                            Alert.alert('Cannot compare', 'Players must be of the same position group.');
-                            return;
-                          }
-                        }
-
-                        if (targetSlot === 'two' && playerOne) {
-                          if (!canCompare(playerOne.position, item.position)) {
-                            Alert.alert('Cannot compare', 'Players must be of the same position group.');
-                            return;
-                          }
-                        }
-
-                        if (targetSlot === 'one') setPlayerOne(item);
-                        else setSelectedPlayer(item);
-
-                        setSearch("");
-                        setActiveSlot(null);
-                      }}
-                    >
-                      <Image source={{ uri: getHeadshot(item) }} style={styles.searchHeadshot} />
-
-                      <View>
-                        <Text style={styles.searchName}>{item.full_name}</Text>
-                        <Text style={styles.searchTeam}>{item.position} • {item.team}</Text>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                }}
-              />
-            )}
-          </>
+          <SearchBarAndFilter
+            players={allPlayers.reduce((acc: any, p: any) => { acc[String(p.player_id)] = p; return acc; }, {})}
+            onSelect={(item) => {
+              // enforce compare compatibility
+              const targetSlot = activeSlot ? activeSlot : (!playerOne ? 'one' : 'two');
+              if (targetSlot === 'one' && selectedPlayer) {
+                if (!canCompare(item.position, selectedPlayer.position)) {
+                  Alert.alert('Cannot compare', 'Players must be of the same position group.');
+                  return;
+                }
+              }
+              if (targetSlot === 'two' && playerOne) {
+                if (!canCompare(playerOne.position, item.position)) {
+                  Alert.alert('Cannot compare', 'Players must be of the same position group.');
+                  return;
+                }
+              }
+              if (targetSlot === 'one') setPlayerOne(item);
+              else setSelectedPlayer(item);
+              setActiveSlot(null);
+            }}
+          />
         )}
       </View>
 

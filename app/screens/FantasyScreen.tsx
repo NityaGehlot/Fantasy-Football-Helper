@@ -30,6 +30,7 @@ import { User, Roster } from '../types';
 import { useNavigation } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../AppNavigator";
+import PlayerCard from '../components/PlayerCard';
 
 const MAX_FANTASY_WEEK_VISIBLE = 18;
 const OFFSEASON_DEFAULT_WEEK = 17;
@@ -580,106 +581,33 @@ const formatPlayerStats = (position: string, stats: any) => {
   const allIds = myWeekMatchup?.players || [];
   const enrichedPlayers = allIds.map((id: string | number) => ({ ...players[id], player_id: id }));
   const sortedList = sortPlayers(enrichedPlayers, starterIds);
-  const startersList = sortedList.filter(p => starterIds.includes(p.player_id));
   const benchList = sortedList.filter(p => !starterIds.includes(p.player_id));
+
+  // Build starters with assigned slots (use league.roster_positions when available)
+  const startersWithSlot = sortedList
+    .filter(p => starterIds.includes(p.player_id))
+    .map(p => {
+      const starterIndex = starterIds.indexOf(p.player_id);
+      const assignedSlot = (league?.roster_positions && starterIndex >= 0)
+        ? String(league.roster_positions[starterIndex]).toUpperCase()
+        : (p.position || '').toUpperCase();
+      return { ...p, assignedSlot };
+    });
+
+  // Sort starters so FLEX appears between TE and K
+  const SLOT_ORDER: Record<string, number> = { QB: 1, RB: 2, WR: 3, TE: 4, FLEX: 5, K: 6, DEF: 7 };
+  const startersList = startersWithSlot.sort((a, b) => {
+    const oa = SLOT_ORDER[a.assignedSlot] ?? 99;
+    const ob = SLOT_ORDER[b.assignedSlot] ?? 99;
+    if (oa !== ob) return oa - ob;
+    return (a.full_name || '').localeCompare(b.full_name || '');
+  });
   const getTeamLogo = (teamAbbrev: string) => {
     if (!teamAbbrev) return 'https://upload.wikimedia.org/wikipedia/commons/1/14/No_Image_Available.jpg';
     return `https://static.www.nfl.com/t_q-best/league/api/clubs/logos/${teamAbbrev.trim()}`;
   };
 
-  const renderPlayerRow = (player: any) => {
-  const stats = getPlayerNFLStats(player.player_id, selectedWeek);
-  const statLine = formatPlayerStats(player.position, stats);
-
-  // ✅ Normalize to uppercase for comparison
-  const injuryStatus = String(stats?.injury_status ?? "").toUpperCase().trim();
-  const injuryType =
-    stats?.primary_injury ||
-    stats?.practice_primary_injury ||
-    stats?.secondary_injury ||
-    "";
-
-  const isOut = ["OUT", "IR", "IR-R", "INJURED RESERVE"].includes(injuryStatus);
-  const isQuestionable = ["QUESTIONABLE", "DOUBTFUL"].includes(injuryStatus);
-  const hasInjuryConcern = isOut || isQuestionable;
-  const statusLabel = isOut ? "(Out)" : isQuestionable ? "(Questionable)" : "";
-
-  return (
-    <TouchableOpacity
-      key={player.player_id}
-      style={styles.playerRow}
-      onPress={() =>
-        navigation.navigate("PlayerDetails", {
-          player,
-          stats,
-          week: selectedWeek,
-          fantasyPoints: getPointsThisWeek(player.player_id)
-        })
-      }
-    >
-      <View style={[styles.positionBadgeRect, { backgroundColor: getPositionColor(player.position) }]}>
-        <Text style={styles.positionBadgeText}>{player.position}</Text>
-      </View>
-
-      <Image
-        source={{
-          uri:
-            player.position === "DEF"
-              ? getTeamLogo(stats?.team || player.team)
-              : getHeadshotUrl(player)
-        }}
-        style={styles.playerImage}
-      />
-
-      <View style={{ marginLeft: 10, flex: 1 }}>
-
-        {/* ✅ Name + injury badge */}
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Text style={styles.playerName}>{player.full_name}</Text>
-          {isOut && (
-            <View style={{ backgroundColor: "#e53e3e", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
-              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 12 }}>O</Text>
-            </View>
-          )}
-          {isQuestionable && (
-            <View style={{ backgroundColor: "#d69e2e", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
-              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 12 }}>Q</Text>
-            </View>
-          )}
-          {statusLabel ? (
-            <Text style={{ fontSize: 12, color: isOut ? "#e53e3e" : "#d69e2e", fontWeight: "600" }}>
-              {statusLabel}
-            </Text>
-          ) : null}
-        </View>
-
-        <Text style={styles.playerSubText}>{player.position} • {stats.team}</Text>
-
-        <View style={{ marginTop: 4 }}>
-          {hasInjuryConcern && injuryType ? (
-            <Text style={{ fontSize: 12, color: isOut ? "#e53e3e" : "#d69e2e", marginBottom: 4 }}>
-              {injuryType}
-            </Text>
-          ) : null}
-          {statLine && statLine.length > 0 ? (
-            statLine.map((line, index) => (
-              <Text key={index} style={[styles.statLine, { marginTop: index === 0 ? 0 : 2 }]}> 
-                {line}
-              </Text>
-            ))
-          ) : (
-            <Text style={styles.statLine}>No stats recorded</Text>
-          )}
-        </View>
-
-      </View>
-
-      <View style={styles.playerStats}>
-        <Text style={styles.statText}>{getPointsThisWeek(player.player_id).toFixed(2)}</Text>
-      </View>
-    </TouchableOpacity>
-  );
-};
+// Replaced inline player row with `PlayerCard` component below
 
 
   const { points, result } = getTeamWeeklyResult();
@@ -826,10 +754,59 @@ const formatPlayerStats = (position: string, stats: any) => {
       {viewedRoster && (
         <ScrollView style={{ flex: 1 }}>
           <Text style={styles.subTitle}>Starters</Text>
-          {startersList.map(renderPlayerRow)}
+          {startersList.map((player) => {
+            const stats = getPlayerNFLStats(player.player_id, selectedWeek);
+            const statLine = formatPlayerStats(player.position, stats);
+            const imageUri = player.position === 'DEF' ? getTeamLogo(stats?.team || player.team) : getHeadshotUrl(player);
+            const points = getPointsThisWeek(player.player_id);
+            const starterIndex = starterIds.indexOf(player.player_id);
+            const assignedSlot = (league?.roster_positions && typeof starterIndex === 'number' && starterIndex >= 0)
+              ? league.roster_positions[starterIndex]
+              : player.position;
+
+            const positionToShow = assignedSlot || player.position;
+
+            return (
+              <TouchableOpacity
+                key={player.player_id}
+                style={styles.playerRow}
+                onPress={() =>
+                  navigation.navigate('PlayerDetails', {
+                    player,
+                    stats,
+                    week: selectedWeek,
+                    fantasyPoints: points,
+                  })
+                }
+              >
+                <PlayerCard player={player} stats={stats} statLine={statLine} points={points} imageUri={imageUri} position={positionToShow} positionColor={getPositionColor(positionToShow || player.position)} />
+              </TouchableOpacity>
+            );
+          })}
 
           <Text style={styles.subTitle}>Bench</Text>
-          {benchList.map(renderPlayerRow)}
+          {benchList.map((player) => {
+            const stats = getPlayerNFLStats(player.player_id, selectedWeek);
+            const statLine = formatPlayerStats(player.position, stats);
+            const imageUri = player.position === 'DEF' ? getTeamLogo(stats?.team || player.team) : getHeadshotUrl(player);
+            const points = getPointsThisWeek(player.player_id);
+            return (
+              <TouchableOpacity
+                key={player.player_id}
+                style={styles.playerRow}
+                onPress={() =>
+                  navigation.navigate('PlayerDetails', {
+                    player,
+                    stats,
+                    week: selectedWeek,
+                    fantasyPoints: points,
+                  })
+                }
+              >
+                <PlayerCard player={player} stats={stats} statLine={statLine} points={points} imageUri={imageUri} position={player.position} positionColor={getPositionColor(player.position)} />
+              </TouchableOpacity>
+            );
+          })}
         </ScrollView>
       )}
     </View>
@@ -860,8 +837,8 @@ const styles = StyleSheet.create({
   positionBadgeRect: { width: 45, height: 28, borderRadius: 6, justifyContent: 'center', alignItems: 'center', marginRight: 10 },
   positionBadgeText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   statsHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, paddingRight: 14 },
-  playerStats: { flexDirection: 'row', width: 50 },
-  statText: { fontSize: 14, fontWeight: '700', textAlign: 'right' },
+  playerStats: { width: 72, alignItems: 'flex-end' },
+  statText: { fontSize: 18, fontWeight: '800', textAlign: 'right' },
   statLine: { fontSize: 12, color: '#333' },
   setMyTeamButton: {
     backgroundColor: '#2563eb',

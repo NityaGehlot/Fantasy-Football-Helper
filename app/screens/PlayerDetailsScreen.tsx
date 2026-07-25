@@ -62,7 +62,7 @@ export default function PlayerDetailsScreen({ route }: any) {
     if (pos === 'RB') return 'rb';
     if (pos === 'WR') return 'wr';
     if (pos === 'TE') return 'te';
-    if (pos === 'K') return 'k';
+    if (pos === 'K' || pos === 'PK' || pos === 'P') return 'k';
     if (pos === 'C') return 'c';
     if (pos === 'CB') return 'cb';
     if (pos === 'DB') return 'db';
@@ -240,7 +240,7 @@ export default function PlayerDetailsScreen({ route }: any) {
     const loadNews = async () => {
       setLoadingNews(true);
       try {
-        const fileKey = getNewsFileKey(player?.position);
+        const fileKey = getNewsFileKey(player?.position || player?.position_for_FFHelper);
         if (!fileKey) {
           setPlayerNews([]);
           setTeamNews([]);
