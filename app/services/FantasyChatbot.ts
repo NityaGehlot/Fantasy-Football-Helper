@@ -1,5 +1,7 @@
 // services/FantasyChatbot.ts
 
+import { getApiBaseUrl } from "./apiBaseUrl";
+
 // ---- Types ----
 export type PlayerStats = any[];      // must be array (not null)
 export type MatchupData = any[];      // same here
@@ -30,7 +32,7 @@ export async function fantasyChatResponse(
   myTeam?: MyTeamPayload | null
 ): Promise<string> {
   try {
-    const res = await fetch("http://127.0.0.1:4000/fantasy-chat", {
+    const res = await fetch(`${getApiBaseUrl()}/fantasy-chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

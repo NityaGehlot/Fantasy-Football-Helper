@@ -11,6 +11,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { auth } from "../services/firebase";
 import { getLeague } from "../services/sleeperAPI";
 import { fantasyChatResponse } from "../services/FantasyChatbot";
+import { getApiBaseUrl } from "../services/apiBaseUrl";
 import {
   addLeagueForUser,
   removeLeagueForUser,
@@ -307,7 +308,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const loadStats = async () => {
       try {
-        const res = await fetch("http://127.0.0.1:4000/player-stats-all-weeks");
+        const res = await fetch(`${getApiBaseUrl()}/player-stats-all-weeks`);
         if (!res.ok) throw new Error("Failed to fetch stats");
         const data = await res.json();
         console.log("Loaded player stats:", data.length);

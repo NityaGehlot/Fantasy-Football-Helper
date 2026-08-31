@@ -1,8 +1,10 @@
 // app/services/nflApi.ts
 
+import { getApiBaseUrl } from "./apiBaseUrl";
+
 export async function getPlayerStats() {
   try {
-    const response = await fetch("http://127.0.0.1:4000/player-stats-all-weeks");
+    const response = await fetch(`${getApiBaseUrl()}/player-stats-all-weeks`);
     if (!response.ok) throw new Error("Failed to fetch all stats");
     return response.json();
   } catch (error) {
@@ -14,7 +16,7 @@ export async function getPlayerStats() {
 // Per-week fetch (used by FantasyScreen for injury badges)
 export async function getPlayerStatsByWeek(week: number, season: number = 2025): Promise<any[]> {
   // Backend exposes /player-stats-week/:week — keep using that to avoid 404
-  const response = await fetch(`http://127.0.0.1:4000/player-stats-week/${week}`);
+  const response = await fetch(`${getApiBaseUrl()}/player-stats-week/${week}`);
   if (!response.ok) throw new Error(`Failed to fetch week ${week} stats`);
 
   const baseRows: any[] = await response.json();
@@ -53,7 +55,7 @@ export async function getPlayerStatsByWeek(week: number, season: number = 2025):
 
 // All weeks combined (used by FantasyContext for chatbot)
 export async function getAllPlayerStats(): Promise<any[]> {
-  const response = await fetch("http://127.0.0.1:4000/player-stats-all-weeks");
+  const response = await fetch(`${getApiBaseUrl()}/player-stats-all-weeks`);
   if (!response.ok) throw new Error("Failed to fetch all stats");
   return response.json();
 }
