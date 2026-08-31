@@ -1,5 +1,5 @@
 import AppNavigator from './app/AppNavigator';
-import AuthGate from "./app/services/AuthGate";
+import AuthGate from "./app/components/AuthGate";
 import { Provider as PaperProvider } from 'react-native-paper';
 
 

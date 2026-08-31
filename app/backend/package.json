@@ -4,7 +4,9 @@
   "main": "chatbotProxy.ts",
   "license": "MIT",
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only --project tsconfig.server.json chatbotProxy.ts"
+    "dev": "ts-node-dev --respawn --transpile-only --project tsconfig.server.json chatbotProxy.ts",
+    "build": "tsc --project tsconfig.server.json",
+    "start": "node dist/chatbotProxy.js"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

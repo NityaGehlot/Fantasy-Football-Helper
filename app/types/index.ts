@@ -1,4 +1,4 @@
-// app/types.ts
+// app/types/index.ts
 
 export type User = {
   user_id: string;

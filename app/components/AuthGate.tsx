@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { auth } from "./firebase";
-import { createUserIfNotExists } from "./userService";
-import { AUTH_ENABLED } from "./config";
+import { auth } from "../services/firebase";
+import { createUserIfNotExists } from "../services/userService";
+import { AUTH_ENABLED } from "../services/config";
 import { View, ActivityIndicator } from "react-native";
 import LoginScreen from "../screens/LoginScreen";
 
