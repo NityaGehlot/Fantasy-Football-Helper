@@ -468,6 +468,14 @@ function buildOpponentDefenseContext(
 // Route Registration
 // ===============================
 export function registerRoutes(router: Router): void {
+  router.get("/", (_req: Request, res: Response) => {
+    res.json({
+      status: "ok",
+      service: "ffh-api",
+      message: "Fantasy Football Helper backend is running.",
+    });
+  });
+
   // ===============================
   // Proxy: News Data from nfl-data
   // ===============================
