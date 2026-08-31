@@ -225,7 +225,17 @@ useEffect(() => {
       if (cancelled) return;
 
       setLeague(leagueData);
-      setUsers(usersData);
+      // If usersData is empty but rosters exist, build lightweight user placeholders
+      if ((!usersData || usersData.length === 0) && Array.isArray(rostersData) && rostersData.length > 0) {
+        const placeholderUsers = rostersData.map((r: any, idx: number) => ({
+          user_id: String(r.owner_id || `owner_${idx}`),
+          display_name: r.owner_id ? `Owner ${r.owner_id}` : `Owner ${idx + 1}`,
+          metadata: { team_name: r?.settings?.team_name || '' },
+        }));
+        setUsers(placeholderUsers);
+      } else {
+        setUsers(usersData);
+      }
       setRosters(rostersData);
       setPlayers(playersData);
       setMatchups(matchupsData);

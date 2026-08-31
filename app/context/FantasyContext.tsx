@@ -9,21 +9,18 @@ import React, {
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { auth } from "../services/firebase";
-import {
-  collection,
-  getDocs,
-  setDoc,
-  doc,
-  deleteDoc,
-  serverTimestamp
-} from "firebase/firestore";
-import { db } from "../services/firebase";
 import { getLeague } from "../services/sleeperAPI";
 import { fantasyChatResponse } from "../services/FantasyChatbot";
+import {
+  addLeagueForUser,
+  removeLeagueForUser,
+  listUserLeagues,
+  setMyTeam as setMyTeamInDb,
+  getMyTeam as getMyTeamFromDb,
+} from "../services/userService";
 
 const CHAT_STORAGE_KEY = "fantasy_chat_messages_v1";
 const CHAT_PERSISTENCE_FLAG_KEY = "fantasy_chat_persistence_enabled_v1";
-const MY_TEAM_STORAGE_KEY = "fantasy_my_team_v1";
 
 export type ChatMessage = {
   id: string;
@@ -216,14 +213,11 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
 
     const loadLeagues = async () => {
       try {
-        const snap = await getDocs(
-          collection(db, "users", user.uid, "leagues")
-        );
-        const loaded: League[] = snap.docs.map(d => d.data() as League);
-        setLeagues(loaded);
+        const loaded = await listUserLeagues(user.uid);
+        setLeagues(loaded as League[]);
 
         setActiveLeagueId(prev =>
-          loaded.some(l => l.leagueId === prev) ? prev : loaded[0]?.leagueId ?? null
+          loaded.some((l: League) => l.leagueId === prev) ? prev : loaded[0]?.leagueId ?? null
         );
       } catch (err) {
         console.error("Error loading leagues:", err);
@@ -280,21 +274,12 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     const loadMyTeam = async () => {
+      if (!user?.uid) return;
       try {
-        const savedTeam = await AsyncStorage.getItem(MY_TEAM_STORAGE_KEY);
-        if (!savedTeam) return;
-
-        const parsed = JSON.parse(savedTeam) as MyFantasyTeam;
-        if (
-          parsed &&
-          typeof parsed.leagueId === "string" &&
-          typeof parsed.ownerId === "string" &&
-          Array.isArray(parsed.players)
-        ) {
-          setMyTeamState(parsed);
-        }
+        const team = await getMyTeamFromDb(user.uid);
+        if (team) setMyTeamState(team as MyFantasyTeam);
       } catch (err) {
-        console.error("Failed to restore my team selection:", err);
+        console.error("Failed to load my team from Firestore:", err);
       }
     };
 
@@ -343,12 +328,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     try {
       const leagueData = await getLeague(leagueId);
       const leagueDoc: League = { leagueId, name: leagueData.name };
-
-      await setDoc(
-        doc(db, "users", user.uid, "leagues", leagueId),
-        { ...leagueDoc, createdAt: serverTimestamp() }
-      );
-
+      await addLeagueForUser(user.uid, leagueId, leagueData.name);
       setLeagues(prev => [...prev, leagueDoc]);
       setActiveLeagueId(leagueId);
     } catch (err) {
@@ -363,12 +343,10 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   const deleteLeague = async (leagueId: string) => {
     if (!user) return;
     try {
-      await deleteDoc(doc(db, "users", user.uid, "leagues", leagueId));
+      await removeLeagueForUser(user.uid, leagueId);
       setLeagues(prev => prev.filter(l => l.leagueId !== leagueId));
 
-      setActiveLeagueId(prev =>
-        prev === leagueId ? leagues.find(l => l.leagueId !== leagueId)?.leagueId ?? null : prev
-      );
+      setActiveLeagueId(prev => prev === leagueId ? leagues.find(l => l.leagueId !== leagueId)?.leagueId ?? null : prev);
     } catch (err) {
       console.error("Error deleting league:", err);
     }
@@ -376,19 +354,21 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
 
   const setMyTeam = async (team: MyFantasyTeam) => {
     setMyTeamState(team);
+    if (!user?.uid) return;
     try {
-      await AsyncStorage.setItem(MY_TEAM_STORAGE_KEY, JSON.stringify(team));
+      await setMyTeamInDb(user.uid, team);
     } catch (err) {
-      console.error("Failed to save my team selection:", err);
+      console.error("Failed to save my team to Firestore:", err);
     }
   };
 
   const clearMyTeam = async () => {
     setMyTeamState(null);
+    if (!user?.uid) return;
     try {
-      await AsyncStorage.removeItem(MY_TEAM_STORAGE_KEY);
+      await setMyTeamInDb(user.uid, null);
     } catch (err) {
-      console.error("Failed to clear my team selection:", err);
+      console.error("Failed to clear my team in Firestore:", err);
     }
   };
 

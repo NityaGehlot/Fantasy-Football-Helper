@@ -33,6 +33,10 @@ export default function PlayerDetailsScreen({ route }: any) {
 
   const [allWeeksStats, setAllWeeksStats] = useState<any>({});
   const [loadingPlayerStats, setLoadingPlayerStats] = useState(true);
+  const [selectedSeason, setSelectedSeason] = useState<number>(2025);
+  const [showSeasonDropdown, setShowSeasonDropdown] = useState<boolean>(false);
+  const [availableSeasons, setAvailableSeasons] = useState<number[]>([2025]);
+  const [displaySeasons, setDisplaySeasons] = useState<number[]>([2025]);
   const [loadingNews, setLoadingNews] = useState(true);
   const [newsTab, setNewsTab] = useState<'player' | 'team'>('player');
   const [seasonScope, setSeasonScope] = useState<'whole' | 'regular' | 'post'>('regular');
@@ -175,12 +179,157 @@ export default function PlayerDetailsScreen({ route }: any) {
     return `Week ${weekNumber}`;
   };
 
+  // Determine which team the player was on for the selected season.
+  const teamForSeason = React.useMemo(() => {
+    try {
+      const teams: string[] = [];
+      for (let w = 1; w <= 22; w++) {
+        const wk = allWeeksStats[w];
+        if (!wk) continue;
+        const t = String(wk?.team ?? wk?._team_def?.team ?? '').trim();
+        if (t) teams.push(t.toUpperCase());
+      }
+      if (teams.length === 0) {
+        const fallback = String(player?.team || stats?.team || '').trim();
+        return fallback || 'Unknown';
+      }
+      // return the most frequent team found across weeks
+      const freq: Record<string, number> = {};
+      teams.forEach((t) => { freq[t] = (freq[t] || 0) + 1; });
+      const sorted = Object.keys(freq).sort((a, b) => freq[b] - freq[a]);
+      return sorted[0] || 'Unknown';
+    } catch (e) {
+      return String(player?.team || stats?.team || 'Unknown');
+    }
+  }, [allWeeksStats, selectedSeason, player, stats]);
+
+  // Helper: quick flags for UI messaging
+  const isRookie = Number(player?.years_exp ?? 0) === 0;
+  const repoMostRecentSeason = (availableSeasons && availableSeasons.length > 0) ? availableSeasons[0] : null;
+  const _now = new Date();
+  const _month = _now.getMonth() + 1;
+  const dateBasedMostRecentSeason = _month >= 3 ? _now.getFullYear() : _now.getFullYear() - 1;
+  const mostRecentSeasonRef = repoMostRecentSeason ?? dateBasedMostRecentSeason;
+
+  // Helper: decide if a season is "completed" relative to today.
+  const isSeasonCompleted = (seasonNum: number) => {
+    try {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth() + 1; // 1-based
+      // NFL season labeled by year (e.g., 2025 season completes in early 2026).
+      // Treat a season as completed if its year is strictly less than current year,
+      // or if it's equal to the current year and we're past March (post-SuperBowl window).
+      if (seasonNum < year) return true;
+      if (seasonNum === year && month >= 3) return true;
+      return false;
+    } catch (e) {
+      return false;
+    }
+  };
+
   useEffect(() => {
+    // On mount: detect available seasons from GitHub repo and update dropdown
+    const detectSeasons = async () => {
+      try {
+        const apiUrl = 'https://api.github.com/repos/NityaGehlot/nfl-data/contents/data/Stats';
+        const resp = await fetch(apiUrl);
+        if (!resp.ok) throw new Error('Failed to list repo contents');
+        const items = await resp.json();
+        if (!Array.isArray(items)) return;
+
+        const seasons: number[] = items
+          .map((it: any) => String(it.name || ''))
+          .map((n: string) => {
+            const m = n.match(/^(\d{4})\s+Season$/);
+            return m ? Number(m[1]) : null;
+          })
+          .filter(Boolean) as number[];
+
+        if (seasons.length > 0) {
+          seasons.sort((a, b) => b - a);
+          setAvailableSeasons(seasons);
+          if (!seasons.includes(selectedSeason)) setSelectedSeason(seasons[0]);
+        }
+      } catch (err) {
+        console.warn('Could not detect seasons from GitHub:', err);
+      }
+    };
+    detectSeasons();
+
+    // Helper: decide if a season is "completed" relative to today.
+    const isSeasonCompleted = (seasonNum: number) => {
+      try {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = now.getMonth() + 1; // 1-based
+        // NFL season labeled by year (e.g., 2025 season completes in early 2026).
+        // Treat a season as completed if its year is strictly less than current year,
+        // or if it's equal to the current year and we're past March (post-SuperBowl window).
+        if (seasonNum < year) return true;
+        if (seasonNum === year && month >= 3) return true;
+        return false;
+      } catch (e) {
+        return false;
+      }
+    };
+
     const fetchAllWeeks = async () => {
       setLoadingPlayerStats(true);
       try {
         const weeks = Array.from({ length: 22 }, (_, i) => i + 1);
-        const promises = weeks.map(w => getPlayerStatsByWeek(w));
+        // Generic per-season week fetcher: attempt to load offense+defense JSON files
+        // from the GitHub repo matching the season's folder structure. Falls back
+        // to the existing backend / service call when GitHub files aren't available.
+        const fetchWeekForSeason = async (seasonNum: number, w: number) => {
+          try {
+            const seasonStr = String(seasonNum);
+            const baseSeasonPath = `https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/Stats/${encodeURIComponent(seasonStr + ' Season')}/${seasonStr} Offense`;
+            const baseDefPath = `https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/Stats/${encodeURIComponent(seasonStr + ' Season')}/${seasonStr} Defense`;
+            const fileName = `player_stats_${seasonStr}_week${String(w).padStart(2, '0')}.json`;
+
+            const [offResp, defResp] = await Promise.all([
+              fetch(`${baseSeasonPath}/${fileName}`),
+              fetch(`${baseDefPath}/${fileName}`),
+            ]);
+
+            const offData = offResp.ok ? await offResp.json() : null;
+            const defData = defResp.ok ? await defResp.json() : null;
+
+            if (!offData && !defData) {
+              // nothing on GitHub for this season/week — fall back to service
+              try {
+                return await getPlayerStatsByWeek(w, seasonNum);
+              } catch (err) {
+                console.warn(`Backend unavailable for week ${w}, season ${seasonNum}:`, err);
+                return [];
+              }
+            }
+
+            const offRows = Array.isArray(offData) ? offData : (offData ? Object.values(offData).flat() : []);
+            const defRows = Array.isArray(defData) ? defData : (defData ? Object.values(defData).flat() : []);
+
+            const map = new Map<string, any>();
+            offRows.forEach((r: any) => map.set(String(r.player_id), r));
+            defRows.forEach((r: any) => {
+              const id = String(r.player_id);
+              if (id.startsWith('DEF_')) map.set(id, r);
+              else if (!map.has(id)) map.set(id, r);
+            });
+
+            return Array.from(map.values());
+          } catch (err) {
+            console.warn(`Failed to fetch week ${w} for season ${seasonNum}:`, err);
+            try {
+              return await getPlayerStatsByWeek(w, seasonNum);
+            } catch (err2) {
+              console.warn(`Fallback backend also failed for week ${w}, season ${seasonNum}:`, err2);
+              return [];
+            }
+          }
+        };
+
+        const promises = weeks.map(w => fetchWeekForSeason(selectedSeason, w));
         const results = await Promise.all(promises);
 
         const statsMap: any = {};
@@ -234,7 +383,56 @@ export default function PlayerDetailsScreen({ route }: any) {
       }
     };
     fetchAllWeeks();
-  }, [player]);
+  }, [player, selectedSeason]);
+
+  // Compute which seasons to show for this player based on `years_exp`.
+  useEffect(() => {
+    const compute = async () => {
+      const sorted = Array.from(new Set(availableSeasons)).sort((a, b) => b - a);
+      const yearsExp = Number(player?.years_exp ?? 0) || 0;
+      const count = yearsExp > 0 ? yearsExp : 1; // show at least 1 season
+
+      const now = new Date();
+      const month = now.getMonth() + 1; // 1-based
+      // Prefer the most recent season folder detected on GitHub. If none exist,
+      // fall back to the date-based cutoff (March) to infer the most-recent season.
+      const mostRecentSeasonFromRepo = sorted.length > 0 ? sorted[0] : null;
+      const dateBasedMostRecent = month >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+      const mostRecentSeason = mostRecentSeasonFromRepo ?? dateBasedMostRecent;
+      // Desired seasons based on player's experience: e.g., years_exp=2 => [mostRecentSeason, mostRecentSeason-1]
+      const desired = Array.from({ length: count }, (_, i) => mostRecentSeason - i);
+
+      // Probe GitHub raw URLs for existence of a canonical file (week01 offense)
+      // for each desired season. This avoids relying on the GitHub API which may
+      // be rate-limited or unavailable in-app.
+      const checkSeasonExists = async (s: number) => {
+        try {
+          const seasonStr = String(s);
+          const fileName = `player_stats_${seasonStr}_week01.json`;
+          const url = `https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/Stats/${encodeURIComponent(seasonStr + ' Season')}/${seasonStr} Offense/${fileName}`;
+          const resp = await fetch(url);
+          return resp.ok;
+        } catch (e) {
+          return false;
+        }
+      };
+
+      const existence = await Promise.all(desired.map((s) => checkSeasonExists(s)));
+      const existing = desired.filter((_, idx) => existence[idx]);
+
+      if (existing.length > 0) {
+        setDisplaySeasons(existing);
+        if (!existing.includes(selectedSeason)) setSelectedSeason(existing[0]);
+      } else {
+        // If none of the desired seasons exist in the repo, fall back to the most recent
+        // available seasons discovered in the repo (up to `count`).
+        const fallback = sorted.slice(0, Math.min(count, sorted.length));
+        setDisplaySeasons(fallback);
+        if (fallback.length > 0 && !fallback.includes(selectedSeason)) setSelectedSeason(fallback[0]);
+      }
+    };
+    compute();
+  }, [availableSeasons, player]);
 
   useEffect(() => {
     const loadNews = async () => {
@@ -745,6 +943,19 @@ export default function PlayerDetailsScreen({ route }: any) {
 
     const sum = (key: string) => weeks.reduce((acc: number, wk: any) => acc + (Number(wk.data?.[key]) || 0), 0);
 
+    // Fantasy points sum: for 'regular' scope we exclude Week 18 from fantasy points
+    // (stats still include Week 18). For 'post' and 'whole' we sum the weeks in `weeks`.
+    const fantasyPointsSum = () => {
+      if (seasonScope === 'regular') {
+        return weeks.reduce((acc: number, wk: any) => {
+          const wkNum = Number(wk.num);
+          if (wkNum >= 1 && wkNum <= 17) return acc + (Number(wk.data?.fantasy_points_ppr) || 0);
+          return acc;
+        }, 0);
+      }
+      return sum('fantasy_points_ppr');
+    };
+
     const isWeekBye = (wkNum: number, wkData: any) => {
       const teamStatus = String(wkData?.team_status ?? wkData?._team_def?.team_status ?? '').toLowerCase().trim();
       if (teamStatus.includes('bye')) return true;
@@ -798,7 +1009,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         carries: sum('carries'),
         rushing_yards: sum('rushing_yards'),
         rushing_tds: sum('rushing_tds'),
-        fantasy_points_ppr: sum('fantasy_points_ppr'),
+        fantasy_points_ppr: fantasyPointsSum(),
         games: gamesPlayed,
         bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
         eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
@@ -813,7 +1024,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         targets: sum('targets'),
         receiving_yards: sum('receiving_yards'),
         receiving_tds: sum('receiving_tds'),
-        fantasy_points_ppr: sum('fantasy_points_ppr'),
+        fantasy_points_ppr: fantasyPointsSum(),
         games: gamesPlayed,
         bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
         eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
@@ -828,7 +1039,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         carries: sum('carries'),
         rushing_yards: sum('rushing_yards'),
         rushing_tds: sum('rushing_tds'),
-        fantasy_points_ppr: sum('fantasy_points_ppr'),
+        fantasy_points_ppr: fantasyPointsSum(),
         games: gamesPlayed,
         bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
         eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
@@ -840,7 +1051,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         fg_made: sum('fg_made_0_19') + sum('fg_made_20_29') + sum('fg_made_30_39') + sum('fg_made_40_49') + sum('fg_made_50_59') + sum('fg_made_60_'),
         pat_made: sum('pat_made'),
         pat_att: sum('pat_att'),
-        fantasy_points_ppr: sum('fantasy_points_ppr'),
+        fantasy_points_ppr: fantasyPointsSum(),
         games: gamesPlayed,
         bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
         eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
@@ -856,7 +1067,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         def_tds: sum('def_tds') + sum('special_teams_tds'),
         def_safeties: sum('def_safeties'),
         points_allowed: sum('points_allowed'),
-        fantasy_points_ppr: sum('fantasy_points_ppr'),
+        fantasy_points_ppr: fantasyPointsSum(),
         games: seasonScope === 'post' ? postseasonGamesPlayed() : weeks.filter((w: any) => {
           const wkData = w.data || {};
           const teamStatus = String(wkData?.team_status ?? wkData?._team_def?.team_status ?? '').toLowerCase().trim();
@@ -879,7 +1090,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         fumbles_recovered: sum('fumbles_recovered') + sum('fumble_recovery_opp'),
         def_tds: sum('def_tds'),
         def_qb_hits: sum('def_qb_hits'),
-        fantasy_points_ppr: sum('fantasy_points_ppr'),
+        fantasy_points_ppr: fantasyPointsSum(),
         games: seasonScope === 'post' ? postseasonGamesPlayed() : weeks.filter((w: any) => Boolean(w.data?.game_played)).length,
         bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase().includes('bye')).length,
         eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase() === 'eliminated').length,
@@ -1030,6 +1241,21 @@ export default function PlayerDetailsScreen({ route }: any) {
             </Text>
           </TouchableOpacity>
         </View>
+        {seasonScope === 'regular' && (
+          <Text style={styles.disclaimerText}>
+            Regular Season — stats: Weeks 1–18. Fantasy points displayed: Weeks 1–17.
+          </Text>
+        )}
+        {seasonScope === 'post' && (
+          <Text style={styles.disclaimerText}>
+            Post Season — Weeks 19–22 stats (and fantasy points if they were counted).
+          </Text>
+        )}
+        {seasonScope === 'whole' && (
+          <Text style={styles.disclaimerText}>
+            Whole Season — Weeks 1–22 stats (and fantasy points if Weeks 18–22 were counted).
+          </Text>
+        )}
         <View style={styles.seasonGrid}>
           {loadingPlayerStats ? (
             <Text style={styles.statLine}>Loading Stats...</Text>
@@ -1041,7 +1267,13 @@ export default function PlayerDetailsScreen({ route }: any) {
               </View>
             ))
           ) : (
-            <Text style={styles.statLine}>No stats available for selected season</Text>
+            isRookie && selectedSeason === mostRecentSeasonRef ? (
+              <Text style={styles.statLine}>
+                Player is a rookie — no recorded stats for the {selectedSeason} season yet.
+              </Text>
+            ) : (
+              <Text style={styles.statLine}>No stats available for selected season</Text>
+            )
           )}
         </View>
       </View>
@@ -1073,20 +1305,52 @@ export default function PlayerDetailsScreen({ route }: any) {
           {basePosition || player.position} • {displayTeam}
         </Text>
 
+        <Text style={styles.experience}>
+          {(() => {
+            const yearsExp = player?.years_exp ?? stats?.years_exp;
+            if (yearsExp === 0) return 'Experience: Rookie';
+            if (typeof yearsExp === 'number') return `Experience: ${yearsExp} yrs`;
+            return '';
+          })()}
+        </Text>
+        <View style={styles.seasonPickerRow}>
+          <Text style={{ color: '#666', marginRight: 8, fontWeight: '700' }}>Season:</Text>
+          <TouchableOpacity style={styles.seasonPicker} onPress={() => setShowSeasonDropdown(s => !s)}>
+            <Text style={styles.seasonPickerText}>{selectedSeason} ▾</Text>
+          </TouchableOpacity>
+        </View>
+
+        <Text style={styles.teamSeasonText}>Team ({selectedSeason}): {teamForSeason}</Text>
+
+        {showSeasonDropdown && (
+          <View style={styles.seasonDropdown}>
+            {displaySeasons.map((s) => (
+              <TouchableOpacity
+                key={s}
+                style={[styles.seasonOption, selectedSeason === s && styles.seasonOptionActive]}
+                onPress={() => { setSelectedSeason(s); setShowSeasonDropdown(false); }}
+              >
+                <Text style={[styles.seasonOptionText, selectedSeason === s && styles.seasonOptionTextActive]}>{s}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
       </View>
 
       {/* ========================= */}
       {/* CURRENT WEEK STATS */}
       {/* ========================= */}
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>
-          Week {week} Stats
-        </Text>
+      { !(isRookie && selectedSeason === mostRecentSeasonRef) && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>
+            Week {week} Stats
+          </Text>
 
-        {loadingPlayerStats ? (
-          <Text style={styles.statLine}>Loading Stats...</Text>
-        ) : allWeeksStats[week] ? (() => {
+          {loadingPlayerStats ? (
+            <Text style={styles.statLine}>Loading Stats...</Text>
+          ) : allWeeksStats[week] ? (() => {
           const currentStats = allWeeksStats[week];
           const teamStatusRaw = currentStats
             ? String(currentStats?.team_status ?? (currentStats as any)?._team_def?.team_status ?? '').toLowerCase().trim()
@@ -1176,7 +1440,8 @@ export default function PlayerDetailsScreen({ route }: any) {
             No stats available
           </Text>
         )}
-      </View>
+        </View>
+      )}
 
       {/* ========================= */}
       {/* SEASON STATS */}
@@ -1240,12 +1505,13 @@ export default function PlayerDetailsScreen({ route }: any) {
       {/* WEEK STATS LOG */}
       {/* ========================= */}
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>
-          Weekly Stats Log
-        </Text>
+      { !(isRookie && selectedSeason === mostRecentSeasonRef) && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>
+            Weekly Stats Log
+          </Text>
 
-        <ScrollView style={styles.weeklyLogContainer} showsVerticalScrollIndicator={true}>
+          <ScrollView style={styles.weeklyLogContainer} showsVerticalScrollIndicator={true}>
           {loadingPlayerStats ? (
             <Text style={styles.statLine}>Loading Stats...</Text>
           ) : Array.from({ length: 22 }, (_, i) => i + 1).map((w: number) => {
@@ -1427,8 +1693,9 @@ export default function PlayerDetailsScreen({ route }: any) {
               </View>
             );
           })}
-        </ScrollView>
-      </View>
+          </ScrollView>
+        </View>
+      )}
 
     </ScrollView>
   );
@@ -1462,6 +1729,60 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#666",
     marginTop: 4
+  },
+
+  experience: {
+    fontSize: 14,
+    color: '#6b7280',
+    marginTop: 6,
+  },
+  teamSeasonText: {
+    fontSize: 14,
+    color: '#374151',
+    marginTop: 6,
+    fontWeight: '600',
+  },
+  seasonPickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  seasonPicker: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#fff'
+  },
+  seasonPickerText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#111827'
+  },
+  seasonDropdown: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#e6e9ef',
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    paddingVertical: 6,
+    marginHorizontal: 20,
+  },
+  seasonOption: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  seasonOptionActive: {
+    backgroundColor: '#eef2ff',
+  },
+  seasonOptionText: {
+    fontSize: 14,
+    color: '#111827',
+  },
+  seasonOptionTextActive: {
+    color: '#1f2937',
+    fontWeight: '800'
   },
 
   positionBadge: {
@@ -1559,6 +1880,13 @@ const styles = StyleSheet.create({
 
   seasonScopeTextActive: {
     color: '#fff',
+  },
+
+  disclaimerText: {
+    fontSize: 13,
+    color: '#6b7280',
+    marginTop: 6,
+    marginBottom: 8,
   },
 
   seasonGrid: {

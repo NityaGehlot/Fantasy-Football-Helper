@@ -12,7 +12,8 @@ export async function getPlayerStats() {
 }
 
 // Per-week fetch (used by FantasyScreen for injury badges)
-export async function getPlayerStatsByWeek(week: number): Promise<any[]> {
+export async function getPlayerStatsByWeek(week: number, season: number = 2025): Promise<any[]> {
+  // Backend exposes /player-stats-week/:week — keep using that to avoid 404
   const response = await fetch(`http://127.0.0.1:4000/player-stats-week/${week}`);
   if (!response.ok) throw new Error(`Failed to fetch week ${week} stats`);
 
@@ -20,8 +21,8 @@ export async function getPlayerStatsByWeek(week: number): Promise<any[]> {
 
   // Also fetch defensive week JSON directly from the GitHub repo where team defense rows live
   try {
-    const DEF_BASE = 'https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/Stats/2025%20Season/2025%20Defense';
-    const fileName = `player_stats_2025_week${String(week).padStart(2, '0')}.json`;
+    const DEF_BASE = `https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/Stats/${season}%20Season/${season}%20Defense`;
+    const fileName = `player_stats_${season}_week${String(week).padStart(2, '0')}.json`;
     const defResp = await fetch(`${DEF_BASE}/${fileName}`);
     if (defResp.ok) {
       const defData = await defResp.json();

@@ -65,7 +65,17 @@ export default function SearchBarAndFilter({ players, onSelect }: Props) {
         return matchesQuery && matchesPos && matchesTeam && (p.active || isTeamDef);
       })
       .map(([id, p]: [string, any]) => ({ ...p, player_id: id }))
-      .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
+      .sort((a: any, b: any) => {
+        const toRank = (v: any) => {
+          if (v === null) return Number.MAX_SAFE_INTEGER;
+          const n = Number(v);
+          return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
+        };
+        const aRank = toRank(a.search_rank);
+        const bRank = toRank(b.search_rank);
+        if (aRank !== bRank) return aRank - bRank;
+        return (a.full_name || '').localeCompare(b.full_name || '');
+      })
       .slice(0, 30);
   }, [searchQuery, filterPositions, filterTeams, players]);
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { auth } from "./firebase";
+import { createUserIfNotExists } from "./userService";
 import { AUTH_ENABLED } from "./config";
 import { View, ActivityIndicator } from "react-native";
 import LoginScreen from "../screens/LoginScreen";
@@ -16,9 +17,16 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
       setLoading(false);
+      if (firebaseUser) {
+        try {
+          await createUserIfNotExists(firebaseUser.uid, firebaseUser.email ?? null);
+        } catch (err) {
+          console.error("Failed to ensure user document:", err);
+        }
+      }
     });
 
     return unsubscribe;
