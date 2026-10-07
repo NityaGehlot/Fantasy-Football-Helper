@@ -31,10 +31,8 @@ import {
 // ===============================
 const STATS_MIN_WEEK = 1;
 const STATS_MAX_WEEK = 22;
-const STATS_BASE_URL =
-  "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/Stats/2025%20Season/2025%20Offense";
-const DEFENSIVE_STATS_BASE_URL =
-  "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/Stats/2025%20Season/2025%20Defense";
+const DEFAULT_STATS_SEASON = 2025;
+const STATS_ROOT_URL = "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/Stats";
 
 // ===============================
 // Types
@@ -75,24 +73,29 @@ type MyTeamPayload = {
 // Utility Functions
 // ===============================
 
-function getWeekStatsFileName(week: number): string {
-  return `player_stats_2025_week${String(week).padStart(2, "0")}.json`;
+function parseSeason(value: unknown): number {
+  const season = Number(value);
+  return Number.isInteger(season) && season >= 1999 && season <= 2100 ? season : DEFAULT_STATS_SEASON;
 }
 
-function getWeekStatsUrl(week: number): string {
-  return `${STATS_BASE_URL}/${getWeekStatsFileName(week)}`;
+function getWeekStatsFileName(week: number, season: number): string {
+  return `player_stats_${season}_week${String(week).padStart(2, "0")}.json`;
 }
 
-function getDefensiveWeekStatsUrl(week: number): string {
-  return `${DEFENSIVE_STATS_BASE_URL}/${getWeekStatsFileName(week)}`;
+function getWeekStatsUrl(week: number, season: number): string {
+  return `${STATS_ROOT_URL}/${season}%20Season/${season}%20Offense/${getWeekStatsFileName(week, season)}`;
 }
 
-async function getDefensiveStatsForWeek(week: number): Promise<any[]> {
+function getDefensiveWeekStatsUrl(week: number, season: number): string {
+  return `${STATS_ROOT_URL}/${season}%20Season/${season}%20Defense/${getWeekStatsFileName(week, season)}`;
+}
+
+async function getDefensiveStatsForWeek(week: number, season: number): Promise<any[]> {
   try {
-    const url = getDefensiveWeekStatsUrl(week);
+    const url = getDefensiveWeekStatsUrl(week, season);
     const response = await fetch(url);
     if (!response.ok) {
-      console.warn(`⚠️ Failed to fetch defensive stats for week ${week}`);
+      console.warn(`⚠️ Failed to fetch defensive stats for ${season} week ${week}`);
       return [];
     }
 
@@ -158,21 +161,21 @@ function normalizeWeekStats(raw: any): any[] {
   }));
 }
 
-async function readWeekStatsFromSource(week: number): Promise<any[]> {
+async function readWeekStatsFromSource(week: number, season: number): Promise<any[]> {
   if (!Number.isFinite(week) || week < STATS_MIN_WEEK || week > STATS_MAX_WEEK) {
     throw new Error(`Week must be between ${STATS_MIN_WEEK} and ${STATS_MAX_WEEK}`);
   }
 
   try {
-    const offensiveResponse = await fetch(getWeekStatsUrl(week));
+    const offensiveResponse = await fetch(getWeekStatsUrl(week, season));
     const offensiveData = offensiveResponse.ok ? await offensiveResponse.json() : [];
     const offensiveStats = normalizeWeekStats(offensiveData);
-    const defensiveStats = await getDefensiveStatsForWeek(week);
+    const defensiveStats = await getDefensiveStatsForWeek(week, season);
     const combinedStats = [...offensiveStats, ...defensiveStats];
 
     return combinedStats;
   } catch (err) {
-    console.error(`Error loading stats for week ${week}:`, err);
+    console.error(`Error loading stats for ${season} week ${week}:`, err);
     throw err;
   }
 }
@@ -192,7 +195,7 @@ function getSeasonYear(playerStats: any[]): number {
     .map(p => Number(p.season))
     .filter(year => Number.isFinite(year) && year > 0);
 
-  return seasons.length > 0 ? Math.max(...seasons) : 2025;
+  return seasons.length > 0 ? Math.max(...seasons) : DEFAULT_STATS_SEASON;
 }
 
 function resolveAnalysisWeek(playerStats: any[], requestedWeek?: number): number {
@@ -510,7 +513,8 @@ export function registerRoutes(router: Router): void {
   // ===============================
   router.get("/api/stats", async (req: Request, res: Response) => {
     try {
-      const statsResponse = await fetch("http://127.0.0.1:4000/player-stats-all-weeks");
+      const season = parseSeason(req.query.season);
+      const statsResponse = await fetch(`http://127.0.0.1:4000/player-stats-all-weeks?season=${season}`);
       if (!statsResponse.ok) {
         throw new Error("Failed to fetch player stats");
       }
@@ -535,7 +539,8 @@ export function registerRoutes(router: Router): void {
     }
 
     try {
-      const statsResponse = await fetch(`http://127.0.0.1:4000/player-stats-week/${week}`);
+      const season = parseSeason(req.query.season);
+      const statsResponse = await fetch(`http://127.0.0.1:4000/player-stats-week/${week}?season=${season}`);
       if (!statsResponse.ok) {
         throw new Error(`Failed to fetch stats for week ${week}`);
       }
@@ -554,12 +559,13 @@ export function registerRoutes(router: Router): void {
   // ===============================
   router.get("/player-stats-week/:week", async (req: Request, res: Response) => {
     const week = Number(req.params.week);
+    const season = parseSeason(req.query.season);
 
     try {
-      const cleaned = await readWeekStatsFromSource(week);
+      const cleaned = await readWeekStatsFromSource(week, season);
       res.json(cleaned);
     } catch (err) {
-      console.error(`❌ Failed to load week ${week} stats:`, err);
+      console.error(`❌ Failed to load ${season} week ${week} stats:`, err);
       res.status(500).json({ error: `Failed to load week ${week} stats` });
     }
   });
@@ -568,6 +574,8 @@ export function registerRoutes(router: Router): void {
   // All weeks combined (for chatbot)
   // ===============================
   router.get("/player-stats-all-weeks", async (req: Request, res: Response) => {
+    const season = parseSeason(req.query.season);
+
     try {
       const weekNumbers = Array.from(
         { length: STATS_MAX_WEEK - STATS_MIN_WEEK + 1 },
@@ -575,7 +583,7 @@ export function registerRoutes(router: Router): void {
       );
 
       const allDataSettled = await Promise.allSettled(
-        weekNumbers.map((week) => readWeekStatsFromSource(week))
+        weekNumbers.map((week) => readWeekStatsFromSource(week, season))
       );
 
       const combined: any[] = [];
@@ -585,12 +593,12 @@ export function registerRoutes(router: Router): void {
           combined.push(...result.value);
         } else {
           console.warn(
-            `⚠️ Missing or invalid stats file for week ${weekNumbers[idx]} (${getWeekStatsFileName(weekNumbers[idx])})`
+            `⚠️ Missing or invalid stats file for week ${weekNumbers[idx]} (${getWeekStatsFileName(weekNumbers[idx], season)})`
           );
         }
       });
 
-      console.log("✅ All weeks combined (weeks 1-22):", combined.length, "rows");
+      console.log(`✅ All weeks combined (${season}, weeks 1-22):`, combined.length, "rows");
       res.json(combined);
     } catch (err) {
       console.error("❌ Failed to load all weeks:", err);

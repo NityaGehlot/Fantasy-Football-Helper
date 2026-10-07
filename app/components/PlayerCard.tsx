@@ -10,9 +10,10 @@ interface Props {
   position?: string;
   positionColor?: string;
   compact?: boolean;
+  team?: string;
 }
 
-export default function PlayerCard({ player, stats, statLine = [], points = 0, imageUri, position, positionColor, compact = false }: Props) {
+export default function PlayerCard({ player, stats, statLine = [], points = 0, imageUri, position, positionColor, compact = false, team }: Props) {
   const injuryStatus = String(stats?.injury_status ?? "").toUpperCase().trim();
   const injuryType = stats?.primary_injury || stats?.practice_primary_injury || stats?.secondary_injury || "";
   const isOut = ["OUT", "IR", "IR-R", "INJURED RESERVE"].includes(injuryStatus);
@@ -70,7 +71,7 @@ export default function PlayerCard({ player, stats, statLine = [], points = 0, i
           )}
         </View>
 
-        <Text style={styles.playerSubText}>{player.position} • {stats?.team}</Text>
+        <Text style={styles.playerSubText}>{player.position} • {team ?? stats?.team}</Text>
 
         <View style={{ marginTop: 4 }}>
           { (isOut || isQuestionable) && injuryType ? (

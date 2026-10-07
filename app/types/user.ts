@@ -24,6 +24,9 @@ export type LeagueDoc = {
   leagueId: string;
   name: string;
   createdAt?: Timestamp | null;
+  favoriteTeamName?: string | null;
+  favoriteTeamOwnerId?: string | null;
+  favoriteTeamUpdatedAt?: Timestamp | null;
 };
 
 export type UserProfile = {

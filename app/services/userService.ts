@@ -8,6 +8,7 @@ import {
   collection,
   getDocs,
   deleteDoc,
+  deleteField,
 } from "firebase/firestore";
 import { db } from "./firebase";
 import type { MyTeam, LeagueDoc, UserProfile } from "../types/user";
@@ -45,6 +46,40 @@ export async function getMyTeam(uid: string): Promise<MyTeam | null> {
   if (!snap.exists()) return null;
   const data = snap.data() as UserProfile;
   return data?.myTeam ?? null;
+}
+
+/**
+ * Set or clear the user's favorite team name for a specific league.
+ * Stored on the league doc: `users/{uid}/leagues/{leagueId}.favoriteTeamName` / `.favoriteTeamOwnerId`
+ */
+export type FavoriteTeam = { teamName: string; ownerId: string };
+
+export async function setFavoriteTeamForLeague(uid: string, leagueId: string, team: FavoriteTeam | null) {
+  if (!uid || !leagueId) throw new Error("uid and leagueId required");
+  await setDoc(
+    doc(db, "users", uid, "leagues", leagueId),
+    {
+      favoriteTeamName: team?.teamName ?? null,
+      favoriteTeamOwnerId: team?.ownerId ?? null,
+      favoriteTeamUpdatedAt: serverTimestamp(),
+      // clean up full-roster fields saved by an earlier version
+      myTeam: deleteField(),
+      myTeamUpdatedAt: deleteField(),
+    },
+    { merge: true }
+  );
+}
+
+export async function getFavoriteTeamForLeague(uid: string, leagueId: string): Promise<FavoriteTeam | null> {
+  if (!uid || !leagueId) return null;
+  const snap = await getDoc(doc(db, "users", uid, "leagues", leagueId));
+  if (!snap.exists()) return null;
+  const data = snap.data() as LeagueDoc;
+  if (!data?.favoriteTeamName && !data?.favoriteTeamOwnerId) return null;
+  return {
+    teamName: data.favoriteTeamName ?? "",
+    ownerId: data.favoriteTeamOwnerId ?? "",
+  };
 }
 
 /**

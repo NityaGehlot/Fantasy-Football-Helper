@@ -16,8 +16,9 @@ import {
   addLeagueForUser,
   removeLeagueForUser,
   listUserLeagues,
-  setMyTeam as setMyTeamInDb,
-  getMyTeam as getMyTeamFromDb,
+  setFavoriteTeamForLeague,
+  getFavoriteTeamForLeague,
+  type FavoriteTeam,
 } from "../services/userService";
 
 const CHAT_STORAGE_KEY = "fantasy_chat_messages_v1";
@@ -73,7 +74,8 @@ interface FantasyContextType {
   setChatPersistenceEnabled: (enabled: boolean) => Promise<void>;
   sendChatMessage: (text: string) => Promise<void>;
   myTeam: MyFantasyTeam | null;
-  setMyTeam: (team: MyFantasyTeam) => Promise<void>;
+  favoriteTeam: FavoriteTeam | null;
+  setMyTeam: (team: MyFantasyTeam, options?: { persist?: boolean }) => Promise<void>;
   clearMyTeam: () => Promise<void>;
 }
 
@@ -91,6 +93,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   const [chatPersistenceEnabled, setChatPersistenceEnabledState] = useState(true);
   const [hasLoadedChatStorage, setHasLoadedChatStorage] = useState(false);
   const [myTeam, setMyTeamState] = useState<MyFantasyTeam | null>(null);
+  const [favoriteTeam, setFavoriteTeam] = useState<FavoriteTeam | null>(null);
 
   const typingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const chatIdCounterRef = useRef(0);
@@ -273,19 +276,28 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     loadChatPersistence();
   }, []);
 
+  // Load the saved favorite team name for the active league.
+  // FantasyScreen rebuilds the full team from Sleeper once rosters load.
   useEffect(() => {
+    let cancelled = false;
+    setMyTeamState(null);
+    setFavoriteTeam(null);
+
     const loadMyTeam = async () => {
-      if (!user?.uid) return;
+      if (!user?.uid || !activeLeagueId) return;
       try {
-        const team = await getMyTeamFromDb(user.uid);
-        if (team) setMyTeamState(team as MyFantasyTeam);
+        const saved = await getFavoriteTeamForLeague(user.uid, activeLeagueId);
+        if (!cancelled) setFavoriteTeam(saved);
       } catch (err) {
         console.error("Failed to load my team from Firestore:", err);
       }
     };
 
     loadMyTeam();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid, activeLeagueId]);
 
   useEffect(() => {
     if (!hasLoadedChatStorage || !chatPersistenceEnabled) return;
@@ -353,11 +365,14 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const setMyTeam = async (team: MyFantasyTeam) => {
+  const setMyTeam = async (team: MyFantasyTeam, { persist = true }: { persist?: boolean } = {}) => {
     setMyTeamState(team);
-    if (!user?.uid) return;
+    if (!persist) return;
+    const saved = { teamName: team.teamName, ownerId: team.ownerId };
+    setFavoriteTeam(saved);
+    if (!user?.uid || !activeLeagueId) return;
     try {
-      await setMyTeamInDb(user.uid, team);
+      await setFavoriteTeamForLeague(user.uid, activeLeagueId, saved);
     } catch (err) {
       console.error("Failed to save my team to Firestore:", err);
     }
@@ -365,9 +380,10 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
 
   const clearMyTeam = async () => {
     setMyTeamState(null);
-    if (!user?.uid) return;
+    setFavoriteTeam(null);
+    if (!user?.uid || !activeLeagueId) return;
     try {
-      await setMyTeamInDb(user.uid, null);
+      await setFavoriteTeamForLeague(user.uid, activeLeagueId, null);
     } catch (err) {
       console.error("Failed to clear my team in Firestore:", err);
     }
@@ -396,6 +412,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
         setChatPersistenceEnabled,
         sendChatMessage,
         myTeam,
+        favoriteTeam,
         setMyTeam,
         clearMyTeam
       }}

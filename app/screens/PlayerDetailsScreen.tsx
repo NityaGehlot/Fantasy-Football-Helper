@@ -10,7 +10,7 @@ import {
   TouchableOpacity,
   Linking,
 } from "react-native";
-import { getPlayerStatsByWeek } from '../services/nflApi';
+import { getPlayerStatsByWeek, getSeasonWeekStatuses, type WeekStatus } from '../services/nflApi';
 import { getPlayersFromGithub } from '../services/sleeperAPI';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -25,6 +25,23 @@ type NewsArticle = {
   impact?: string;
 };
 
+// NFL seasons are labeled by the year they start; Jan-Feb games belong to the previous season
+const getCurrentNFLSeason = () => {
+  const now = new Date();
+  return now.getMonth() + 1 >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+};
+
+// First NFL season for a player. Prefer Sleeper's `metadata.rookie_year`; otherwise derive it
+// from `years_exp`, which Sleeper defines as completed seasons (a 3rd-year player has years_exp 2).
+const getRookieSeason = (player: any, stats?: any): number | null => {
+  const rookieYear = Number(player?.metadata?.rookie_year ?? player?.rookie_year);
+  if (Number.isInteger(rookieYear) && rookieYear > 1900) return rookieYear;
+
+  const yearsExp = player?.years_exp ?? stats?.years_exp;
+  if (yearsExp === null || yearsExp === undefined || !Number.isFinite(Number(yearsExp))) return null;
+  return getCurrentNFLSeason() - Number(yearsExp);
+};
+
 export default function PlayerDetailsScreen({ route }: any) {
   type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'MainTabs'>;
   const navigation = useNavigation<NavigationProp>();
@@ -33,15 +50,16 @@ export default function PlayerDetailsScreen({ route }: any) {
 
   const [allWeeksStats, setAllWeeksStats] = useState<any>({});
   const [loadingPlayerStats, setLoadingPlayerStats] = useState(true);
-  const [selectedSeason, setSelectedSeason] = useState<number>(2025);
+  const [selectedSeason, setSelectedSeason] = useState<number>(getCurrentNFLSeason);
   const [showSeasonDropdown, setShowSeasonDropdown] = useState<boolean>(false);
-  const [availableSeasons, setAvailableSeasons] = useState<number[]>([2025]);
-  const [displaySeasons, setDisplaySeasons] = useState<number[]>([2025]);
+  const [availableSeasons, setAvailableSeasons] = useState<number[]>(() => [getCurrentNFLSeason()]);
+  const [displaySeasons, setDisplaySeasons] = useState<number[]>(() => [getCurrentNFLSeason()]);
   const [loadingNews, setLoadingNews] = useState(true);
   const [newsTab, setNewsTab] = useState<'player' | 'team'>('player');
   const [seasonScope, setSeasonScope] = useState<'whole' | 'regular' | 'post'>('regular');
   const [seasonViewMode, setSeasonViewMode] = useState<'totals' | 'averages'>('totals');
   const [teamPlayedPostseasonByWeek, setTeamPlayedPostseasonByWeek] = useState<Record<number, boolean>>({});
+  const [weekStatuses, setWeekStatuses] = useState<Record<number, WeekStatus>>({});
   const [playerNews, setPlayerNews] = useState<NewsArticle[]>([]);
   const [teamNews, setTeamNews] = useState<NewsArticle[]>([]);
 
@@ -179,32 +197,8 @@ export default function PlayerDetailsScreen({ route }: any) {
     return `Week ${weekNumber}`;
   };
 
-  // Determine which team the player was on for the selected season.
-  const teamForSeason = React.useMemo(() => {
-    try {
-      const teams: string[] = [];
-      for (let w = 1; w <= 22; w++) {
-        const wk = allWeeksStats[w];
-        if (!wk) continue;
-        const t = String(wk?.team ?? wk?._team_def?.team ?? '').trim();
-        if (t) teams.push(t.toUpperCase());
-      }
-      if (teams.length === 0) {
-        const fallback = String(player?.team || stats?.team || '').trim();
-        return fallback || 'Unknown';
-      }
-      // return the most frequent team found across weeks
-      const freq: Record<string, number> = {};
-      teams.forEach((t) => { freq[t] = (freq[t] || 0) + 1; });
-      const sorted = Object.keys(freq).sort((a, b) => freq[b] - freq[a]);
-      return sorted[0] || 'Unknown';
-    } catch (e) {
-      return String(player?.team || stats?.team || 'Unknown');
-    }
-  }, [allWeeksStats, selectedSeason, player, stats]);
-
   // Helper: quick flags for UI messaging
-  const isRookie = Number(player?.years_exp ?? 0) === 0;
+  const isRookie = (getRookieSeason(player, stats) ?? getCurrentNFLSeason()) >= getCurrentNFLSeason();
   const repoMostRecentSeason = (availableSeasons && availableSeasons.length > 0) ? availableSeasons[0] : null;
   const _now = new Date();
   const _month = _now.getMonth() + 1;
@@ -385,12 +379,22 @@ export default function PlayerDetailsScreen({ route }: any) {
     fetchAllWeeks();
   }, [player, selectedSeason]);
 
+  // Which weeks of the selected season have been played (vs. upcoming / in progress)
+  useEffect(() => {
+    let cancelled = false;
+    setWeekStatuses({});
+    getSeasonWeekStatuses(selectedSeason)
+      .then(statuses => { if (!cancelled) setWeekStatuses(statuses); })
+      .catch(err => console.warn('Could not load week statuses:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSeason]);
+
   // Compute which seasons to show for this player based on `years_exp`.
   useEffect(() => {
     const compute = async () => {
       const sorted = Array.from(new Set(availableSeasons)).sort((a, b) => b - a);
-      const yearsExp = Number(player?.years_exp ?? 0) || 0;
-      const count = yearsExp > 0 ? yearsExp : 1; // show at least 1 season
 
       const now = new Date();
       const month = now.getMonth() + 1; // 1-based
@@ -399,7 +403,10 @@ export default function PlayerDetailsScreen({ route }: any) {
       const mostRecentSeasonFromRepo = sorted.length > 0 ? sorted[0] : null;
       const dateBasedMostRecent = month >= 3 ? now.getFullYear() : now.getFullYear() - 1;
       const mostRecentSeason = mostRecentSeasonFromRepo ?? dateBasedMostRecent;
-      // Desired seasons based on player's experience: e.g., years_exp=2 => [mostRecentSeason, mostRecentSeason-1]
+      // Every season from the player's rookie year through the most recent season,
+      // e.g. rookie year 2024 => [2026, 2025, 2024]
+      const rookieSeason = Math.min(getRookieSeason(player, stats) ?? mostRecentSeason, mostRecentSeason);
+      const count = mostRecentSeason - rookieSeason + 1;
       const desired = Array.from({ length: count }, (_, i) => mostRecentSeason - i);
 
       // Probe GitHub raw URLs for existence of a canonical file (week01 offense)
@@ -1307,22 +1314,28 @@ export default function PlayerDetailsScreen({ route }: any) {
 
         <Text style={styles.experience}>
           {(() => {
-            const yearsExp = player?.years_exp ?? stats?.years_exp;
-            if (yearsExp === 0) return 'Experience: Rookie';
-            if (typeof yearsExp === 'number') return `Experience: ${yearsExp} yrs`;
-            return '';
+            const rookieSeason = getRookieSeason(player, stats);
+            if (rookieSeason === null) return '';
+            const seasonNumber = getCurrentNFLSeason() - rookieSeason + 1;
+            if (seasonNumber <= 1) return 'Experience: Rookie';
+            return `Experience: ${seasonNumber} years`;
           })()}
         </Text>
         <View style={styles.seasonPickerRow}>
           <Text style={{ color: '#666', marginRight: 8, fontWeight: '700' }}>Season:</Text>
-          <TouchableOpacity style={styles.seasonPicker} onPress={() => setShowSeasonDropdown(s => !s)}>
-            <Text style={styles.seasonPickerText}>{selectedSeason} ▾</Text>
-          </TouchableOpacity>
+          {isRookie ? (
+            // Rookies have no previous seasons to pick from
+            <View style={styles.seasonPicker}>
+              <Text style={styles.seasonPickerText}>{selectedSeason}</Text>
+            </View>
+          ) : (
+            <TouchableOpacity style={styles.seasonPicker} onPress={() => setShowSeasonDropdown(s => !s)}>
+              <Text style={styles.seasonPickerText}>{selectedSeason} ▾</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
-        <Text style={styles.teamSeasonText}>Team ({selectedSeason}): {teamForSeason}</Text>
-
-        {showSeasonDropdown && (
+        {showSeasonDropdown && !isRookie && (
           <View style={styles.seasonDropdown}>
             {displaySeasons.map((s) => (
               <TouchableOpacity
@@ -1350,6 +1363,8 @@ export default function PlayerDetailsScreen({ route }: any) {
 
           {loadingPlayerStats ? (
             <Text style={styles.statLine}>Loading Stats...</Text>
+          ) : weekStatuses[week] === 'upcoming' ? (
+            <Text style={styles.statLine}>Week hasn't occurred yet</Text>
           ) : allWeeksStats[week] ? (() => {
           const currentStats = allWeeksStats[week];
           const teamStatusRaw = currentStats
@@ -1437,7 +1452,7 @@ export default function PlayerDetailsScreen({ route }: any) {
           );
         })() : (
           <Text style={styles.statLine}>
-            No stats available
+            {weekStatuses[week] === 'in_progress' ? 'Week in progress — no stats yet' : 'No stats available'}
           </Text>
         )}
         </View>
@@ -1566,6 +1581,21 @@ export default function PlayerDetailsScreen({ route }: any) {
             // effective bye: either explicit bye flag or inferred postseason bye
             const effectiveIsBye = isByeWeek || postseasonMissingAndBye;
 
+            const weekStatus = weekStatuses[w];
+            if (weekStatus === 'upcoming') {
+              return (
+                <View key={w} style={[styles.weekBlock, { backgroundColor: '#f3f4f6' }]}>
+                  <Text style={styles.weekTitle}>{getWeekLabel(w)}</Text>
+                  {hasInjury && (
+                    <Text style={{ fontSize: 16, color: isOut ? "#e53e3e" : "#d69e2e", marginBottom: 4 }}>
+                      {statusLabel}: {injuryType || "Unknown injury"}
+                    </Text>
+                  )}
+                  <Text style={styles.statLine}>Week hasn't occurred yet</Text>
+                </View>
+              );
+            }
+
             return (
               <View
                 key={w}
@@ -1669,7 +1699,7 @@ export default function PlayerDetailsScreen({ route }: any) {
                     }
                     return (
                       <Text style={styles.statLine}>
-                        No stats recorded
+                        {weekStatus === 'in_progress' ? 'Week in progress — no stats yet' : 'No stats recorded'}
                       </Text>
                     );
                   })()
@@ -1735,12 +1765,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#6b7280',
     marginTop: 6,
-  },
-  teamSeasonText: {
-    fontSize: 14,
-    color: '#374151',
-    marginTop: 6,
-    fontWeight: '600',
   },
   seasonPickerRow: {
     flexDirection: 'row',
