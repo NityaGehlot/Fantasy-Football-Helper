@@ -31,7 +31,7 @@ export type RootStackParamList = {
   PlayerDetails: {
     player: any;
     stats: any;
-    week: number;
+    week?: number;
     fantasyPoints: number;
   };
   DefenseRoster: {

@@ -16,6 +16,7 @@ interface Props {
 export default function PlayerCard({ player, stats, statLine = [], points = 0, imageUri, position, positionColor, compact = false, team }: Props) {
   const injuryStatus = String(stats?.injury_status ?? "").toUpperCase().trim();
   const injuryType = stats?.primary_injury || stats?.practice_primary_injury || stats?.secondary_injury || "";
+  const isBye = String(stats?.team_status ?? "").toLowerCase().includes("bye");
   const isOut = ["OUT", "IR", "IR-R", "INJURED RESERVE"].includes(injuryStatus);
   const isQuestionable = ["QUESTIONABLE", "DOUBTFUL"].includes(injuryStatus);
 
@@ -87,7 +88,7 @@ export default function PlayerCard({ player, stats, statLine = [], points = 0, i
               </Text>
             ))
           ) : (
-            <Text style={styles.statLine}>No stats recorded</Text>
+            <Text style={styles.statLine}>{isBye ? "Bye-Week" : "No stats recorded"}</Text>
           )}
         </View>
       </View>

@@ -1274,13 +1274,7 @@ export default function PlayerDetailsScreen({ route }: any) {
               </View>
             ))
           ) : (
-            isRookie && selectedSeason === mostRecentSeasonRef ? (
-              <Text style={styles.statLine}>
-                Player is a rookie — no recorded stats for the {selectedSeason} season yet.
-              </Text>
-            ) : (
-              <Text style={styles.statLine}>No stats available for selected season</Text>
-            )
+            <Text style={styles.statLine}>No stats available for selected season</Text>
           )}
         </View>
       </View>
@@ -1355,7 +1349,7 @@ export default function PlayerDetailsScreen({ route }: any) {
       {/* CURRENT WEEK STATS */}
       {/* ========================= */}
 
-      { !(isRookie && selectedSeason === mostRecentSeasonRef) && (
+      { week !== undefined && !(isRookie && selectedSeason === mostRecentSeasonRef && !loadingPlayerStats && Object.keys(allWeeksStats).length === 0) && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>
             Week {week} Stats
@@ -1488,7 +1482,7 @@ export default function PlayerDetailsScreen({ route }: any) {
             onPress={() =>
               navigation.navigate('DefenseRoster', {
                 team: displayTeam,
-                week,
+                week: week ?? 1,
               })
             }
           >
@@ -1520,7 +1514,7 @@ export default function PlayerDetailsScreen({ route }: any) {
       {/* WEEK STATS LOG */}
       {/* ========================= */}
 
-      { !(isRookie && selectedSeason === mostRecentSeasonRef) && (
+      { !(isRookie && selectedSeason === mostRecentSeasonRef && !loadingPlayerStats && Object.keys(allWeeksStats).length === 0) && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>
             Weekly Stats Log

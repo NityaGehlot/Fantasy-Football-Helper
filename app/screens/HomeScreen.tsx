@@ -103,8 +103,7 @@ export default function HomeScreen() {
           navigation.navigate('PlayerDetails', {
             player: { ...player, player_id: item.player_id },
             stats: {},
-            week: 1,
-            fantasyPoints: 0,
+                        fantasyPoints: 0,
           })
         }
       >
@@ -143,8 +142,7 @@ export default function HomeScreen() {
           navigation.navigate('PlayerDetails', {
             player: item,
             stats: {},
-            week: 1,
-            fantasyPoints: 0,
+                        fantasyPoints: 0,
           })
         }
       >
@@ -179,7 +177,7 @@ export default function HomeScreen() {
           <Text style={styles.title}>Search for Players</Text>
         </View>
 
-        <SearchBarAndFilter players={players} onSelect={(p) => navigation.navigate('PlayerDetails', { player: p, stats: {}, week: 1, fantasyPoints: 0 })} />
+        <SearchBarAndFilter players={players} onSelect={(p) => navigation.navigate('PlayerDetails', { player: p, stats: {}, fantasyPoints: 0 })} />
 
         {/* ── Trending heading ── */}
         <View style={styles.trendingSectionHeader}>

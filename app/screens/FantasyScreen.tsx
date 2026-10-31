@@ -78,6 +78,8 @@ export default function FantasyScreen() {
   const [matchups, setMatchups] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewedTeamId, setViewedTeamId] = useState<string | null>(null);
+  const [highlightStarters, setHighlightStarters] = useState(false);
+  const [viewMode, setViewMode] = useState<'team' | 'both'>('team');
   const [weekMatchups, setWeekMatchups] = useState<any[]>([]);
   const [leagueInput, setLeagueInput] = useState("");
   const [addingLeague, setAddingLeague] = useState(false);
@@ -720,6 +722,125 @@ const formatPlayerStats = (position: string, stats: any) => {
     if (oa !== ob) return oa - ob;
     return (a.full_name || '').localeCompare(b.full_name || '');
   });
+  const buildSide = (matchup: any) => {
+    const sIds: string[] = matchup?.starters || [];
+    const sorted = sortPlayers(
+      (matchup?.players || []).map((id: string | number) => ({ ...players[id], player_id: id })),
+      sIds
+    );
+    const bench = sorted.filter(p => !sIds.includes(p.player_id));
+    const starters = sorted
+      .filter(p => sIds.includes(p.player_id))
+      .map(p => {
+        const idx = sIds.indexOf(p.player_id);
+        const assignedSlot = (league?.roster_positions && idx >= 0)
+          ? String(league.roster_positions[idx]).toUpperCase()
+          : (p.position || '').toUpperCase();
+        return { ...p, assignedSlot };
+      })
+      .sort((a, b) => {
+        const oa = SLOT_ORDER[a.assignedSlot] ?? 99;
+        const ob = SLOT_ORDER[b.assignedSlot] ?? 99;
+        if (oa !== ob) return oa - ob;
+        return (a.full_name || '').localeCompare(b.full_name || '');
+      });
+    const roster = rosters.find(r => r.roster_id === matchup?.roster_id);
+    const owner = users.find(u => u.user_id === roster?.owner_id);
+    const total = (matchup?.starters_points || []).reduce((a: number, b: number) => a + b, 0);
+    return { matchup, starterIds: sIds, starters, bench, name: owner ? getTeamName(owner) : 'Unknown', total };
+  };
+
+  const opponentMatchup = myWeekMatchup
+    ? weekMatchups.find(m => m.matchup_id === myWeekMatchup.matchup_id && m.roster_id !== myWeekMatchup.roster_id)
+    : undefined;
+  const mySide = buildSide(myWeekMatchup);
+  const oppSide = opponentMatchup ? buildSide(opponentMatchup) : null;
+
+  const renderPlayer = (side: ReturnType<typeof buildSide>, player: any, isStarter: boolean) => {
+    const stats = getPlayerNFLStats(player.player_id, selectedWeek);
+    const statLine = formatPlayerStats(player.position, stats);
+    const imageUri = player.position === 'DEF' ? getTeamLogo(stats?.team || player.team) : getHeadshotUrl(player);
+    const pts = side.matchup?.players_points?.[player.player_id] ?? 0;
+    const positionToShow = isStarter ? (player.assignedSlot || player.position) : player.position;
+    return (
+      <TouchableOpacity
+        key={player.player_id}
+        style={[styles.playerRow, { flex: 1 }]}
+        onPress={() => navigation.navigate('PlayerDetails', { player, stats, week: selectedWeek, fantasyPoints: pts })}
+      >
+        <PlayerCard player={player} stats={stats} statLine={statLine} points={pts} imageUri={imageUri} position={positionToShow} positionColor={getPositionColor(positionToShow || player.position)} team={getDisplayTeam(player, stats)} />
+      </TouchableOpacity>
+    );
+  };
+
+  const renderBanner = (side: ReturnType<typeof buildSide>, other?: ReturnType<typeof buildSide>) => {
+    const outcome = other && weekStatus === 'completed'
+      ? (side.total > other.total ? 'WIN' : side.total < other.total ? 'LOSS' : 'TIE')
+      : null;
+    const outcomeColor = outcome === 'WIN' ? '#16a34a' : outcome === 'LOSS' ? '#dc2626' : '#f59e0b';
+    return outcome ? (
+      <View style={{ backgroundColor: outcomeColor, borderRadius: 8, padding: 8, marginTop: 15 }}>
+        <Text style={{ color: '#fff', fontWeight: '800', fontSize: 20 }} numberOfLines={1}>{side.name}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+          <Text style={{ color: '#fff', fontWeight: '600' }}>Points: {side.total.toFixed(2)}</Text>
+          <Text style={{ color: '#fff', fontWeight: '800', marginLeft: 10 }}>{outcome}</Text>
+        </View>
+      </View>
+    ) : (
+      <Text style={styles.subTitle}>{side.name} · {side.total.toFixed(2)}</Text>
+    );
+  };
+
+  const renderRoster = (side: ReturnType<typeof buildSide>) => (
+    <ScrollView style={{ flex: 1 }}>
+      {renderBanner(side)}
+      <Text style={styles.subTitle}>Starters</Text>
+      {side.starters.map(p => renderPlayer(side, p, true))}
+      <Text style={styles.subTitle}>Bench</Text>
+      {side.bench.map(p => renderPlayer(side, p, false))}
+    </ScrollView>
+  );
+
+  // Rows are paired by index so each player lines up with their counterpart.
+  const renderSideBySide = (left: ReturnType<typeof buildSide>, right: ReturnType<typeof buildSide>) => {
+    const rowColor = (lp: any, rp: any, isStarter: boolean, forLeft: boolean) => {
+      if (!highlightStarters || !isStarter || !lp || !rp) return undefined;
+      const a = left.matchup?.players_points?.[lp.player_id] ?? 0;
+      const b = right.matchup?.players_points?.[rp.player_id] ?? 0;
+      if (a === b) return '#e5e7eb';
+      return (a > b) === forLeft ? '#bbf7d0' : '#fecaca';
+    };
+    const pairRows = (l: any[], r: any[], isStarter: boolean) =>
+      Array.from({ length: Math.max(l.length, r.length) }, (_, i) => (
+        <View key={i} style={{ flexDirection: 'row' }}>
+          <View style={{ flex: 1, marginRight: 4, borderRadius: 8, backgroundColor: rowColor(l[i], r[i], isStarter, true) }}>{l[i] ? renderPlayer(left, l[i], isStarter) : null}</View>
+          <View style={{ flex: 1, marginLeft: 4, borderRadius: 8, backgroundColor: rowColor(l[i], r[i], isStarter, false) }}>{r[i] ? renderPlayer(right, r[i], isStarter) : null}</View>
+        </View>
+      ));
+    return (
+      <ScrollView style={{ flex: 1 }}>
+        <View style={{ flexDirection: 'row' }}>
+          <View style={{ flex: 1, marginRight: 4 }}>{renderBanner(left, right)}</View>
+          <View style={{ flex: 1, marginLeft: 4 }}>{renderBanner(right, left)}</View>
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={[styles.subTitle, { flex: 1 }]}>Starters</Text>
+          <TouchableOpacity
+            style={[styles.teamButton, { marginRight: 0 }, highlightStarters && styles.teamSelected]}
+            onPress={() => setHighlightStarters(v => !v)}
+          >
+            <Text style={[styles.teamText, highlightStarters && styles.teamTextSelected]}>
+              {highlightStarters ? 'Hide Matchup Colors' : 'Show Head-to-Head'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+        {pairRows(left.starters, right.starters, true)}
+        <Text style={styles.subTitle}>Bench</Text>
+        {pairRows(left.bench, right.bench, false)}
+      </ScrollView>
+    );
+  };
+
   const getTeamLogo = (teamAbbrev: string) => {
     if (!teamAbbrev) return 'https://upload.wikimedia.org/wikipedia/commons/1/14/No_Image_Available.jpg';
     return `https://static.www.nfl.com/t_q-best/league/api/clubs/logos/${teamAbbrev.trim()}`;
@@ -750,11 +871,11 @@ const formatPlayerStats = (position: string, stats: any) => {
 
       {/* ========================= NEW TEST BLOCK ========================= */}
       {/* Verify NFL data is loaded */}
-      {playerStats2025 && (
+      {/* {playerStats2025 && (
         <Text style={{ fontSize: 14, color: '#444', marginBottom: 8 }}>
           NFL Stats Loaded: {playerStats2025.length} players 📊
         </Text>
-      )}
+      )} */}
       {/* ================================================================ */}
 
       {/* TEAM SELECTOR */}
@@ -849,64 +970,24 @@ const formatPlayerStats = (position: string, stats: any) => {
         </View>
       </View>
 
+      {/* VIEW MODE */}
+      <View style={{ flexDirection: 'row', marginBottom: 8 }}>
+        {([['team', 'My Team'], ['both', 'Matchup']] as const).map(([mode, label]) => (
+          <TouchableOpacity
+            key={mode}
+            style={[styles.teamButton, viewMode === mode && styles.teamSelected]}
+            onPress={() => setViewMode(mode)}
+          >
+            <Text style={[styles.teamText, viewMode === mode && styles.teamTextSelected]}>{label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       {/* PLAYER LIST */}
       {viewedRoster && (
-        <ScrollView style={{ flex: 1 }}>
-          <Text style={styles.subTitle}>Starters</Text>
-          {startersList.map((player) => {
-            const stats = getPlayerNFLStats(player.player_id, selectedWeek);
-            const statLine = formatPlayerStats(player.position, stats);
-            const imageUri = player.position === 'DEF' ? getTeamLogo(stats?.team || player.team) : getHeadshotUrl(player);
-            const points = getPointsThisWeek(player.player_id);
-            const starterIndex = starterIds.indexOf(player.player_id);
-            const assignedSlot = (league?.roster_positions && typeof starterIndex === 'number' && starterIndex >= 0)
-              ? league.roster_positions[starterIndex]
-              : player.position;
-
-            const positionToShow = assignedSlot || player.position;
-
-            return (
-              <TouchableOpacity
-                key={player.player_id}
-                style={styles.playerRow}
-                onPress={() =>
-                  navigation.navigate('PlayerDetails', {
-                    player,
-                    stats,
-                    week: selectedWeek,
-                    fantasyPoints: points,
-                  })
-                }
-              >
-                <PlayerCard player={player} stats={stats} statLine={statLine} points={points} imageUri={imageUri} position={positionToShow} positionColor={getPositionColor(positionToShow || player.position)} team={getDisplayTeam(player, stats)} />
-              </TouchableOpacity>
-            );
-          })}
-
-          <Text style={styles.subTitle}>Bench</Text>
-          {benchList.map((player) => {
-            const stats = getPlayerNFLStats(player.player_id, selectedWeek);
-            const statLine = formatPlayerStats(player.position, stats);
-            const imageUri = player.position === 'DEF' ? getTeamLogo(stats?.team || player.team) : getHeadshotUrl(player);
-            const points = getPointsThisWeek(player.player_id);
-            return (
-              <TouchableOpacity
-                key={player.player_id}
-                style={styles.playerRow}
-                onPress={() =>
-                  navigation.navigate('PlayerDetails', {
-                    player,
-                    stats,
-                    week: selectedWeek,
-                    fantasyPoints: points,
-                  })
-                }
-              >
-                <PlayerCard player={player} stats={stats} statLine={statLine} points={points} imageUri={imageUri} position={player.position} positionColor={getPositionColor(player.position)} team={getDisplayTeam(player, stats)} />
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
+        viewMode === 'team' ? renderRoster(mySide) :
+        !oppSide ? <Text style={{ color: '#666', padding: 10 }}>No opponent found for this week.</Text> :
+        renderSideBySide(mySide, oppSide)
       )}
     </View>
   );
