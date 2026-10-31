@@ -15,10 +15,13 @@ import { getPlayersFromGithub } from '../services/sleeperAPI';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../AppNavigator';
+import { useFantasy } from '../context/FantasyContext';
 
 type NewsArticle = {
   title: string;
   summary?: string;
+  source?: string;
+  category?: string;
   link?: string;
   published?: string;
   player?: string;
@@ -46,6 +49,7 @@ export default function PlayerDetailsScreen({ route }: any) {
   type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'MainTabs'>;
   const navigation = useNavigation<NavigationProp>();
   const { player, stats, week, fantasyPoints } = route.params;
+  const { myTeam, sendChatMessage, isChatTyping } = useFantasy();
   const displayTeam = String(stats?.team || player?.team || 'N/A');
 
   const [allWeeksStats, setAllWeeksStats] = useState<any>({});
@@ -538,6 +542,15 @@ export default function PlayerDetailsScreen({ route }: any) {
       };
     }
 
+    if (raw === 'slightly_negative') {
+      return {
+        label: 'Monitor',
+        backgroundColor: '#fff7e6',
+        borderColor: '#fcd9a5',
+        textColor: '#b45309',
+      };
+    }
+
     if (raw === 'neutral') {
       return {
         label: 'Neutral',
@@ -604,7 +617,9 @@ export default function PlayerDetailsScreen({ route }: any) {
               <Text numberOfLines={2} style={styles.newsSummary}>{article.summary}</Text>
             )}
             <View style={styles.newsMetaRow}>
-              <Text style={styles.newsMetaText}>{article.published || 'Unknown date'}</Text>
+              <Text style={styles.newsMetaText}>
+                {[article.source, article.published || 'Unknown date'].filter(Boolean).join(' · ')}
+              </Text>
               <View
                 style={[
                   styles.impactBadge,
@@ -1306,6 +1321,20 @@ export default function PlayerDetailsScreen({ route }: any) {
           {basePosition || player.position} • {displayTeam}
         </Text>
 
+        {['QB', 'RB', 'WR', 'TE', 'K', 'DEF'].includes(basePosition) &&
+          !myTeam?.players.some(p => String(p.playerId) === String(player?.player_id)) && (
+          <TouchableOpacity
+            style={styles.dropAskBtn}
+            disabled={isChatTyping}
+            onPress={() => {
+              sendChatMessage(`Who should I drop to pick up ${player.full_name}?`);
+              navigation.navigate('MainTabs', { screen: 'ChatBot' });
+            }}
+          >
+            <Text style={styles.dropAskText}>Who should I drop to add {player.first_name || 'him'}?</Text>
+          </TouchableOpacity>
+        )}
+
         <Text style={styles.experience}>
           {(() => {
             const rookieSeason = getRookieSeason(player, stats);
@@ -1744,6 +1773,18 @@ const styles = StyleSheet.create({
     marginBottom: 10
   },
 
+  dropAskBtn: {
+    marginTop: 10,
+    backgroundColor: '#eef2ff',
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+  },
+  dropAskText: {
+    color: '#4f46e5',
+    fontWeight: '700',
+    fontSize: 13,
+  },
   playerName: {
     fontSize: 26,
     fontWeight: "700"

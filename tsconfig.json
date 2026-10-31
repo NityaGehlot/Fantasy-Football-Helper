@@ -9,5 +9,15 @@
     "allowSyntheticDefaultImports": true,
     "skipLibCheck": true
   },
-  "include": ["app/backend"]
+  "include": [
+    "app/backend"
+  ],
+  "ts-node": {
+    "transpileOnly": true,
+    "compilerOptions": {
+      "module": "commonjs",
+      "moduleResolution": "node",
+      "customConditions": null
+    }
+  }
 }

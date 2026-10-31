@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, NavigatorScreenParams } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { Menu, Provider as PaperProvider } from 'react-native-paper';
 import { Pressable, View, Text, TextInput, Modal, StyleSheet } from 'react-native';
@@ -14,11 +14,21 @@ import ChatBotScreen from './screens/ChatBotScreen';
 import PlayerDetailsScreen from "./screens/PlayerDetailsScreen";
 import DefenseRosterScreen from "./screens/DefenseRosterScreen";
 import ComparePlayerScreen from "./screens/ComparePlayerScreen";
+import TradeIdeasScreen from "./screens/TradeIdeasScreen";
+import { colors } from './theme';
 
 import { FantasyProvider, useFantasy } from './context/FantasyContext';
 import { auth } from './services/firebase';
 
-const Tab = createBottomTabNavigator();
+export type TabParamList = {
+  Home: undefined;
+  Fantasy: undefined;
+  Trades: undefined;
+  ChatBot: undefined;
+  Madden: undefined; // tab currently disabled below
+};
+
+const Tab = createBottomTabNavigator<TabParamList>();
 
 /**
  * ============================
@@ -27,7 +37,7 @@ const Tab = createBottomTabNavigator();
  */
 
 export type RootStackParamList = {
-  MainTabs: undefined;
+  MainTabs: NavigatorScreenParams<TabParamList> | undefined;
   PlayerDetails: {
     player: any;
     stats: any;
@@ -155,7 +165,7 @@ function AccountMenu() {
  * Bottom Tab Navigator
  */
 function TabNavigator() {
-  const { unreadBotMessages, isChatTyping } = useFantasy();
+  const { unreadBotMessages, isChatTyping, unreadTradeIdeas } = useFantasy();
 
   return (
     <Tab.Navigator
@@ -172,6 +182,9 @@ function TabNavigator() {
             case 'Fantasy':
               iconName = 'american-football';
               break;
+            case 'Trades':
+              iconName = 'swap-horizontal';
+              break;
             case 'ChatBot':
               iconName = 'chatbubble-ellipses';
               break;
@@ -181,8 +194,11 @@ function TabNavigator() {
           }
 
           const showChatBadge =
-            route.name === 'ChatBot' && !focused && (isChatTyping || unreadBotMessages > 0);
-          const chatBadgeText = isChatTyping ? '...' : unreadBotMessages > 9 ? '9+' : String(unreadBotMessages);
+            (route.name === 'ChatBot' && !focused && (isChatTyping || unreadBotMessages > 0)) ||
+            (route.name === 'Trades' && !focused && unreadTradeIdeas > 0);
+          const badgeCount = route.name === 'Trades' ? unreadTradeIdeas : unreadBotMessages;
+          const chatBadgeText =
+            route.name === 'ChatBot' && isChatTyping ? '...' : badgeCount > 9 ? '9+' : String(badgeCount);
 
           return (
             <View style={styles.tabIconWrapper}>
@@ -195,13 +211,15 @@ function TabNavigator() {
             </View>
           );
         },
-        tabBarActiveTintColor: '#3b82f6',
+        tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: 'gray',
+        headerTitleStyle: { fontWeight: '800' },
       })}
     >
       <Tab.Screen name="Home" component={HomeScreen} />
       <Tab.Screen name="Fantasy" component={FantasyScreen} />
-      <Tab.Screen name="ChatBot" component={ChatBotScreen} />
+      <Tab.Screen name="Trades" component={TradeIdeasScreen} options={{ title: 'Trade Agent', tabBarLabel: 'Trades' }} />
+      <Tab.Screen name="ChatBot" component={ChatBotScreen} options={{ title: 'AI Assistant', tabBarLabel: 'ChatBot' }} />
       {/* <Tab.Screen name="Madden" component={MaddenScreen} /> */}
     </Tab.Navigator>
   );

@@ -7,7 +7,9 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "test": "node --require ts-node/register --test \"tests/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.app.json && tsc --noEmit -p app/backend/tsconfig.server.json"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

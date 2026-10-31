@@ -13,6 +13,15 @@ import { getLeague } from "../services/sleeperAPI";
 import { fantasyChatResponse } from "../services/FantasyChatbot";
 import { getApiBaseUrl } from "../services/apiBaseUrl";
 import {
+  countUnseen,
+  isScanStale,
+  loadSavedScan,
+  loadSeenIdeaIds,
+  runTradeScan,
+  saveSeenIdeaIds,
+  type TradeIdea,
+} from "../services/tradeAgent";
+import {
   addLeagueForUser,
   removeLeagueForUser,
   listUserLeagues,
@@ -23,6 +32,9 @@ import {
 
 const CHAT_STORAGE_KEY = "fantasy_chat_messages_v1";
 const CHAT_PERSISTENCE_FLAG_KEY = "fantasy_chat_persistence_enabled_v1";
+// Local snapshot of the user's team per league, so roster-aware features work
+// immediately on app open without waiting for Sleeper.
+const myTeamStorageKey = (uid: string, leagueId: string) => `ffh_my_team_v1:${uid}:${leagueId}`;
 
 export type ChatMessage = {
   id: string;
@@ -77,6 +89,14 @@ interface FantasyContextType {
   favoriteTeam: FavoriteTeam | null;
   setMyTeam: (team: MyFantasyTeam, options?: { persist?: boolean }) => Promise<void>;
   clearMyTeam: () => Promise<void>;
+  // Trade agent
+  tradeIdeas: TradeIdea[];
+  tradeScanAt: string | null;
+  isTradeScanning: boolean;
+  tradeScanError: string | null;
+  unreadTradeIdeas: number;
+  refreshTradeIdeas: (force?: boolean) => Promise<void>;
+  markTradeIdeasSeen: () => void;
 }
 
 const FantasyContext = createContext<FantasyContextType | undefined>(undefined);
@@ -94,6 +114,12 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   const [hasLoadedChatStorage, setHasLoadedChatStorage] = useState(false);
   const [myTeam, setMyTeamState] = useState<MyFantasyTeam | null>(null);
   const [favoriteTeam, setFavoriteTeam] = useState<FavoriteTeam | null>(null);
+
+  const [tradeIdeas, setTradeIdeas] = useState<TradeIdea[]>([]);
+  const [tradeScanAt, setTradeScanAt] = useState<string | null>(null);
+  const [isTradeScanning, setIsTradeScanning] = useState(false);
+  const [tradeScanError, setTradeScanError] = useState<string | null>(null);
+  const [seenTradeIdeaIds, setSeenTradeIdeaIds] = useState<string[]>([]);
 
   const typingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const chatIdCounterRef = useRef(0);
@@ -286,6 +312,13 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     const loadMyTeam = async () => {
       if (!user?.uid || !activeLeagueId) return;
       try {
+        const snapshot = await AsyncStorage.getItem(myTeamStorageKey(user.uid, activeLeagueId));
+        const parsed = snapshot ? (JSON.parse(snapshot) as MyFantasyTeam) : null;
+        if (!cancelled && parsed && Array.isArray(parsed.players)) setMyTeamState(parsed);
+      } catch (err) {
+        console.warn("Failed to restore saved team snapshot:", err);
+      }
+      try {
         const saved = await getFavoriteTeamForLeague(user.uid, activeLeagueId);
         if (!cancelled) setFavoriteTeam(saved);
       } catch (err) {
@@ -314,7 +347,71 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   }, [chatMessages, chatPersistenceEnabled, hasLoadedChatStorage]);
 
   // =====================
-  // Load 2025 player stats from backend
+  // Trade agent: load the last scan for this team, and rescan automatically when stale
+  // =====================
+  const tradeLeagueId = myTeam?.leagueId ?? null;
+  const tradeRosterId = myTeam?.rosterId ?? null;
+
+  const refreshTradeIdeas = async (force = false) => {
+    if (!tradeLeagueId || tradeRosterId === null) return;
+    const saved = force ? null : await loadSavedScan(tradeLeagueId, tradeRosterId);
+    if (saved && !isScanStale(saved)) {
+      setTradeIdeas(saved.ideas);
+      setTradeScanAt(saved.generatedAt);
+      return;
+    }
+
+    setIsTradeScanning(true);
+    setTradeScanError(null);
+    try {
+      const scan = await runTradeScan({ leagueId: tradeLeagueId, rosterId: tradeRosterId, ownerId: myTeam?.ownerId });
+      setTradeIdeas(scan.ideas);
+      setTradeScanAt(scan.generatedAt);
+    } catch (err: any) {
+      console.warn("Trade agent scan failed:", err);
+      setTradeScanError(err?.message || "Trade agent failed");
+    } finally {
+      setIsTradeScanning(false);
+    }
+  };
+
+  useEffect(() => {
+    setTradeIdeas([]);
+    setTradeScanAt(null);
+    setTradeScanError(null);
+    if (!tradeLeagueId || tradeRosterId === null) return;
+
+    let cancelled = false;
+    (async () => {
+      const [saved, seen] = await Promise.all([
+        loadSavedScan(tradeLeagueId, tradeRosterId),
+        loadSeenIdeaIds(tradeLeagueId, tradeRosterId),
+      ]);
+      if (cancelled) return;
+      setSeenTradeIdeaIds(seen);
+      if (saved) {
+        setTradeIdeas(saved.ideas);
+        setTradeScanAt(saved.generatedAt);
+      }
+      if (isScanStale(saved)) refreshTradeIdeas(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tradeLeagueId, tradeRosterId]);
+
+  const unreadTradeIdeas = countUnseen(tradeIdeas, seenTradeIdeaIds);
+
+  const markTradeIdeasSeen = () => {
+    if (!tradeLeagueId || tradeRosterId === null || unreadTradeIdeas === 0) return;
+    const next = [...new Set([...seenTradeIdeaIds, ...tradeIdeas.map(i => i.id)])];
+    setSeenTradeIdeaIds(next);
+    saveSeenIdeaIds(tradeLeagueId, tradeRosterId, next);
+  };
+
+  // =====================
+  // Load current-season player stats from backend
   // =====================
   // Replace the existing loadStats useEffect with this:
   useEffect(() => {
@@ -367,6 +464,11 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
 
   const setMyTeam = async (team: MyFantasyTeam, { persist = true }: { persist?: boolean } = {}) => {
     setMyTeamState(team);
+    if (user?.uid && activeLeagueId) {
+      AsyncStorage.setItem(myTeamStorageKey(user.uid, activeLeagueId), JSON.stringify(team)).catch(err =>
+        console.warn("Failed to save team snapshot:", err)
+      );
+    }
     if (!persist) return;
     const saved = { teamName: team.teamName, ownerId: team.ownerId };
     setFavoriteTeam(saved);
@@ -382,6 +484,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     setMyTeamState(null);
     setFavoriteTeam(null);
     if (!user?.uid || !activeLeagueId) return;
+    AsyncStorage.removeItem(myTeamStorageKey(user.uid, activeLeagueId)).catch(() => undefined);
     try {
       await setFavoriteTeamForLeague(user.uid, activeLeagueId, null);
     } catch (err) {
@@ -414,7 +517,14 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
         myTeam,
         favoriteTeam,
         setMyTeam,
-        clearMyTeam
+        clearMyTeam,
+        tradeIdeas,
+        tradeScanAt,
+        isTradeScanning,
+        tradeScanError,
+        unreadTradeIdeas,
+        refreshTradeIdeas,
+        markTradeIdeasSeen
       }}
     >
       {children}

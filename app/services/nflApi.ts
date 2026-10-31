@@ -1,7 +1,37 @@
 // app/services/nflApi.ts
 
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getApiBaseUrl } from "./apiBaseUrl";
 import { getNFLState } from "./sleeperAPI";
+import { createCache, MINUTE } from "./cache";
+
+const cache = createCache({ storage: AsyncStorage, prefix: "ffh_nfl_cache_v1:" });
+
+// ESPN scoreboard for one week. Short TTL so live game states stay fresh.
+async function getEspnScoreboard(season: number, week: number, seasonType: 2 | 3 = 2): Promise<any> {
+  return cache.get(`espn:${season}:${seasonType}:${week}`, 5 * MINUTE, async () => {
+    const response = await fetch(
+      `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${season}&seasontype=${seasonType}&week=${week}`
+    );
+    if (!response.ok) throw new Error(`Failed to fetch NFL schedule for ${season} week ${week}`);
+    return response.json();
+  });
+}
+
+// Team abbreviations (Sleeper style) that have a game in the given regular-season week.
+// Any team missing from the set is on bye.
+export async function getTeamsPlayingInWeek(season: number, week: number): Promise<Set<string>> {
+  const data = await getEspnScoreboard(season, week);
+  const aliases: Record<string, string> = { WSH: "WAS", JAC: "JAX", LA: "LAR" };
+  const teams = new Set<string>();
+  for (const event of data?.events ?? []) {
+    for (const competitor of event?.competitions?.[0]?.competitors ?? []) {
+      const abbr = String(competitor?.team?.abbreviation ?? "").toUpperCase();
+      if (abbr) teams.add(aliases[abbr] ?? abbr);
+    }
+  }
+  return teams;
+}
 
 export type WeekStatus = 'upcoming' | 'in_progress' | 'completed';
 
@@ -16,8 +46,16 @@ export async function getPlayerStats() {
   }
 }
 
+// NFL seasons are labeled by the year they start; Jan-Feb games belong to the previous season
+export const getCurrentNFLSeason = (date: Date = new Date()) =>
+  date.getMonth() + 1 >= 3 ? date.getFullYear() : date.getFullYear() - 1;
+
 // Per-week fetch (used by FantasyScreen for injury badges)
-export async function getPlayerStatsByWeek(week: number, season: number = 2025): Promise<any[]> {
+export async function getPlayerStatsByWeek(week: number, season: number = getCurrentNFLSeason()): Promise<any[]> {
+  return cache.get(`weekStats:${season}:${week}`, 10 * MINUTE, () => loadPlayerStatsByWeek(week, season));
+}
+
+async function loadPlayerStatsByWeek(week: number, season: number): Promise<any[]> {
   const response = await fetch(`${getApiBaseUrl()}/player-stats-week/${week}?season=${season}`);
   if (!response.ok) throw new Error(`Failed to fetch week ${week} stats`);
 
@@ -62,12 +100,7 @@ export async function getNFLWeekStatus(
   week: number,
   seasonType: 2 | 3 = 2
 ): Promise<WeekStatus | null> {
-  const response = await fetch(
-    `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${season}&seasontype=${seasonType}&week=${week}`
-  );
-  if (!response.ok) throw new Error(`Failed to fetch NFL schedule for ${season} week ${week}`);
-
-  const data = await response.json();
+  const data = await getEspnScoreboard(season, week, seasonType);
   const states: string[] = (data?.events ?? []).map((e: any) => e?.status?.type?.state);
   if (states.length === 0) return null;
   if (states.every(s => s === 'pre')) return 'upcoming';

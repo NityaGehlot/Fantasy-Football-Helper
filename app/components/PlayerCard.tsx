@@ -123,7 +123,6 @@ const styles = StyleSheet.create({
   stripeGreen: { flex: 1, height: '100%', backgroundColor: '#888' },
   stripeYellow: { flex: 1, height: '100%', backgroundColor: '#888' },
   flexLabelWrap: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, justifyContent: 'center', alignItems: 'center' },
-  playerStats: { flexDirection: 'row', width: 50 },
   playerStats: { width: 72, alignItems: 'flex-end', marginLeft: 'auto' },
   statText: { fontSize: 18, fontWeight: '800', textAlign: 'right' },
   statLine: { fontSize: 12, color: '#333' },

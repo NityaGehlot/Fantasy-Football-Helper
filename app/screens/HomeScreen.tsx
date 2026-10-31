@@ -7,6 +7,8 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../AppNavigator';
 import PlayerCard from '../components/PlayerCard';
 import SearchBarAndFilter from '../components/SearchBarAndFilter';
+import { useFantasy } from '../context/FantasyContext';
+import { colors, radius } from '../theme';
 
 export default function HomeScreen() {
   const [players, setPlayers] = useState<any>({});
@@ -18,6 +20,14 @@ export default function HomeScreen() {
 
   type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'MainTabs'>;
   const navigation = useNavigation<NavigationProp>();
+  const { sendChatMessage, isChatTyping } = useFantasy();
+
+  // Ask the assistant who to drop from your roster to make room for this player.
+  const askWhoToDrop = (playerName: string) => {
+    if (!playerName || isChatTyping) return;
+    sendChatMessage(`Who should I drop to pick up ${playerName}?`);
+    navigation.navigate('MainTabs', { screen: 'ChatBot' });
+  };
 
   const OFFENSE_POSITIONS = ['QB', 'RB', 'WR', 'TE', 'K'];
   const DEFENSE_TRENCHES = ['DL', 'DE', 'DT', 'NT'];
@@ -98,7 +108,7 @@ export default function HomeScreen() {
     return (
       <TouchableOpacity
         key={item.player_id}
-        style={styles.trendingItem}
+        style={[styles.trendingItem, isAdd && styles.trendingItemWithAction]}
         onPress={() =>
           navigation.navigate('PlayerDetails', {
             player: { ...player, player_id: item.player_id },
@@ -111,13 +121,15 @@ export default function HomeScreen() {
           <Text style={styles.rankText}>{index + 1}</Text>
         </View>
 
-        <PlayerCard
-          player={{ ...player, player_id: item.player_id }}
-          compact
-          position={posToUse}
-          positionColor={getPositionColor(posToUse)}
-          imageUri={posToUse === 'DEF' || player.position === 'DEF' ? getTeamLogo(player.team) : getHeadshotUrl(player)}
-        />
+        <View style={styles.trendPlayer}>
+          <PlayerCard
+            player={{ ...player, player_id: item.player_id }}
+            compact
+            position={posToUse}
+            positionColor={getPositionColor(posToUse)}
+            imageUri={posToUse === 'DEF' || player.position === 'DEF' ? getTeamLogo(player.team) : getHeadshotUrl(player)}
+          />
+        </View>
 
         <View style={styles.trendInfo}>
           <View style={styles.trendCountRow}>
@@ -131,6 +143,17 @@ export default function HomeScreen() {
           </View>
           <Text style={styles.trendLabel}>{isAdd ? 'adds' : 'drops'}</Text>
         </View>
+
+        {isAdd && (
+          <TouchableOpacity
+            style={styles.dropAskBtn}
+            onPress={() => askWhoToDrop(player.full_name || `${player.first_name ?? ''} ${player.last_name ?? ''}`.trim())}
+            accessibilityLabel={`Ask who to drop to pick up ${player.full_name}`}
+          >
+            <Ionicons name="swap-vertical" size={12} color={colors.primary} />
+            <Text style={styles.dropAskText} numberOfLines={1}>Who should I drop?</Text>
+          </TouchableOpacity>
+        )}
       </TouchableOpacity>
     );
   };
@@ -362,8 +385,13 @@ const styles = StyleSheet.create({
     color: '#666',
     marginTop: 2,
   },
-  trendInfo: {
+  trendPlayer: {
     flex: 1,
+    minWidth: 0,
+  },
+  trendInfo: {
+    flexShrink: 0,
+    marginLeft: 8,
     alignItems: 'flex-end',
   },
   trendCountRow: {
@@ -387,6 +415,26 @@ const styles = StyleSheet.create({
   trendLabel: {
     fontSize: 12,
     color: '#666',
+  },
+  trendingItemWithAction: {
+    paddingBottom: 34,
+  },
+  dropAskBtn: {
+    position: 'absolute',
+    right: 15,
+    bottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  dropAskText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.primary,
   },
 
   // ── Search ──

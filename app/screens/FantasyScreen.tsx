@@ -18,11 +18,15 @@ import {
   getPlayers,
   getMatchups,
   getLeagueHistory,
-  getNFLState
+  getNFLState,
+  refreshLeagueCache
 } from '../services/sleeperAPI';
 
 // >>> ADDED
-import { getPlayerStatsByWeek, getNFLWeekStatus, type WeekStatus } from '../services/nflApi';
+import { getPlayerStatsByWeek, getNFLWeekStatus, getTeamsPlayingInWeek, type WeekStatus } from '../services/nflApi';
+import { getLineupAlerts, type LineupAlert } from '../services/lineupAlerts';
+import { Ionicons } from '@expo/vector-icons';
+import { colors, radius, shadow } from '../theme';
 import { useFantasy, type MyFantasyTeam } from "../context/FantasyContext";
 
 import { Picker } from '@react-native-picker/picker';
@@ -89,6 +93,8 @@ export default function FantasyScreen() {
   const [loadingSeasons, setLoadingSeasons] = useState(false);
   const [nflState, setNflState] = useState<{ season?: string; week?: number; season_type?: string } | null>(null);
   const [espnWeekStatus, setEspnWeekStatus] = useState<WeekStatus | null>(null);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [teamsPlaying, setTeamsPlaying] = useState<Set<string> | null>(null);
   type NavigationProp = NativeStackNavigationProp<
     RootStackParamList,
     "MainTabs"
@@ -113,56 +119,6 @@ export default function FantasyScreen() {
     favoriteTeam,
     setMyTeam,
   } = useFantasy();
-
-
-  // =====================
-// TEMP: No league added yet
-// =====================
-if (!activeLeagueId) {
-  return (
-    <View style={styles.center}>
-      <Text style={{ fontSize: 18, marginBottom: 12 }}>
-        You don't have a league selected yet.
-      </Text>
-      <TextInput
-        placeholder="Enter League ID"
-        value={newLeagueInput}
-        onChangeText={setNewLeagueInput}
-        style={{
-          borderWidth: 1,
-          borderColor: "#ccc",
-          padding: 10,
-          borderRadius: 8,
-          width: "80%",
-          marginBottom: 12,
-        }}
-      />
-      <Pressable
-        style={{
-          backgroundColor: "#4f46e5",
-          padding: 12,
-          borderRadius: 8,
-          width: "50%",
-          alignItems: "center",
-        }}
-        onPress={async () => {
-          if (!newLeagueInput.trim()) return;
-          setAddingLeague(true);
-          try {
-            await addLeague(newLeagueInput.trim());
-            setNewLeagueInput("");
-          } catch (err) {
-            console.error("Error adding league:", err);
-          } finally {
-            setAddingLeague(false);
-          }
-        }}
-      >
-        <Text style={{ color: "#fff" }}>{addingLeague ? "Adding..." : "Add League"}</Text>
-      </Pressable>
-    </View>
-  );
-}
 
 
   // =====================
@@ -305,7 +261,7 @@ useEffect(() => {
   return () => {
     cancelled = true;
   };
-}, [selectedSeasonLeagueId, selectedWeek]); // re-runs on season or week change
+}, [selectedSeasonLeagueId, selectedWeek, refreshNonce]); // re-runs on season/week change or Refresh
 
 
   useEffect(() => {
@@ -393,6 +349,30 @@ useEffect(() => {
       cancelled = true;
     };
   }, [selectedSeasonLeagueId, selectedWeek, availableSeasons, nflState]);
+
+  // Teams with a game in the selected week (anyone else is on bye) for lineup alerts
+  useEffect(() => {
+    setTeamsPlaying(null);
+    const season = Number(
+      availableSeasons.find(s => s.league_id === selectedSeasonLeagueId)?.season
+    );
+    if (!season || season !== Number(nflState?.season) || selectedWeek > 18) return;
+
+    let cancelled = false;
+    getTeamsPlayingInWeek(season, selectedWeek)
+      .then(teams => { if (!cancelled) setTeamsPlaying(teams); })
+      .catch(err => console.warn('Failed to load bye weeks from ESPN:', err));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSeasonLeagueId, selectedWeek, availableSeasons, nflState]);
+
+  const handleRefresh = async () => {
+    if (!selectedSeasonLeagueId) return;
+    await refreshLeagueCache(selectedSeasonLeagueId);
+    setRefreshNonce(n => n + 1);
+  };
 
   const getHeadshotUrl = (player: any) => {
     // 1. Try ESPN headshot using espn_id (best quality)
@@ -579,7 +559,6 @@ const formatPlayerStats = (position: string, stats: any) => {
   if (!stats) return [];
 
   const lines: string[] = [];
-  console.log("DEBUG stats object:", stats);
 
   const pos = String(position).trim().toUpperCase();
 
@@ -685,6 +664,58 @@ const formatPlayerStats = (position: string, stats: any) => {
   // Trim extra spaces around '/'
   return lines.map(line => line.replace(/\/\s+/g, '/').trim());
 };
+
+  // =====================
+// TEMP: No league added yet
+// =====================
+// Must stay below every hook: returning before them breaks React's hook order
+// when the first league is added.
+if (!activeLeagueId) {
+  return (
+    <View style={styles.center}>
+      <Text style={{ fontSize: 18, marginBottom: 12 }}>
+        You don't have a league selected yet.
+      </Text>
+      <TextInput
+        placeholder="Enter League ID"
+        value={newLeagueInput}
+        onChangeText={setNewLeagueInput}
+        style={{
+          borderWidth: 1,
+          borderColor: "#ccc",
+          padding: 10,
+          borderRadius: 8,
+          width: "80%",
+          marginBottom: 12,
+        }}
+      />
+      <Pressable
+        style={{
+          backgroundColor: "#4f46e5",
+          padding: 12,
+          borderRadius: 8,
+          width: "50%",
+          alignItems: "center",
+        }}
+        onPress={async () => {
+          if (!newLeagueInput.trim()) return;
+          setAddingLeague(true);
+          try {
+            await addLeague(newLeagueInput.trim());
+            setNewLeagueInput("");
+          } catch (err) {
+            console.error("Error adding league:", err);
+          } finally {
+            setAddingLeague(false);
+          }
+        }}
+      >
+        <Text style={{ color: "#fff" }}>{addingLeague ? "Adding..." : "Add League"}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 
   if (loading) {
     return (
@@ -865,18 +896,31 @@ const formatPlayerStats = (position: string, stats: any) => {
     result === 'LOSS' ? 'red' :
     weekStatus === 'completed' ? 'orange' : '#666';
 
+  // Only warn about your own lineup, and only for weeks that aren't over.
+  const isViewingMyTeam = !!myTeam && myTeam.ownerId === viewedTeamId;
+  const lineupAlerts: LineupAlert[] =
+    isViewingMyTeam && weekStatus !== 'completed'
+      ? getLineupAlerts({
+          starterIds: myWeekMatchup?.starters ?? viewedRoster?.starters ?? [],
+          rosterPositions: league?.roster_positions ?? [],
+          playersById: players,
+          teamsPlaying,
+          week: selectedWeek,
+        })
+      : [];
+
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>League Name: {league?.name}</Text>
-
-      {/* ========================= NEW TEST BLOCK ========================= */}
-      {/* Verify NFL data is loaded */}
-      {/* {playerStats2025 && (
-        <Text style={{ fontSize: 14, color: '#444', marginBottom: 8 }}>
-          NFL Stats Loaded: {playerStats2025.length} players 📊
-        </Text>
-      )} */}
-      {/* ================================================================ */}
+      <View style={styles.headerRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.leagueLabel}>LEAGUE</Text>
+          <Text style={styles.title} numberOfLines={1}>{league?.name}</Text>
+        </View>
+        <TouchableOpacity style={styles.refreshBtn} onPress={handleRefresh}>
+          <Ionicons name="refresh" size={16} color={colors.primary} />
+          <Text style={styles.refreshText}>Refresh</Text>
+        </TouchableOpacity>
+      </View>
 
       {/* TEAM SELECTOR */}
       <Text style={styles.subTitle}>View Team</Text>
@@ -970,6 +1014,29 @@ const formatPlayerStats = (position: string, stats: any) => {
         </View>
       </View>
 
+      {/* LINEUP ALERTS (bye weeks / injuries / empty slots) */}
+      {isViewingMyTeam && weekStatus !== 'completed' && (
+        <View style={[styles.alertBox, lineupAlerts.length === 0 && styles.alertBoxOk]}>
+          <View style={styles.alertHeader}>
+            <Ionicons
+              name={lineupAlerts.length ? 'warning' : 'checkmark-circle'}
+              size={16}
+              color={lineupAlerts.length ? colors.warning : colors.success}
+            />
+            <Text style={styles.alertTitle}>
+              {lineupAlerts.length
+                ? `${lineupAlerts.length} lineup ${lineupAlerts.length === 1 ? 'issue' : 'issues'} for week ${selectedWeek}`
+                : `Your starters are all set for week ${selectedWeek}`}
+            </Text>
+          </View>
+          {lineupAlerts.map((alert, i) => (
+            <Text key={`${alert.playerId ?? alert.slot}-${i}`} style={[styles.alertLine, (alert.kind === 'out' || alert.kind === 'empty' || alert.kind === 'bye') && styles.alertLineSevere]}>
+              • {alert.message}
+            </Text>
+          ))}
+        </View>
+      )}
+
       {/* VIEW MODE */}
       <View style={{ flexDirection: 'row', marginBottom: 8 }}>
         {([['team', 'My Team'], ['both', 'Matchup']] as const).map(([mode, label]) => (
@@ -997,11 +1064,21 @@ const styles = StyleSheet.create({
   container: { flex: 1, padding: 20, backgroundColor: '#fff' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
-  title: { fontSize: 26, fontWeight: 'bold', marginBottom: 20 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 12 },
+  leagueLabel: { fontSize: 11, fontWeight: '800', color: colors.textMuted, letterSpacing: 0.8 },
+  title: { fontSize: 26, fontWeight: 'bold', color: colors.text },
+  refreshBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.primarySoft, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 7 },
+  refreshText: { color: colors.primary, fontWeight: '700', fontSize: 13 },
+  alertBox: { backgroundColor: colors.warningSoft, borderRadius: radius.md, padding: 12, marginTop: 12, gap: 4, ...shadow },
+  alertBoxOk: { backgroundColor: colors.successSoft },
+  alertHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
+  alertTitle: { fontWeight: '800', color: colors.text, fontSize: 14 },
+  alertLine: { fontSize: 13, color: colors.text },
+  alertLineSevere: { color: colors.danger, fontWeight: '600' },
   subTitle: { fontSize: 20, fontWeight: '600', marginTop: 15, marginBottom: 10 },
 
-  teamButton: { paddingHorizontal: 12, paddingVertical: 8, backgroundColor: '#eee', borderRadius: 10, marginRight: 10 },
-  teamSelected: { backgroundColor: '#4f46e5' },
+  teamButton: { paddingHorizontal: 14, paddingVertical: 8, backgroundColor: colors.surfaceMuted, borderRadius: radius.pill, marginRight: 8 },
+  teamSelected: { backgroundColor: colors.primary },
   teamText: { fontSize: 16, color: '#000' },
   teamTextSelected: { color: '#fff', fontWeight: 'bold' },
 

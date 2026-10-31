@@ -25,14 +25,19 @@ import {
   buildSkillPositionResponseFormat,
   buildRosterDecisionResponseFormat,
 } from "./services/promptBuilder";
-
-// ===============================
-// Constants
-// ===============================
-const STATS_MIN_WEEK = 1;
-const STATS_MAX_WEEK = 22;
-const DEFAULT_STATS_SEASON = 2025;
-const STATS_ROOT_URL = "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/Stats";
+import {
+  STATS_MIN_WEEK,
+  STATS_MAX_WEEK,
+  getWeekRows,
+  getSeasonRows,
+  resolveStatsSeason,
+  latestWeekWithData,
+} from "./services/statsStore";
+import { detectIntent } from "./services/intent";
+import { handleAdvisorQuestion, AdvisorResult } from "./services/advisor";
+import { generateWithLLM } from "./services/llm";
+import { getLeagueContext } from "./services/leagueContext";
+import { generateTradeIdeas } from "./services/tradeEngine";
 
 // ===============================
 // Types
@@ -73,113 +78,6 @@ type MyTeamPayload = {
 // Utility Functions
 // ===============================
 
-function parseSeason(value: unknown): number {
-  const season = Number(value);
-  return Number.isInteger(season) && season >= 1999 && season <= 2100 ? season : DEFAULT_STATS_SEASON;
-}
-
-function getWeekStatsFileName(week: number, season: number): string {
-  return `player_stats_${season}_week${String(week).padStart(2, "0")}.json`;
-}
-
-function getWeekStatsUrl(week: number, season: number): string {
-  return `${STATS_ROOT_URL}/${season}%20Season/${season}%20Offense/${getWeekStatsFileName(week, season)}`;
-}
-
-function getDefensiveWeekStatsUrl(week: number, season: number): string {
-  return `${STATS_ROOT_URL}/${season}%20Season/${season}%20Defense/${getWeekStatsFileName(week, season)}`;
-}
-
-async function getDefensiveStatsForWeek(week: number, season: number): Promise<any[]> {
-  try {
-    const url = getDefensiveWeekStatsUrl(week, season);
-    const response = await fetch(url);
-    if (!response.ok) {
-      console.warn(`⚠️ Failed to fetch defensive stats for ${season} week ${week}`);
-      return [];
-    }
-
-    const rawData = await response.json();
-    const rows = Array.isArray(rawData) ? rawData : (Object.values(rawData ?? {}).flat() as any[]);
-    
-    return rows.map((player: any) => ({
-      ...player,
-      week: Number(String(player.week).trim()),
-      fantasy_points_ppr: Number(player.fantasy_points_ppr) || 0,
-      def_tackles_solo: Number(player.def_tackles_solo) || 0,
-      def_tackles_with_assist: Number(player.def_tackles_with_assist) || 0,
-      def_tackles_for_loss: Number(player.def_tackles_for_loss) || 0,
-      def_tackles_for_loss_yards: Number(player.def_tackles_for_loss_yards) || 0,
-      def_sacks: Number(player.def_sacks) || 0,
-      def_sack_yards: Number(player.def_sack_yards) || 0,
-      def_qb_hits: Number(player.def_qb_hits) || 0,
-      def_fumbles_forced: Number(player.def_fumbles_forced) || 0,
-      def_safeties: Number(player.def_safeties) || 0,
-      def_tds: Number(player.def_tds) || 0,
-      def_interceptions: Number(player.def_interceptions) || 0,
-      def_interception_yards: Number(player.def_interception_yards) || 0,
-      def_pass_defended: Number(player.def_pass_defended) || 0,
-      fumble_recovery_opp: Number(player.fumble_recovery_opp) || 0,
-      fumble_recovery_yards_opp: Number(player.fumble_recovery_yards_opp) || 0,
-    }));
-  } catch (err) {
-    console.warn(`⚠️ Error loading defensive stats for week ${week}:`, err);
-    return [];
-  }
-}
-
-function normalizeWeekStats(raw: any): any[] {
-  const rows = Array.isArray(raw) ? raw : (Object.values(raw ?? {}).flat() as any[]);
-
-  return rows.map((player: any) => ({
-    ...player,
-    week: Number(String(player.week).trim()),
-    fantasy_points_ppr: Number(player.fantasy_points_ppr) || 0,
-    completions: Number(player.completions) || 0,
-    attempts: Number(player.attempts) || 0,
-    passing_yards: Number(player.passing_yards) || 0,
-    passing_tds: Number(player.passing_tds) || 0,
-    passing_interceptions: Number(player.passing_interceptions) || 0,
-    carries: Number(player.carries) || 0,
-    rushing_yards: Number(player.rushing_yards) || 0,
-    rushing_tds: Number(player.rushing_tds) || 0,
-    receptions: Number(player.receptions) || 0,
-    targets: Number(player.targets) || 0,
-    receiving_yards: Number(player.receiving_yards) || 0,
-    receiving_tds: Number(player.receiving_tds) || 0,
-    fg_att: Number(player.fg_att) || 0,
-    fg_made: Number(player.fg_made) || 0,
-    fg_missed: Number(player.fg_missed) || 0,
-    fg_made_0_19: Number(player.fg_made_0_19) || 0,
-    fg_made_20_29: Number(player.fg_made_20_29) || 0,
-    fg_made_30_39: Number(player.fg_made_30_39) || 0,
-    fg_made_40_49: Number(player.fg_made_40_49) || 0,
-    fg_made_50_59: Number(player.fg_made_50_59) || 0,
-    fg_made_60_: Number(player.fg_made_60_) || 0,
-    pat_att: Number(player.pat_att) || 0,
-    pat_made: Number(player.pat_made) || 0,
-  }));
-}
-
-async function readWeekStatsFromSource(week: number, season: number): Promise<any[]> {
-  if (!Number.isFinite(week) || week < STATS_MIN_WEEK || week > STATS_MAX_WEEK) {
-    throw new Error(`Week must be between ${STATS_MIN_WEEK} and ${STATS_MAX_WEEK}`);
-  }
-
-  try {
-    const offensiveResponse = await fetch(getWeekStatsUrl(week, season));
-    const offensiveData = offensiveResponse.ok ? await offensiveResponse.json() : [];
-    const offensiveStats = normalizeWeekStats(offensiveData);
-    const defensiveStats = await getDefensiveStatsForWeek(week, season);
-    const combinedStats = [...offensiveStats, ...defensiveStats];
-
-    return combinedStats;
-  } catch (err) {
-    console.error(`Error loading stats for ${season} week ${week}:`, err);
-    throw err;
-  }
-}
-
 function getCurrentFantasyWeek(playerStats: any[]): number {
   const weeksWithData = playerStats
     .filter(p => Number(p.fantasy_points_ppr) > 0 && Number(p.week) <= STATS_MAX_WEEK)
@@ -190,20 +88,14 @@ function getCurrentFantasyWeek(playerStats: any[]): number {
   return Math.min(latestWeekWithData, STATS_MAX_WEEK);
 }
 
-function getSeasonYear(playerStats: any[]): number {
-  const seasons = playerStats
-    .map(p => Number(p.season))
-    .filter(year => Number.isFinite(year) && year > 0);
-
-  return seasons.length > 0 ? Math.max(...seasons) : DEFAULT_STATS_SEASON;
-}
-
 function resolveAnalysisWeek(playerStats: any[], requestedWeek?: number): number {
+  const latest = getCurrentFantasyWeek(playerStats);
   if (Number.isFinite(requestedWeek) && Number(requestedWeek) > 0) {
-    return Math.min(Number(requestedWeek), STATS_MAX_WEEK);
+    // Never analyze past the next unplayed week (the app's default week can be stale).
+    return Math.min(Number(requestedWeek), latest + 1, STATS_MAX_WEEK);
   }
 
-  return getCurrentFantasyWeek(playerStats);
+  return latest;
 }
 
 function normalizeTeamAbbreviation(team: string | null | undefined): string {
@@ -513,13 +405,8 @@ export function registerRoutes(router: Router): void {
   // ===============================
   router.get("/api/stats", async (req: Request, res: Response) => {
     try {
-      const season = parseSeason(req.query.season);
-      const statsResponse = await fetch(`http://127.0.0.1:4000/player-stats-all-weeks?season=${season}`);
-      if (!statsResponse.ok) {
-        throw new Error("Failed to fetch player stats");
-      }
-
-      const data = await statsResponse.json();
+      const season = await resolveStatsSeason(req.query.season);
+      const data = await getSeasonRows(season);
       res.set("Cache-Control", "public, max-age=300");
       res.json(data);
     } catch (err) {
@@ -539,13 +426,8 @@ export function registerRoutes(router: Router): void {
     }
 
     try {
-      const season = parseSeason(req.query.season);
-      const statsResponse = await fetch(`http://127.0.0.1:4000/player-stats-week/${week}?season=${season}`);
-      if (!statsResponse.ok) {
-        throw new Error(`Failed to fetch stats for week ${week}`);
-      }
-
-      const data = await statsResponse.json();
+      const season = await resolveStatsSeason(req.query.season);
+      const data = await getWeekRows(week, season);
       res.set("Cache-Control", "public, max-age=300");
       res.json(data);
     } catch (err) {
@@ -559,13 +441,13 @@ export function registerRoutes(router: Router): void {
   // ===============================
   router.get("/player-stats-week/:week", async (req: Request, res: Response) => {
     const week = Number(req.params.week);
-    const season = parseSeason(req.query.season);
 
     try {
-      const cleaned = await readWeekStatsFromSource(week, season);
+      const season = await resolveStatsSeason(req.query.season);
+      const cleaned = await getWeekRows(week, season);
       res.json(cleaned);
     } catch (err) {
-      console.error(`❌ Failed to load ${season} week ${week} stats:`, err);
+      console.error(`❌ Failed to load week ${week} stats:`, err);
       res.status(500).json({ error: `Failed to load week ${week} stats` });
     }
   });
@@ -574,35 +456,46 @@ export function registerRoutes(router: Router): void {
   // All weeks combined (for chatbot)
   // ===============================
   router.get("/player-stats-all-weeks", async (req: Request, res: Response) => {
-    const season = parseSeason(req.query.season);
-
     try {
-      const weekNumbers = Array.from(
-        { length: STATS_MAX_WEEK - STATS_MIN_WEEK + 1 },
-        (_, i) => STATS_MIN_WEEK + i
-      );
-
-      const allDataSettled = await Promise.allSettled(
-        weekNumbers.map((week) => readWeekStatsFromSource(week, season))
-      );
-
-      const combined: any[] = [];
-
-      allDataSettled.forEach((result, idx) => {
-        if (result.status === "fulfilled") {
-          combined.push(...result.value);
-        } else {
-          console.warn(
-            `⚠️ Missing or invalid stats file for week ${weekNumbers[idx]} (${getWeekStatsFileName(weekNumbers[idx], season)})`
-          );
-        }
-      });
-
-      console.log(`✅ All weeks combined (${season}, weeks 1-22):`, combined.length, "rows");
+      const season = await resolveStatsSeason(req.query.season);
+      const combined = await getSeasonRows(season);
+      console.log(`✅ All weeks combined (${season}, weeks ${STATS_MIN_WEEK}-${STATS_MAX_WEEK}):`, combined.length, "rows");
       res.json(combined);
     } catch (err) {
       console.error("❌ Failed to load all weeks:", err);
       res.status(500).json({ error: "Failed to load all weeks" });
+    }
+  });
+
+  // ===============================
+  // Trade Agent: trade ideas for the user's team
+  // ===============================
+  router.post("/trade-ideas", async (req: Request, res: Response) => {
+    const { leagueId, rosterId, ownerId } = (req.body ?? {}) as {
+      leagueId?: string;
+      rosterId?: number;
+      ownerId?: string;
+    };
+    if (!leagueId) {
+      return res.status(400).json({ error: "leagueId is required" });
+    }
+
+    try {
+      const ctx = await getLeagueContext(String(leagueId), rosterId, ownerId);
+      if (!ctx.me) {
+        return res.status(404).json({ error: "Your team was not found in this league." });
+      }
+      const others = ctx.teams.filter(t => t.rosterId !== ctx.me!.rosterId);
+      const ideas = generateTradeIdeas(ctx.me, others, ctx.slots, { maxIdeas: 6, perPartner: 2 });
+      res.json({
+        generatedAt: new Date().toISOString(),
+        season: ctx.values.season,
+        leagueId: String(leagueId),
+        ideas,
+      });
+    } catch (err) {
+      console.error("❌ Trade ideas failed:", err);
+      res.status(500).json({ error: "Failed to generate trade ideas" });
     }
   });
 
@@ -622,19 +515,57 @@ export function registerRoutes(router: Router): void {
     }
 
     try {
-      const statsResponse = await fetch("http://127.0.0.1:4000/player-stats-all-weeks");
-      if (!statsResponse.ok) throw new Error("Failed to fetch player stats");
-      const playerStats = (await statsResponse.json()) as any[];
+      const season = await resolveStatsSeason();
+      const playerStats = await getSeasonRows(season);
 
       const currentWeek = resolveAnalysisWeek(playerStats, selectedWeek);
-      const seasonYear = getSeasonYear(playerStats);
-      const opponentMap = await fetchOpponentMap(seasonYear, currentWeek);
+      const seasonYear = season;
 
-      console.log(`📅 Fantasy matchup week: ${currentWeek}`);
+      console.log(`📅 Fantasy matchup week: ${currentWeek} (${seasonYear})`);
       console.log("📦 Backend fetched stats:", playerStats.length);
 
+      const intent = detectIntent(message);
       let mentionedPlayers = extractAllPlayers(message, playerStats);
       const requestedPosition = inferRequestedPosition(message);
+      console.log(`🧭 Intent: ${intent}`);
+
+      // Lineup-wide, waiver, trade, draft and general questions use the league-aware advisor.
+      // Start/sit questions about specific players or one position keep the detailed flow below.
+      const wholeLineup = intent === "start_sit" && mentionedPlayers.length === 0 && !requestedPosition;
+      const useAdvisor =
+        intent === "waiver" ||
+        intent === "trade" ||
+        intent === "draft" ||
+        wholeLineup ||
+        (intent === "general" && mentionedPlayers.length === 0 && !requestedPosition);
+
+      const advisor: AdvisorResult | null = useAdvisor
+        ? await handleAdvisorQuestion(intent, message, myTeam ?? null, { wholeLineup }).catch((err): AdvisorResult => {
+            console.error("❌ Advisor failed:", err);
+            return { reply: "⚠️ I couldn't load your league data from Sleeper. Please try again in a minute.", fallback: "" };
+          })
+        : null;
+
+      if (advisor) {
+        if (advisor.reply) return res.json({ reply: advisor.reply });
+        try {
+          const text = await generateWithLLM(advisor.prompt ?? "");
+          return res.json({ reply: text || advisor.fallback || "⚠️ AI returned no text." });
+        } catch (err) {
+          console.error("❌ Ollama unavailable, sending computed answer:", err);
+          return res.json({
+            reply: advisor.fallback
+              ? `${advisor.fallback}\n\n(AI explanation unavailable — showing the computed answer.)`
+              : "⚠️ AI returned an error.",
+          });
+        }
+      }
+
+      const opponentMap = await fetchOpponentMap(seasonYear, currentWeek).catch(err => {
+        console.warn("⚠️ Could not load opponents:", err);
+        return new Map<string, { opponentAbbreviation: string; opponentTeam: string }>();
+      });
+
       let usedRosterInference = false;
 
       if (mentionedPlayers.length === 0) {
@@ -854,24 +785,13 @@ export function registerRoutes(router: Router): void {
 
       console.log("🤖 Calling Ollama...");
 
-      const ollamaResponse = await fetch("http://127.0.0.1:11434/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "mistral:latest",
-          prompt,
-          stream: false,
-          temperature: 0.6,
-        }),
-      });
-
-      if (!ollamaResponse.ok) {
-        console.error("❌ Ollama error:", await ollamaResponse.text());
+      try {
+        const text = await generateWithLLM(prompt);
+        res.json({ reply: text || "⚠️ AI returned no text." });
+      } catch (err) {
+        console.error("❌ Ollama error:", err);
         return res.status(500).json({ reply: "⚠️ AI returned an error." });
       }
-
-      const data = (await ollamaResponse.json()) as { response?: string };
-      res.json({ reply: data.response ?? "⚠️ AI returned no text." });
     } catch (err) {
       console.error("❌ Backend error:", err);
       res.status(500).json({
