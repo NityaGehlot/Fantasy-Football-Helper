@@ -1,5 +1,8 @@
 import React from 'react';
-import { View, Text, Image, StyleSheet } from 'react-native';
+import { View, Text, Image } from 'react-native';
+import { useTheme, useThemedStyles } from '../context/ThemeContext';
+import { injuryShort, isOutStatus } from '../services/injuryFormat';
+import { getPositionColor, type Palette } from '../theme';
 
 interface Props {
   player: any;
@@ -10,76 +13,103 @@ interface Props {
   position?: string;
   positionColor?: string;
   compact?: boolean;
+  // Narrow layout for side-by-side columns (smaller badge/photo, wrapping name).
+  dense?: boolean;
   team?: string;
 }
 
-export default function PlayerCard({ player, stats, statLine = [], points = 0, imageUri, position, positionColor, compact = false, team }: Props) {
+// Flex slots are labeled the way Sleeper labels them.
+const FLEX_LABELS: Record<string, string> = {
+  FLEX: 'FLEX',
+  SUPER_FLEX: 'SF',
+  REC_FLEX: 'W/T',
+  WRRB_FLEX: 'W/R',
+  IDP_FLEX: 'IDP',
+};
+
+export default function PlayerCard({ player, stats, statLine = [], points = 0, imageUri, position, positionColor, compact = false, dense = false, team }: Props) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(makeStyles);
+
   const injuryStatus = String(stats?.injury_status ?? "").toUpperCase().trim();
   const injuryType = stats?.primary_injury || stats?.practice_primary_injury || stats?.secondary_injury || "";
   const isBye = String(stats?.team_status ?? "").toLowerCase().includes("bye");
-  const isOut = ["OUT", "IR", "IR-R", "INJURED RESERVE"].includes(injuryStatus);
+  const isOut = isOutStatus(injuryStatus) || injuryStatus === "INJURED RESERVE" || injuryStatus === "IR-R";
   const isQuestionable = ["QUESTIONABLE", "DOUBTFUL"].includes(injuryStatus);
+  const injuryBadge = isOut ? (injuryShort(injuryStatus) || "O") : isQuestionable ? injuryShort(injuryStatus) : "";
 
-    if (compact) {
+  const slot = String(position || player.position || '').toUpperCase();
+  const flexLabel = FLEX_LABELS[slot];
+  const badgeLabel = flexLabel ?? (compact ? slot : String(player.position || slot));
+  const badgeColor = flexLabel ? getPositionColor('FLEX') : positionColor || '#aaa';
+  const teamLabel = team ?? stats?.team ?? player.team ?? '';
+
+  const Badge = (
+    <View style={[compact ? styles.badgeCompact : styles.badge, { backgroundColor: badgeColor }]}>
+      <Text style={compact ? styles.badgeTextCompact : styles.badgeText}>{badgeLabel}</Text>
+    </View>
+  );
+
+  if (compact) {
     return (
-      <View style={compactStyles.container}>
-        { (String(position || player.position).toUpperCase() === 'FLEX') ? (
-          <View style={[compactStyles.positionBadge, { backgroundColor: '#888' }]}>
-            <Text style={compactStyles.positionText}>WRT</Text>
-          </View>
-        ) : (
-          <View style={[compactStyles.positionBadge, { backgroundColor: positionColor || '#aaa' }]}>
-            <Text style={compactStyles.positionText}>{position || player.position}</Text>
-          </View>
-        )}
+      <View style={styles.compactRow}>
+        {Badge}
+        <Image source={{ uri: imageUri || '' }} style={styles.imageCompact} />
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.nameCompact} numberOfLines={2}>{player.full_name}</Text>
+          <Text style={styles.sub}>{`${slot}${player.team ? ` • ${player.team}` : ''}`}</Text>
+        </View>
+      </View>
+    );
+  }
 
-        <Image source={{ uri: imageUri || '' }} style={compactStyles.image} />
-
-        <View style={compactStyles.info}>
-          <Text style={compactStyles.name}>{player.full_name}</Text>
-          <Text style={compactStyles.team}>{(position || player.position) + ' • ' + (player.team || '')}</Text>
+  if (dense) {
+    return (
+      <View style={styles.denseRow}>
+        <View style={{ alignItems: 'center', gap: 4 }}>
+          <View style={[styles.badgeDense, { backgroundColor: badgeColor }]}>
+            <Text style={styles.badgeTextDense}>{badgeLabel}</Text>
+          </View>
+          <Image source={{ uri: imageUri || '' }} style={styles.imageDense} />
+        </View>
+        <View style={{ flex: 1, minWidth: 0, marginLeft: 6 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <Text style={styles.nameDense} numberOfLines={2}>{player.full_name}</Text>
+            {!!injuryBadge && (
+              <View style={[styles.injuryPill, { backgroundColor: isOut ? colors.danger : colors.warning }]}>
+                <Text style={styles.injuryPillText}>{injuryBadge}</Text>
+              </View>
+            )}
+          </View>
+          <Text style={styles.statLine} numberOfLines={1}>{player.position}{teamLabel ? ` • ${teamLabel}` : ''}</Text>
+          {statLine.length > 0 && <Text style={styles.statLine} numberOfLines={2}>{statLine.join(' · ')}</Text>}
+          <Text style={styles.pointsDense}>{(points || 0).toFixed(2)}</Text>
         </View>
       </View>
     );
   }
 
   return (
-    <View style={styles.playerRow}>
-      { (String(position || player.position).toUpperCase() === 'FLEX') ? (
-        <View style={[styles.positionBadgeRect, { backgroundColor: '#888' }]}>
-          <Text style={styles.positionBadgeText}>WRT</Text>
-        </View>
-      ) : (
-        <View style={[styles.positionBadgeRect, { backgroundColor: positionColor || '#aaa' }]}>
-          <Text style={styles.positionBadgeText}>{player.position}</Text>
-        </View>
-      )}
+    <View style={styles.row}>
+      {Badge}
+      <Image source={{ uri: imageUri || '' }} style={styles.image} />
 
-      <Image source={{ uri: imageUri || '' }} style={styles.playerImage} />
-
-      <View style={{ marginLeft: 10, flex: 1 }}>
+      <View style={{ marginLeft: 10, flex: 1, minWidth: 0 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <Text style={styles.playerName}>{player.full_name}</Text>
-          {isOut && (
-            <View style={{ backgroundColor: '#e53e3e', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
-              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>O</Text>
-            </View>
-          )}
-          {isQuestionable && (
-            <View style={{ backgroundColor: '#d69e2e', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
-              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>Q</Text>
+          <Text style={styles.name} numberOfLines={1}>{player.full_name}</Text>
+          {!!injuryBadge && (
+            <View style={[styles.injuryPill, { backgroundColor: isOut ? colors.danger : colors.warning }]}>
+              <Text style={styles.injuryPillText}>{injuryBadge}</Text>
             </View>
           )}
         </View>
 
-        <Text style={styles.playerSubText}>{player.position} • {team ?? stats?.team}</Text>
+        <Text style={styles.sub}>{player.position}{teamLabel ? ` • ${teamLabel}` : ''}</Text>
 
         <View style={{ marginTop: 4 }}>
-          { (isOut || isQuestionable) && injuryType ? (
-            <Text style={{ fontSize: 12, color: isOut ? '#e53e3e' : '#d69e2e', marginBottom: 4 }}>
-              {injuryType}
-            </Text>
-          ) : null }
+          {(isOut || isQuestionable) && injuryType ? (
+            <Text style={[styles.injuryText, { color: isOut ? colors.danger : colors.warning }]}>{injuryType}</Text>
+          ) : null}
 
           {statLine && statLine.length > 0 ? (
             statLine.map((line, index) => (
@@ -88,42 +118,40 @@ export default function PlayerCard({ player, stats, statLine = [], points = 0, i
               </Text>
             ))
           ) : (
-            <Text style={styles.statLine}>{isBye ? "Bye-Week" : "No stats recorded"}</Text>
+            <Text style={styles.statLine}>{isBye ? "Bye week" : "No stats recorded"}</Text>
           )}
         </View>
       </View>
 
-      <View style={styles.playerStats}>
-        <Text style={styles.statText}>{(points || 0).toFixed(2)}</Text>
+      <View style={styles.points}>
+        <Text style={styles.pointsText}>{(points || 0).toFixed(2)}</Text>
       </View>
     </View>
   );
 }
 
-const compactStyles = StyleSheet.create({
-  container: { flexDirection: 'row', alignItems: 'center' },
-  positionBadge: { width: 56, height: 28, borderRadius: 6, justifyContent: 'center', alignItems: 'center', marginRight: 10, overflow: 'hidden', flexDirection: 'row' },
-  positionText: { color: '#fff', fontWeight: 'bold', fontSize: 12 },
-  image: { width: 50, height: 50, borderRadius: 25, marginRight: 12 },
-  info: { flex: 1 },
-  name: { fontSize: 16, fontWeight: '600', color: '#1e1e1e' },
-  team: { fontSize: 14, color: '#666', marginTop: 2 },
-  flexStripe: { flex: 1, height: '100%' },
-  flexLabelWrap: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, justifyContent: 'center', alignItems: 'center' },
-});
-
-const styles = StyleSheet.create({
-  playerRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, width: '100%', paddingHorizontal: 16 },
-  playerImage: { width: 50, height: 50, borderRadius: 25 },
-  playerName: { fontSize: 16, fontWeight: '600' },
-  playerSubText: { fontSize: 14, color: '#555' },
-  positionBadgeRect: { width: 56, height: 28, borderRadius: 6, justifyContent: 'center', alignItems: 'center', marginRight: 10, overflow: 'hidden', flexDirection: 'row' },
-  positionBadgeText: { color: '#fff', fontWeight: '700', fontSize: 14 },
-  stripeBlue: { flex: 1, height: '100%', backgroundColor: '#888' },
-  stripeGreen: { flex: 1, height: '100%', backgroundColor: '#888' },
-  stripeYellow: { flex: 1, height: '100%', backgroundColor: '#888' },
-  flexLabelWrap: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, justifyContent: 'center', alignItems: 'center' },
-  playerStats: { width: 72, alignItems: 'flex-end', marginLeft: 'auto' },
-  statText: { fontSize: 18, fontWeight: '800', textAlign: 'right' },
-  statLine: { fontSize: 12, color: '#333' },
+const makeStyles = (c: Palette) => ({
+  compactRow: { flexDirection: 'row' as const, alignItems: 'center' as const },
+  row: { flexDirection: 'row' as const, alignItems: 'center' as const, paddingVertical: 12, width: '100%' as const, paddingHorizontal: 16 },
+  badge: { width: 52, height: 26, borderRadius: 6, justifyContent: 'center' as const, alignItems: 'center' as const, marginRight: 10 },
+  badgeCompact: { width: 48, height: 24, borderRadius: 6, justifyContent: 'center' as const, alignItems: 'center' as const, marginRight: 10 },
+  badgeText: { color: '#fff', fontWeight: '800' as const, fontSize: 13 },
+  badgeTextCompact: { color: '#fff', fontWeight: '800' as const, fontSize: 12 },
+  image: { width: 48, height: 48, borderRadius: 24, backgroundColor: c.surfaceMuted },
+  imageCompact: { width: 44, height: 44, borderRadius: 22, marginRight: 12, backgroundColor: c.surfaceMuted },
+  name: { fontSize: 16, fontWeight: '700' as const, color: c.text, flexShrink: 1 },
+  nameCompact: { fontSize: 15, fontWeight: '700' as const, color: c.text },
+  sub: { fontSize: 13, color: c.textMuted, marginTop: 1 },
+  injuryPill: { borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 },
+  injuryPillText: { color: '#fff', fontWeight: '800' as const, fontSize: 11 },
+  injuryText: { fontSize: 12, marginBottom: 3, fontWeight: '600' as const },
+  statLine: { fontSize: 12, color: c.textMuted },
+  points: { width: 72, alignItems: 'flex-end' as const, marginLeft: 'auto' as const },
+  denseRow: { flexDirection: 'row' as const, alignItems: 'flex-start' as const, paddingVertical: 10, paddingHorizontal: 8, width: '100%' as const },
+  badgeDense: { minWidth: 34, height: 20, paddingHorizontal: 4, borderRadius: 5, justifyContent: 'center' as const, alignItems: 'center' as const },
+  badgeTextDense: { color: '#fff', fontWeight: '800' as const, fontSize: 10 },
+  imageDense: { width: 32, height: 32, borderRadius: 16, backgroundColor: c.surfaceMuted },
+  nameDense: { fontSize: 13, fontWeight: '700' as const, color: c.text, flexShrink: 1 },
+  pointsDense: { fontSize: 15, fontWeight: '800' as const, color: c.text, marginTop: 2 },
+  pointsText: { fontSize: 18, fontWeight: '800' as const, textAlign: 'right' as const, color: c.text },
 });

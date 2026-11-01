@@ -74,3 +74,24 @@ test("stat rows keep zero-filled numeric fields and fill missing seasons", () =>
   assert.equal(def[0].def_sacks, 3);
   assert.equal(def[0].def_tds, 0);
 });
+
+import { getPlayerInjuryStatus, getInjuredTeammates } from "../../app/backend/utils/playerExtraction";
+import { setInjuryRecords } from "../../app/backend/services/injuryStore";
+
+test("upcoming week injury status comes from the daily injury file, not a healthy default", () => {
+  setInjuryRecords([
+    { player_id: "1", full_name: "Romeo Doubs", team: "GB", position: "WR", status: "IR", injury: "Hamstring" },
+    { player_id: "2", full_name: "Jordan Love", team: "GB", position: "QB", status: "QUESTIONABLE", practice_status: "LP", injury: "Ankle" },
+  ]);
+  const rows = [statRow("Jordan Love", "QB", 7, 20, { team: "GB" })];
+  const love = getPlayerInjuryStatus("jordan love", "QB", rows, 8);
+  assert.equal(love.status, "QUESTIONABLE");
+  assert.equal(love.practiceStatus, "Limited");
+  const unknown = getPlayerInjuryStatus("someone else", "QB", rows, 8);
+  assert.equal(unknown.status, "No designation");
+  // Completed weeks keep the status recorded in that week's stats file
+  assert.equal(getPlayerInjuryStatus("jordan love", "QB", rows, 7).status, "ACTIVE");
+  const teammates = getInjuredTeammates("GB", rows, 8, "QB");
+  assert.deepEqual(teammates.map(t => [t.name, t.status]), [["romeo doubs", "IR"]]);
+  setInjuryRecords([]);
+});

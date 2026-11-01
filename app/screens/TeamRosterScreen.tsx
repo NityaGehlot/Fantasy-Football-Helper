@@ -1,7 +1,12 @@
 import React from 'react';
 import { View, Text, FlatList, StyleSheet } from 'react-native';
 
+import { useTheme, useLooseThemedStyles } from '../context/ThemeContext';
+import type { Palette } from '../theme';
+
 export default function TeamRosterScreen({ route }: any) {
+  const { colors: th } = useTheme();
+  const styles = useLooseThemedStyles(makeStyles);
   const { roster, players, users } = route.params;
 
   const owner = users.find((u: any) => u.user_id === roster.owner_id);
@@ -31,15 +36,15 @@ export default function TeamRosterScreen({ route }: any) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (th: Palette) => ({
   container: { flex: 1, padding: 20 },
-  title: { fontSize: 26, fontWeight: 'bold', marginBottom: 10 },
-  subTitle: { fontSize: 20, marginBottom: 15 },
+  title: { color: th.text, fontSize: 26, fontWeight: 'bold', marginBottom: 10 },
+  subTitle: { color: th.text, fontSize: 20, marginBottom: 15 },
   playerRow: {
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
+    borderBottomColor: th.border,
   },
-  playerName: { fontSize: 18 },
-  playerInfo: { fontSize: 14, color: '#555' },
+  playerName: { color: th.text, fontSize: 18 },
+  playerInfo: { fontSize: 14, color: th.textMuted },
 });

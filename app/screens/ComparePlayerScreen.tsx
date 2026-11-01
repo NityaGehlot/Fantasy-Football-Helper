@@ -21,12 +21,17 @@ import { getPlayersFromGithub } from "../services/sleeperAPI";
 import SearchBarAndFilter from '../components/SearchBarAndFilter';
 import { getPlayerStatsByWeek } from "../services/nflApi";
 
+import { useTheme, useLooseThemedStyles } from '../context/ThemeContext';
+import type { Palette } from '../theme';
+
 type NavigationProp = NativeStackNavigationProp<
   RootStackParamList,
   "ComparePlayer"
 >;
 
 export default function ComparePlayerScreen({ route }: any) {
+  const { colors: th } = useTheme();
+  const styles = useLooseThemedStyles(makeStyles);
   const navigation = useNavigation<NavigationProp>();
   const player = route?.params?.player ?? null;
   // Support entry with no initial player: allow user to pick two players from this screen
@@ -611,7 +616,7 @@ export default function ComparePlayerScreen({ route }: any) {
       {/* Compare button below player boxes */}
       <View style={{ paddingHorizontal: 20, marginTop: 12, alignItems: 'center' }}>
         <TouchableOpacity
-          style={[styles.toggleButton, { paddingHorizontal: 28, backgroundColor: '#4f46e5' }]}
+          style={[styles.toggleButton, { paddingHorizontal: 28, backgroundColor: th.primary }]}
           onPress={async () => {
             if (!playerOne || !selectedPlayer) {
               Alert.alert('Select players', 'Please select two players to compare.');
@@ -760,13 +765,13 @@ export default function ComparePlayerScreen({ route }: any) {
 
           {(loadingStatsOne || loadingStatsTwo) ? (
             <View style={styles.statsLoading}>
-              <ActivityIndicator size="large" color="#4f46e5" />
+              <ActivityIndicator size="large" color={th.primary} />
               <Text style={styles.loadingText}>Loading stats…</Text>
             </View>
           ) : (playerOneStats && playerTwoStats) ? (
 
             <View>
-              <Text style={{ textAlign: 'center', color: '#6b7280', paddingVertical: 12 }}>Stats list</Text>
+              <Text style={{ textAlign: 'center', color: th.textMuted, paddingVertical: 12 }}>Stats list</Text>
 
               {/* Games + per-position stat comparison rows */}
               {(() => {
@@ -926,11 +931,11 @@ export default function ComparePlayerScreen({ route }: any) {
 
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (th: Palette) => ({
 
   container: {
     flex: 1,
-    backgroundColor: "#ffffff",
+    backgroundColor: th.surface,
   },
 
   header: {
@@ -942,13 +947,13 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 30,
     fontWeight: "800",
-    color: "#111827",
+    color: th.text,
   },
 
   subtitle: {
     marginTop: 6,
     fontSize: 15,
-    color: "#6b7280",
+    color: th.textMuted,
   },
 
   playerRow: {
@@ -960,13 +965,13 @@ const styles = StyleSheet.create({
 
   playerCard: {
     width: "48%",
-    backgroundColor: "#f8f9fc",
+    backgroundColor: th.surfaceMuted,
     borderRadius: 16,
     paddingVertical: 18,
     paddingHorizontal: 12,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: th.border,
   },
 
   headshot: {
@@ -980,7 +985,7 @@ const styles = StyleSheet.create({
     width: 90,
     height: 90,
     borderRadius: 45,
-    backgroundColor: "#e5e7eb",
+    backgroundColor: th.surfaceMuted,
     justifyContent: "center",
     alignItems: "center",
     marginBottom: 12,
@@ -989,19 +994,19 @@ const styles = StyleSheet.create({
   emptyCircleText: {
     fontSize: 38,
     fontWeight: "700",
-    color: "#9ca3af",
+    color: th.textSubtle,
   },
 
   playerName: {
     fontSize: 18,
     fontWeight: "700",
     textAlign: "center",
-    color: "#111827",
+    color: th.text,
   },
 
   playerInfo: {
     marginTop: 4,
-    color: "#6b7280",
+    color: th.textMuted,
     fontSize: 14,
   },
 
@@ -1010,23 +1015,23 @@ const styles = StyleSheet.create({
     marginTop: 22,
   },
 
-  searchInput: {
-    backgroundColor: "#f4f6fc",
+  searchInput: { color: th.text,
+    backgroundColor: th.background,
     borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 14,
     fontSize: 16,
     borderWidth: 1,
-    borderColor: "#dbe1ef",
+    borderColor: th.border,
   },
 
   searchResults: {
     marginTop: 10,
     maxHeight: 280,
     borderRadius: 12,
-    backgroundColor: "#fff",
+    backgroundColor: th.surface,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: th.border,
   },
 
   searchRow: {
@@ -1034,7 +1039,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     padding: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#f3f4f6",
+    borderBottomColor: th.border,
   },
 
   searchHeadshot: {
@@ -1047,11 +1052,11 @@ const styles = StyleSheet.create({
   searchName: {
     fontSize: 15,
     fontWeight: "700",
-    color: "#111827",
+    color: th.text,
   },
 
   searchTeam: {
-    color: "#6b7280",
+    color: th.textMuted,
     marginTop: 2,
     fontSize: 13,
   },
@@ -1064,19 +1069,19 @@ const styles = StyleSheet.create({
   },
 
   toggleButton: {
-    backgroundColor: "#f3f4f6",
+    backgroundColor: th.surfaceMuted,
     paddingVertical: 10,
     paddingHorizontal: 22,
     borderRadius: 20,
   },
 
   toggleActive: {
-    backgroundColor: "#4f46e5",
+    backgroundColor: th.primary,
   },
 
   toggleText: {
     fontWeight: "700",
-    color: "#374151",
+    color: th.textMuted,
   },
 
   toggleTextActive: {
@@ -1097,28 +1102,28 @@ const styles = StyleSheet.create({
 
   summaryColumn: {
     width: '32%',
-    backgroundColor: '#f4f6fc',
+    backgroundColor: th.background,
     borderRadius: 8,
     padding: 8,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#e5e9f2',
+    borderColor: th.border,
   },
 
   summaryLabel: {
     fontSize: 12,
-    color: '#6b7280',
+    color: th.textMuted,
   },
 
   summaryValue: {
     marginTop: 6,
     fontSize: 16,
     fontWeight: '700',
-    color: '#111827',
+    color: th.text,
   },
 
   weekButton: {
-    backgroundColor: "#eef2ff",
+    backgroundColor: th.primarySoft,
     marginRight: 8,
     borderRadius: 10,
     paddingHorizontal: 16,
@@ -1126,12 +1131,12 @@ const styles = StyleSheet.create({
   },
 
   weekButtonActive: {
-    backgroundColor: "#4f46e5",
+    backgroundColor: th.primary,
   },
 
   weekText: {
     fontWeight: "700",
-    color: "#4f46e5",
+    color: th.primary,
   },
 
   weekTextActive: {
@@ -1152,29 +1157,29 @@ const styles = StyleSheet.create({
 
   loadingText: {
     marginTop: 8,
-    color: "#6b7280",
+    color: th.textMuted,
   },
 
   gamesText: {
     marginTop: 6,
-    color: "#6b7280",
+    color: th.textMuted,
     fontSize: 13,
   },
 
   statCard: {
-    backgroundColor: "#f8f9fc",
+    backgroundColor: th.surfaceMuted,
     borderRadius: 14,
     padding: 16,
     marginBottom: 14,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: th.border,
   },
 
   statTitle: {
     fontSize: 16,
     fontWeight: "700",
     marginBottom: 12,
-    color: "#111827",
+    color: th.text,
   },
 
   compareRow: {
@@ -1193,14 +1198,14 @@ const styles = StyleSheet.create({
   valueText: {
     fontSize: 22,
     fontWeight: "800",
-    color: "#111827",
+    color: th.text,
     marginBottom: 10,
   },
 
   progressBar: {
     height: 8,
     borderRadius: 6,
-    backgroundColor: "#4f46e5",
+    backgroundColor: th.primary,
     alignSelf: "flex-start",
   },
 
@@ -1214,20 +1219,20 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 22,
     fontWeight: "700",
-    color: "#111827",
+    color: th.text,
   },
 
   emptySubtitle: {
     marginTop: 8,
     fontSize: 15,
     textAlign: "center",
-    color: "#6b7280",
+    color: th.textMuted,
   },
 
   hint: {
     marginTop: 8,
     fontSize: 13,
-    color: '#6b7280',
+    color: th.textMuted,
   },
 
   removeBtn: {
@@ -1237,15 +1242,15 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: '#ffffff',
+    backgroundColor: th.surface,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderColor: th.border,
   },
 
   removeText: {
-    color: '#6b7280',
+    color: th.textMuted,
     fontSize: 14,
     fontWeight: '700',
   },

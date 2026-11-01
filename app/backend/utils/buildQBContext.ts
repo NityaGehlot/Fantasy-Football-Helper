@@ -17,7 +17,12 @@ export function buildQBContext(qbWeeks: any[]) {
     return weeks.slice(0, n);
   };
 
-  const last3 = getLastNWeeks(sorted, 3);
+  // "Last 3" means the last 3 games actually played, so bye weeks and missed games
+  // don't drag the recent averages toward zero.
+  const playedWeeks = sorted.filter(
+    (w: any) => Boolean(w.game_played) || Number(w.fantasyPoints) !== 0 || w.team_status === "played"
+  );
+  const last3 = getLastNWeeks(playedWeeks.length > 0 ? playedWeeks : sorted, 3);
   const latest = sorted[0];
 
   // Count only weeks where the player actually played

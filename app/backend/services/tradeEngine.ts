@@ -24,7 +24,12 @@ export type TradeIdea = {
   // 0-1: how close the raw player values on each side are (1 = identical).
   fairness: number;
   reasons: string[];
+  // Who moves into / out of each starting lineup (for the pitch message and summary).
+  myLineup: LineupChange[];
+  theirLineup: LineupChange[];
 };
+
+export type LineupChange = { in: TradePlayer | null; out: TradePlayer | null };
 
 export type TradeSearchOptions = {
   maxIdeas?: number;
@@ -34,6 +39,8 @@ export type TradeSearchOptions = {
   // Only consider trades that include these player ids (used for "trade for X" questions).
   mustGive?: string[];
   mustGet?: string[];
+  // Your players that must never be offered.
+  untouchable?: string[];
 };
 
 // Kickers and defenses are rarely traded and add noise, so they are left out of searches.
@@ -63,32 +70,26 @@ function starterIds(players: TradePlayer[], slots: SlotName[]): Set<string> {
 const describe = (p: TradePlayer) => `${p.name} (${p.position}, ${p.value.toFixed(1)} pts/g)`;
 
 // Explain who moves into and out of the starting lineup for one side of the trade.
-function lineupReasons(
-  label: string,
-  before: TradePlayer[],
-  after: TradePlayer[],
-  slots: SlotName[]
-): string[] {
+// Pair up who enters and who leaves the starting lineup.
+function lineupChanges(before: TradePlayer[], after: TradePlayer[], slots: SlotName[]): LineupChange[] {
   const beforeStarters = starterIds(before, slots);
   const afterStarters = starterIds(after, slots);
   const added = after.filter(p => afterStarters.has(p.id) && !beforeStarters.has(p.id));
   const removed = before.filter(p => beforeStarters.has(p.id) && !afterStarters.has(p.id));
+  const changes: LineupChange[] = added.map((p, i) => ({ in: p, out: removed[i] ?? null }));
+  removed.slice(added.length).forEach(p => changes.push({ in: null, out: p }));
+  return changes;
+}
 
-  if (added.length === 0 && removed.length === 0) {
-    return [`${label} starting lineup is unchanged; the trade only affects bench depth.`];
-  }
-
-  const reasons: string[] = [];
-  added.forEach((p, i) => {
-    const replaced = removed[i];
-    reasons.push(
-      replaced
-        ? `${label} lineup: ${describe(p)} starts instead of ${describe(replaced)}.`
-        : `${label} lineup: ${describe(p)} fills an open starting spot.`
-    );
-  });
-  removed.slice(added.length).forEach(p => reasons.push(`${label} lineup loses ${describe(p)}.`));
-  return reasons;
+function lineupReasons(label: string, changes: LineupChange[]): string[] {
+  if (changes.length === 0) return [`${label} starting lineup is unchanged; the trade only affects bench depth.`];
+  return changes.map(c =>
+    c.in && c.out
+      ? `${label} lineup: ${describe(c.in)} starts instead of ${describe(c.out)}.`
+      : c.in
+      ? `${label} lineup: ${describe(c.in)} fills an open starting spot.`
+      : `${label} lineup loses ${describe(c.out!)}.`
+  );
 }
 
 export function evaluateTrade(
@@ -106,10 +107,9 @@ export function evaluateTrade(
   const getValue = sum(get);
   const fairness = Math.max(giveValue, getValue) > 0 ? Math.min(giveValue, getValue) / Math.max(giveValue, getValue) : 0;
 
-  const reasons = [
-    ...lineupReasons("Your", me.players, myAfter, slots),
-    ...lineupReasons(`${partner.teamName}'s`, partner.players, theirAfter, slots),
-  ];
+  const myLineup = lineupChanges(me.players, myAfter, slots);
+  const theirLineup = lineupChanges(partner.players, theirAfter, slots);
+  const reasons = [...lineupReasons("Your", myLineup), ...lineupReasons(`${partner.teamName}'s`, theirLineup)];
   if (give.length !== get.length) {
     const receiver = get.length > give.length ? "You" : partner.teamName;
     reasons.push(`${receiver} will need to drop a bench player to make roster room.`);
@@ -124,6 +124,8 @@ export function evaluateTrade(
     theirGain: round(theirGain),
     fairness: round(fairness),
     reasons,
+    myLineup,
+    theirLineup,
   };
 }
 
@@ -138,6 +140,7 @@ export function generateTradeIdeas(
     candidatesPerTeam = 12,
     mustGive = [],
     mustGet = [],
+    untouchable = [],
   }: TradeSearchOptions = {}
 ): TradeIdea[] {
   const required = new Set([...mustGive, ...mustGet]);
@@ -153,7 +156,8 @@ export function generateTradeIdeas(
   const includesAll = (players: TradePlayer[], ids: string[]) => ids.every(id => players.some(p => p.id === id));
   const ownsAny = (team: LeagueTeam) => mustGet.length === 0 || team.players.some(p => mustGet.includes(p.id));
 
-  const mine = candidates(me);
+  const locked = new Set(untouchable.filter(id => !mustGive.includes(id)));
+  const mine = candidates(me).filter(p => !locked.has(p.id));
   const scored: { idea: TradeIdea; score: number }[] = [];
 
   for (const partner of others.filter(ownsAny)) {

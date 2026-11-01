@@ -1,17 +1,27 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, FlatList, Modal, Pressable, Image } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, FlatList, Modal, Pressable, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import PlayerCard from './PlayerCard';
+import { useTheme, useThemedStyles } from '../context/ThemeContext';
+import { getPositionColor, radius, type Palette } from '../theme';
 
 type Props = {
   players: any;
   onSelect: (player: any) => void;
 };
 
-const OFFENSE_POSITIONS = ['QB', 'RB', 'WR', 'TE', 'K'];
-const DEFENSE_TRENCHES = ['DL', 'DE', 'DT', 'NT'];
-const DEFENSE_LINEBACKERS = ['LB', 'ILB', 'MLB', 'OLB'];
-const DEFENSE_SECONDARY = ['CB', 'DB', 'S', 'SS', 'FS'];
+// Quick position chips; defensive groups cover every sub-position Sleeper/nflverse use.
+const POSITION_GROUPS: { key: string; positions: string[] }[] = [
+  { key: 'QB', positions: ['QB'] },
+  { key: 'RB', positions: ['RB'] },
+  { key: 'WR', positions: ['WR'] },
+  { key: 'TE', positions: ['TE'] },
+  { key: 'K', positions: ['K'] },
+  { key: 'DEF', positions: ['DEF'] },
+  { key: 'DL', positions: ['DL', 'DE', 'DT', 'NT'] },
+  { key: 'LB', positions: ['LB', 'ILB', 'MLB', 'OLB'] },
+  { key: 'DB', positions: ['CB', 'DB', 'S', 'SS', 'FS'] },
+];
 const NFL_TEAMS = [
   'ARI','ATL','BAL','BUF','CAR','CHI','CIN','CLE',
   'DAL','DEN','DET','GB','HOU','IND','JAX','KC',
@@ -21,6 +31,8 @@ const NFL_TEAMS = [
 
 const toggleValue = (values: string[], value: string) =>
   values.includes(value) ? values.filter(v => v !== value) : [...values, value];
+
+const positionOf = (p: any) => String(p.position_for_FFHelper || p.position || p.position_listed_on_sleeper || '').toUpperCase().trim();
 
 const getHeadshotUrl = (player: any) => {
   if (player?.espn_id) return `https://a.espncdn.com/i/headshots/nfl/players/full/${player.espn_id}.png`;
@@ -33,193 +45,216 @@ const getTeamLogo = (teamAbbrev: string) => {
   return `https://static.www.nfl.com/t_q-best/league/api/clubs/logos/${teamAbbrev.trim()}`;
 };
 
-const getPositionColor = (pos: string) => {
-  switch (pos) {
-    case 'QB': return '#ff6b6b';
-    case 'RB': return '#2ec4b6';
-    case 'WR': return '#48b0f7';
-    case 'TE': return '#ffbe0b';
-    case 'K': return '#9d4edd';
-    case 'DEF': return '#777';
-    default: return '#aaa';
-  }
-};
-
 export default function SearchBarAndFilter({ players, onSelect }: Props) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterPositions, setFilterPositions] = useState<string[]>([]);
+  const [groups, setGroups] = useState<string[]>([]);
   const [filterTeams, setFilterTeams] = useState<string[]>([]);
-  const [showFilterModal, setShowFilterModal] = useState(false);
+  const [showTeams, setShowTeams] = useState(false);
+
+  const allowedPositions = useMemo(
+    () => new Set(POSITION_GROUPS.filter(g => groups.includes(g.key)).flatMap(g => g.positions)),
+    [groups]
+  );
 
   const searchResults = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q && filterPositions.length === 0 && filterTeams.length === 0) return [];
+    if (!q && groups.length === 0 && filterTeams.length === 0) return [];
     return Object.entries(players || {})
-      .filter(([id, p]: [string, any]) => {
-        const matchesQuery = !q ||
-          (p.full_name?.toLowerCase().includes(q)) ||
-          (p.position?.toLowerCase() === q);
-        const matchesPos = filterPositions.length === 0 || filterPositions.includes(String(p.position_for_FFHelper || p.position || ''));
+      .filter(([, p]: [string, any]) => {
+        const pos = positionOf(p);
+        const matchesQuery = !q || p.full_name?.toLowerCase().includes(q) || pos.toLowerCase() === q;
+        const matchesPos = allowedPositions.size === 0 || allowedPositions.has(pos);
         const matchesTeam = filterTeams.length === 0 || filterTeams.includes(String(p.team || ''));
-        const isTeamDef = String((p.position_for_FFHelper || p.position || '').toUpperCase()).trim() === 'DEF';
-        return matchesQuery && matchesPos && matchesTeam && (p.active || isTeamDef);
+        return matchesQuery && matchesPos && matchesTeam && (p.active || pos === 'DEF');
       })
       .map(([id, p]: [string, any]) => ({ ...p, player_id: id }))
       .sort((a: any, b: any) => {
-        const toRank = (v: any) => {
-          if (v === null) return Number.MAX_SAFE_INTEGER;
-          const n = Number(v);
-          return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
-        };
-        const aRank = toRank(a.search_rank);
-        const bRank = toRank(b.search_rank);
-        if (aRank !== bRank) return aRank - bRank;
-        return (a.full_name || '').localeCompare(b.full_name || '');
+        const toRank = (v: any) => (v === null || !Number.isFinite(Number(v)) ? Number.MAX_SAFE_INTEGER : Number(v));
+        const diff = toRank(a.search_rank) - toRank(b.search_rank);
+        return diff !== 0 ? diff : (a.full_name || '').localeCompare(b.full_name || '');
       })
-      .slice(0, 30);
-  }, [searchQuery, filterPositions, filterTeams, players]);
+      .slice(0, 50);
+  }, [searchQuery, allowedPositions, filterTeams, players, groups.length]);
 
-  const isSearchActive = searchQuery.trim().length > 0 || filterPositions.length > 0 || filterTeams.length > 0;
-  const activeFilterCount = filterPositions.length + filterTeams.length;
+  const isSearchActive = searchQuery.trim().length > 0 || groups.length > 0 || filterTeams.length > 0;
+  const clearAll = () => {
+    setGroups([]);
+    setFilterTeams([]);
+    setSearchQuery('');
+  };
 
   return (
-    <>
-      <View style={{ paddingHorizontal: 10, paddingVertical: 10, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#eee', flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-        <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0f0f5', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 }}>
-          <Ionicons name="search" size={18} color="#999" style={{ marginRight: 8 }} />
+    <View style={styles.wrap}>
+      <View style={styles.searchRow}>
+        <View style={styles.searchBox}>
+          <Ionicons name="search" size={18} color={colors.textSubtle} style={{ marginRight: 8 }} />
           <TextInput
-            style={{ flex: 1, fontSize: 15, color: '#1e1e1e' }}
-            placeholder="Search players by name or position…"
-            placeholderTextColor="#999"
+            style={styles.searchInput}
+            placeholder="Search players"
+            placeholderTextColor={colors.textSubtle}
             value={searchQuery}
             onChangeText={setSearchQuery}
             clearButtonMode="while-editing"
+            autoCorrect={false}
           />
           {searchQuery.trim().length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')} style={{ marginLeft: 8, justifyContent: 'center', alignItems: 'center' }}>
-              <Ionicons name="close-circle" size={18} color="#999" />
+            <TouchableOpacity onPress={() => setSearchQuery('')} accessibilityLabel="Clear search" hitSlop={8}>
+              <Ionicons name="close-circle" size={18} color={colors.textSubtle} />
             </TouchableOpacity>
           )}
         </View>
-        <TouchableOpacity style={[{ width: 42, height: 42, borderRadius: 10, borderWidth: 1.5, borderColor: '#4f46e5', justifyContent: 'center', alignItems: 'center' }, activeFilterCount > 0 ? { backgroundColor: '#4f46e5' } : {}]} onPress={() => setShowFilterModal(true)}>
-          <Ionicons name="options-outline" size={20} color={activeFilterCount > 0 ? '#fff' : '#4f46e5'} />
+        <TouchableOpacity
+          style={[styles.teamBtn, filterTeams.length > 0 && styles.teamBtnActive]}
+          onPress={() => setShowTeams(true)}
+          accessibilityLabel="Filter by team"
+        >
+          <Ionicons name="shield-outline" size={16} color={filterTeams.length ? colors.onPrimary : colors.primary} />
+          <Text style={[styles.teamBtnText, filterTeams.length > 0 && { color: colors.onPrimary }]}>
+            {filterTeams.length ? `${filterTeams.length} team${filterTeams.length > 1 ? 's' : ''}` : 'Team'}
+          </Text>
         </TouchableOpacity>
       </View>
 
-      {!!(filterPositions.length || filterTeams.length) && (
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, paddingVertical: 6, gap: 8, backgroundColor: '#fff' }}>
-          {filterPositions.map((pos) => (
-            <TouchableOpacity key={`pos-${pos}`} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ede9fe', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4, gap: 4 }} onPress={() => setFilterPositions(prev => prev.filter(v => v !== pos))}>
-              <Text style={{ fontSize: 13, color: '#4f46e5', fontWeight: '600' }}>{pos}</Text>
-              <Ionicons name="close" size={13} color="#4f46e5" />
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow} keyboardShouldPersistTaps="handled">
+        <TouchableOpacity style={[styles.chip, groups.length === 0 && styles.chipActive]} onPress={() => setGroups([])}>
+          <Text style={[styles.chipText, groups.length === 0 && styles.chipTextActive]}>All</Text>
+        </TouchableOpacity>
+        {POSITION_GROUPS.map(g => {
+          const on = groups.includes(g.key);
+          return (
+            <TouchableOpacity
+              key={g.key}
+              style={[styles.chip, on && { backgroundColor: getPositionColor(g.key), borderColor: getPositionColor(g.key) }]}
+              onPress={() => setGroups(prev => toggleValue(prev, g.key))}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: on }}
+            >
+              <Text style={[styles.chipText, on && styles.chipTextActive]}>{g.key}</Text>
             </TouchableOpacity>
-          ))}
-          {filterTeams.map((team) => (
-            <TouchableOpacity key={`team-${team}`} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ede9fe', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4, gap: 4 }} onPress={() => setFilterTeams(prev => prev.filter(v => v !== team))}>
-              <Text style={{ fontSize: 13, color: '#4f46e5', fontWeight: '600' }}>{team}</Text>
-              <Ionicons name="close" size={13} color="#4f46e5" />
+          );
+        })}
+      </ScrollView>
+
+      {filterTeams.length > 0 && (
+        <View style={styles.activeRow}>
+          {filterTeams.map(team => (
+            <TouchableOpacity key={team} style={styles.activeChip} onPress={() => setFilterTeams(prev => prev.filter(v => v !== team))}>
+              <Text style={styles.activeChipText}>{team}</Text>
+              <Ionicons name="close" size={13} color={colors.primary} />
             </TouchableOpacity>
           ))}
         </View>
       )}
 
       {isSearchActive && (
-        <View style={{ height: 360, marginHorizontal: 16, marginTop: 10, backgroundColor: '#fff', borderRadius: 14, overflow: 'hidden' }}>
+        <View style={styles.results}>
+          <View style={styles.resultsHeader}>
+            <Text style={styles.resultsCount}>
+              {searchResults.length === 50 ? 'Top 50 matches' : `${searchResults.length} player${searchResults.length === 1 ? '' : 's'}`}
+            </Text>
+            <TouchableOpacity onPress={clearAll}>
+              <Text style={styles.clearText}>Clear</Text>
+            </TouchableOpacity>
+          </View>
           {searchResults.length === 0 ? (
-            <Text style={{ textAlign: 'center', marginTop: 40, color: '#999', fontSize: 15 }}>No players found</Text>
+            <Text style={styles.noResults}>No players match. Try a different name or filter.</Text>
           ) : (
             <FlatList
               data={searchResults}
               keyExtractor={(item) => item.player_id}
-              renderItem={({ item }) => (
-                <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', padding: 14, borderBottomWidth: 1, borderBottomColor: '#f0f0f0', justifyContent: 'space-between' }} onPress={() => onSelect(item)}>
-                  <View style={{ flex: 1 }}>
-                    <PlayerCard
-                      player={item}
-                      compact
-                      position={String(item.position_for_FFHelper || item.position || item.position_listed_on_sleeper || '').toUpperCase().trim()}
-                      positionColor={getPositionColor(String(item.position_for_FFHelper || item.position || item.position_listed_on_sleeper || '').toUpperCase().trim())}
-                      imageUri={(String(item.position_for_FFHelper || item.position || '').toUpperCase().trim() === 'DEF' || item.position === 'DEF') ? getTeamLogo(item.team) : getHeadshotUrl(item)}
-                    />
-                  </View>
-                  <Ionicons name="chevron-forward" size={20} color="#aaa" style={{ marginLeft: 10 }} />
-                </TouchableOpacity>
-              )}
-              showsVerticalScrollIndicator={true}
-              nestedScrollEnabled={true}
-              scrollEnabled={true}
+              renderItem={({ item }) => {
+                const pos = positionOf(item);
+                return (
+                  <TouchableOpacity style={styles.resultRow} onPress={() => onSelect(item)}>
+                    <View style={{ flex: 1 }}>
+                      <PlayerCard
+                        player={item}
+                        compact
+                        position={pos}
+                        positionColor={getPositionColor(pos)}
+                        imageUri={pos === 'DEF' ? getTeamLogo(item.team) : getHeadshotUrl(item)}
+                      />
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={colors.textSubtle} style={{ marginLeft: 8 }} />
+                  </TouchableOpacity>
+                );
+              }}
+              showsVerticalScrollIndicator
+              nestedScrollEnabled
             />
           )}
         </View>
       )}
 
-      <Modal visible={showFilterModal} animationType="slide" transparent>
-        <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.35)' }} onPress={() => setShowFilterModal(false)} />
-        <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 36, maxHeight: '80%' }}>
-          <View style={{ width: 40, height: 4, backgroundColor: '#ddd', borderRadius: 2, alignSelf: 'center', marginBottom: 16 }} />
-          <Text style={{ fontSize: 18, fontWeight: '700', marginBottom: 16, color: '#1e1e1e' }}>Filter Players</Text>
-
-          <Text style={{ fontSize: 13, fontWeight: '600', color: '#666', marginBottom: 8, marginTop: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>Offense</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-            {OFFENSE_POSITIONS.map(pos => (
-              <TouchableOpacity key={pos} style={[{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1.5, borderColor: '#ddd', backgroundColor: '#fafafa' }, filterPositions.includes(pos) ? { backgroundColor: '#4f46e5', borderColor: '#4f46e5' } : {}]} onPress={() => setFilterPositions(prev => toggleValue(prev, pos))}>
-                <Text style={[{ fontSize: 13, fontWeight: '600', color: '#444' }, filterPositions.includes(pos) ? { color: '#fff' } : {}]}>{pos}</Text>
+      <Modal visible={showTeams} animationType="fade" transparent onRequestClose={() => setShowTeams(false)}>
+        <Pressable style={styles.backdrop} onPress={() => setShowTeams(false)}>
+          <Pressable style={styles.sheet} onPress={() => undefined}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>Filter by team</Text>
+              <TouchableOpacity onPress={() => setShowTeams(false)} accessibilityLabel="Close">
+                <Ionicons name="close" size={22} color={colors.textMuted} />
               </TouchableOpacity>
-            ))}
-          </View>
-
-          <Text style={{ fontSize: 13, fontWeight: '600', color: '#666', marginBottom: 8, marginTop: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>Defense</Text>
-          <View style={{ flexDirection: 'row', marginBottom: 8 }}>
-            <TouchableOpacity style={[{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1.5, borderColor: '#ddd', backgroundColor: '#fafafa', marginRight: 8 }, filterPositions.includes('DEF') ? { backgroundColor: '#4f46e5', borderColor: '#4f46e5' } : {}]} onPress={() => setFilterPositions(prev => toggleValue(prev, 'DEF'))}>
-              <Text style={[{ fontSize: 13, fontWeight: '600', color: '#444' }, filterPositions.includes('DEF') ? { color: '#fff' } : {}]}>DEF</Text>
-            </TouchableOpacity>
-          </View>
-
-          <Text style={{ fontSize: 12, fontWeight: '600', color: '#7c8797', marginBottom: 8, marginTop: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Trenches</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-            {DEFENSE_TRENCHES.map(pos => (
-              <TouchableOpacity key={pos} style={[{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1.5, borderColor: '#ddd', backgroundColor: '#fafafa' }, filterPositions.includes(pos) ? { backgroundColor: '#4f46e5', borderColor: '#4f46e5' } : {}]} onPress={() => setFilterPositions(prev => toggleValue(prev, pos))}>
-                <Text style={[{ fontSize: 13, fontWeight: '600', color: '#444' }, filterPositions.includes(pos) ? { color: '#fff' } : {}]}>{pos}</Text>
+            </View>
+            <View style={styles.teamGrid}>
+              {NFL_TEAMS.map(team => {
+                const on = filterTeams.includes(team);
+                return (
+                  <TouchableOpacity key={team} style={[styles.teamCell, on && styles.teamCellOn]} onPress={() => setFilterTeams(prev => toggleValue(prev, team))}>
+                    <Text style={[styles.teamCellText, on && { color: colors.onPrimary }]}>{team}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <View style={styles.sheetActions}>
+              <TouchableOpacity style={styles.sheetSecondary} onPress={() => setFilterTeams([])}>
+                <Text style={styles.sheetSecondaryText}>Clear teams</Text>
               </TouchableOpacity>
-            ))}
-          </View>
-
-          <Text style={{ fontSize: 12, fontWeight: '600', color: '#7c8797', marginBottom: 8, marginTop: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Linebackers</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-            {DEFENSE_LINEBACKERS.map(pos => (
-              <TouchableOpacity key={pos} style={[{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1.5, borderColor: '#ddd', backgroundColor: '#fafafa' }, filterPositions.includes(pos) ? { backgroundColor: '#4f46e5', borderColor: '#4f46e5' } : {}]} onPress={() => setFilterPositions(prev => toggleValue(prev, pos))}>
-                <Text style={[{ fontSize: 13, fontWeight: '600', color: '#444' }, filterPositions.includes(pos) ? { color: '#fff' } : {}]}>{pos}</Text>
+              <TouchableOpacity style={styles.sheetPrimary} onPress={() => setShowTeams(false)}>
+                <Text style={styles.sheetPrimaryText}>Done</Text>
               </TouchableOpacity>
-            ))}
-          </View>
-
-          <Text style={{ fontSize: 12, fontWeight: '600', color: '#7c8797', marginBottom: 8, marginTop: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Secondary</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-            {DEFENSE_SECONDARY.map(pos => (
-              <TouchableOpacity key={pos} style={[{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1.5, borderColor: '#ddd', backgroundColor: '#fafafa' }, filterPositions.includes(pos) ? { backgroundColor: '#4f46e5', borderColor: '#4f46e5' } : {}]} onPress={() => setFilterPositions(prev => toggleValue(prev, pos))}>
-                <Text style={[{ fontSize: 13, fontWeight: '600', color: '#444' }, filterPositions.includes(pos) ? { color: '#fff' } : {}]}>{pos}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <Text style={{ fontSize: 13, fontWeight: '600', color: '#666', marginBottom: 8, marginTop: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>Team</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-            {NFL_TEAMS.map(team => (
-              <TouchableOpacity key={team} style={[{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1.5, borderColor: '#ddd', backgroundColor: '#fafafa' }, filterTeams.includes(team) ? { backgroundColor: '#4f46e5', borderColor: '#4f46e5' } : {}]} onPress={() => setFilterTeams(prev => toggleValue(prev, team))}>
-                <Text style={[{ fontSize: 13, fontWeight: '600', color: '#444' }, filterTeams.includes(team) ? { color: '#fff' } : {}]}>{team}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <TouchableOpacity style={{ marginTop: 20, alignItems: 'center', paddingVertical: 10 }} onPress={() => { setFilterPositions([]); setFilterTeams([]); }}>
-            <Text style={{ color: '#ef4444', fontWeight: '600', fontSize: 15 }}>Clear All Filters</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={{ marginTop: 10, backgroundColor: '#4f46e5', borderRadius: 12, paddingVertical: 14, alignItems: 'center' }} onPress={() => setShowFilterModal(false)}>
-            <Text style={{ color: '#fff', fontWeight: '700', fontSize: 16 }}>Apply</Text>
-          </TouchableOpacity>
-        </View>
+            </View>
+          </Pressable>
+        </Pressable>
       </Modal>
-    </>
+    </View>
   );
 }
+
+const makeStyles = (c: Palette) => ({
+  wrap: { paddingTop: 4 },
+  searchRow: { flexDirection: 'row' as const, gap: 8, alignItems: 'center' as const, paddingHorizontal: 16, paddingVertical: 8 },
+  searchBox: { flex: 1, flexDirection: 'row' as const, alignItems: 'center' as const, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 9 },
+  searchInput: { flex: 1, fontSize: 15, color: c.text },
+  teamBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 5, borderWidth: 1, borderColor: c.primary, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10 },
+  teamBtnActive: { backgroundColor: c.primary },
+  teamBtnText: { color: c.primary, fontWeight: '700' as const, fontSize: 13 },
+  chipRow: { gap: 8, paddingHorizontal: 16, paddingBottom: 6 },
+  chip: { paddingHorizontal: 13, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface },
+  chipActive: { backgroundColor: c.primary, borderColor: c.primary },
+  chipText: { fontSize: 13, fontWeight: '700' as const, color: c.textMuted },
+  chipTextActive: { color: '#fff' },
+  activeRow: { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: 6, paddingHorizontal: 16, paddingBottom: 4 },
+  activeChip: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 4, backgroundColor: c.primarySoft, borderRadius: radius.pill, paddingHorizontal: 10, paddingVertical: 4 },
+  activeChipText: { fontSize: 12, fontWeight: '700' as const, color: c.primary },
+  results: { height: 380, marginHorizontal: 16, marginTop: 6, backgroundColor: c.surface, borderRadius: radius.lg, overflow: 'hidden' as const, borderWidth: 1, borderColor: c.border },
+  resultsHeader: { flexDirection: 'row' as const, justifyContent: 'space-between' as const, alignItems: 'center' as const, paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: c.border },
+  resultsCount: { fontSize: 12, fontWeight: '700' as const, color: c.textMuted },
+  clearText: { fontSize: 13, fontWeight: '700' as const, color: c.primary },
+  noResults: { textAlign: 'center' as const, marginTop: 40, color: c.textMuted, fontSize: 14, paddingHorizontal: 20 },
+  resultRow: { flexDirection: 'row' as const, alignItems: 'center' as const, paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: c.border },
+  backdrop: { flex: 1, backgroundColor: c.overlay, justifyContent: 'center' as const, alignItems: 'center' as const, padding: 16 },
+  sheet: { width: '100%' as const, maxWidth: 420, backgroundColor: c.surface, borderRadius: radius.lg, padding: 18 },
+  sheetHeader: { flexDirection: 'row' as const, justifyContent: 'space-between' as const, alignItems: 'center' as const, marginBottom: 12 },
+  sheetTitle: { fontSize: 18, fontWeight: '800' as const, color: c.text },
+  teamGrid: { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: 8 },
+  teamCell: { width: '22.5%' as const, paddingVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceMuted, alignItems: 'center' as const },
+  teamCellOn: { backgroundColor: c.primary, borderColor: c.primary },
+  teamCellText: { fontWeight: '700' as const, color: c.text, fontSize: 13 },
+  sheetActions: { flexDirection: 'row' as const, gap: 8, marginTop: 16 },
+  sheetSecondary: { flex: 1, borderRadius: radius.md, paddingVertical: 12, alignItems: 'center' as const, backgroundColor: c.surfaceMuted },
+  sheetSecondaryText: { color: c.text, fontWeight: '700' as const },
+  sheetPrimary: { flex: 1, borderRadius: radius.md, paddingVertical: 12, alignItems: 'center' as const, backgroundColor: c.primary },
+  sheetPrimaryText: { color: c.onPrimary, fontWeight: '800' as const },
+});

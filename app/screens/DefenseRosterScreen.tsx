@@ -5,6 +5,9 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../AppNavigator';
 import { getPlayersFromGithub } from '../services/sleeperAPI';
 
+import { useTheme, useLooseThemedStyles } from '../context/ThemeContext';
+import type { Palette } from '../theme';
+
 type NavProp = NativeStackNavigationProp<RootStackParamList, 'DefenseRoster'>;
 type DefenseRosterRouteProp = RouteProp<RootStackParamList, 'DefenseRoster'>;
 
@@ -42,6 +45,8 @@ const getHeadshotUrl = (player: any) => {
 };
 
 export default function DefenseRosterScreen() {
+  const { colors: th } = useTheme();
+  const styles = useLooseThemedStyles(makeStyles);
   const navigation = useNavigation<NavProp>();
   const route = useRoute<DefenseRosterRouteProp>();
   const { team, week } = route.params;
@@ -146,10 +151,10 @@ export default function DefenseRosterScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (th: Palette) => ({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: th.surface,
   },
 
   content: {
@@ -159,27 +164,27 @@ const styles = StyleSheet.create({
   headerCard: {
     padding: 14,
     borderRadius: 10,
-    backgroundColor: '#f4f6fc',
+    backgroundColor: th.background,
     borderWidth: 1,
-    borderColor: '#e8eaf0',
+    borderColor: th.border,
     marginBottom: 14,
   },
 
   title: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#1f2937',
+    color: th.text,
   },
 
   subtitle: {
     marginTop: 4,
     fontSize: 13,
-    color: '#6b7280',
+    color: th.textMuted,
   },
 
   statusText: {
     fontSize: 16,
-    color: '#374151',
+    color: th.textMuted,
     marginTop: 10,
   },
 
@@ -190,7 +195,7 @@ const styles = StyleSheet.create({
   groupTitle: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#374151',
+    color: th.textMuted,
     marginBottom: 8,
     textTransform: 'uppercase',
   },
@@ -198,9 +203,9 @@ const styles = StyleSheet.create({
   playerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#f8f9fc',
+    backgroundColor: th.surfaceMuted,
     borderWidth: 1,
-    borderColor: '#e5e9f2',
+    borderColor: th.border,
     borderRadius: 10,
     padding: 10,
     marginBottom: 8,
@@ -220,12 +225,12 @@ const styles = StyleSheet.create({
   playerName: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#1f2937',
+    color: th.text,
   },
 
   playerSub: {
     fontSize: 12,
-    color: '#6b7280',
+    color: th.textMuted,
     marginTop: 2,
   },
 });

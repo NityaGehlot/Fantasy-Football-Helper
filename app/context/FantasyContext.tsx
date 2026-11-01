@@ -10,15 +10,17 @@ import React, {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { auth } from "../services/firebase";
 import { getLeague } from "../services/sleeperAPI";
-import { fantasyChatResponse } from "../services/FantasyChatbot";
+import { streamFantasyChatResponse } from "../services/FantasyChatbot";
 import { getApiBaseUrl } from "../services/apiBaseUrl";
 import {
   countUnseen,
   isScanStale,
   loadSavedScan,
   loadSeenIdeaIds,
+  loadUntouchables,
   runTradeScan,
   saveSeenIdeaIds,
+  saveUntouchables,
   type TradeIdea,
 } from "../services/tradeAgent";
 import {
@@ -97,6 +99,8 @@ interface FantasyContextType {
   unreadTradeIdeas: number;
   refreshTradeIdeas: (force?: boolean) => Promise<void>;
   markTradeIdeasSeen: () => void;
+  untouchablePlayerIds: string[];
+  toggleUntouchable: (playerId: string) => void;
 }
 
 const FantasyContext = createContext<FantasyContextType | undefined>(undefined);
@@ -120,6 +124,8 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   const [isTradeScanning, setIsTradeScanning] = useState(false);
   const [tradeScanError, setTradeScanError] = useState<string | null>(null);
   const [seenTradeIdeaIds, setSeenTradeIdeaIds] = useState<string[]>([]);
+  const [untouchablePlayerIds, setUntouchablePlayerIds] = useState<string[]>([]);
+  const [untouchablesLoaded, setUntouchablesLoaded] = useState(false);
 
   const typingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const chatIdCounterRef = useRef(0);
@@ -151,24 +157,24 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     );
   };
 
-  const streamBotReply = (messageId: string, reply: string) => {
+  // Reveal a non-streamed reply quickly (whole answer in about a second at most),
+  // instead of one character every 15ms, which made long answers take 30+ seconds to show.
+  const revealBotReply = (messageId: string, reply: string) => {
     stopTypingInterval();
-
     if (!reply) {
       setIsChatTyping(false);
       return;
     }
-
+    const step = Math.max(8, Math.ceil(reply.length / 60));
     let idx = 0;
     typingIntervalRef.current = setInterval(() => {
-      idx += 1;
+      idx = Math.min(reply.length, idx + step);
       updateBotMessage(messageId, reply.slice(0, idx));
-
       if (idx >= reply.length) {
         stopTypingInterval();
         setIsChatTyping(false);
       }
-    }, 15);
+    }, 16);
   };
 
   const sendChatMessage = async (text: string) => {
@@ -186,14 +192,23 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     setIsChatTyping(true);
 
     try {
-      const reply = await fantasyChatResponse(
+      let streamedUpdates = 0;
+      const reply = await streamFantasyChatResponse(
         trimmed,
-        playerStats2025,
-        matchups,
+        textSoFar => {
+          streamedUpdates += 1;
+          updateBotMessage(botMessageId, textSoFar);
+        },
         selectedWeek,
         myTeam
       );
-      streamBotReply(botMessageId, reply);
+      if (streamedUpdates > 0) {
+        // Streamed live: text is already on screen.
+        updateBotMessage(botMessageId, reply);
+        setIsChatTyping(false);
+      } else {
+        revealBotReply(botMessageId, reply);
+      }
     } catch (err) {
       console.error("Failed to send chat message:", err);
       updateBotMessage(botMessageId, "⚠️ Failed to reach AI.");
@@ -352,10 +367,10 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   const tradeLeagueId = myTeam?.leagueId ?? null;
   const tradeRosterId = myTeam?.rosterId ?? null;
 
-  const refreshTradeIdeas = async (force = false) => {
+  const refreshTradeIdeas = async (force = false, untouchable = untouchablePlayerIds) => {
     if (!tradeLeagueId || tradeRosterId === null) return;
     const saved = force ? null : await loadSavedScan(tradeLeagueId, tradeRosterId);
-    if (saved && !isScanStale(saved)) {
+    if (saved && !isScanStale(saved, Date.now(), untouchable)) {
       setTradeIdeas(saved.ideas);
       setTradeScanAt(saved.generatedAt);
       return;
@@ -364,7 +379,10 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     setIsTradeScanning(true);
     setTradeScanError(null);
     try {
-      const scan = await runTradeScan({ leagueId: tradeLeagueId, rosterId: tradeRosterId, ownerId: myTeam?.ownerId });
+      const scan = await runTradeScan(
+        { leagueId: tradeLeagueId, rosterId: tradeRosterId, ownerId: myTeam?.ownerId },
+        untouchable
+      );
       setTradeIdeas(scan.ideas);
       setTradeScanAt(scan.generatedAt);
     } catch (err: any) {
@@ -379,21 +397,25 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     setTradeIdeas([]);
     setTradeScanAt(null);
     setTradeScanError(null);
+    setUntouchablesLoaded(false);
     if (!tradeLeagueId || tradeRosterId === null) return;
 
     let cancelled = false;
     (async () => {
-      const [saved, seen] = await Promise.all([
+      const [saved, seen, locked] = await Promise.all([
         loadSavedScan(tradeLeagueId, tradeRosterId),
         loadSeenIdeaIds(tradeLeagueId, tradeRosterId),
+        loadUntouchables(tradeLeagueId, tradeRosterId),
       ]);
       if (cancelled) return;
       setSeenTradeIdeaIds(seen);
+      setUntouchablePlayerIds(locked);
+      setUntouchablesLoaded(true);
       if (saved) {
         setTradeIdeas(saved.ideas);
         setTradeScanAt(saved.generatedAt);
       }
-      if (isScanStale(saved)) refreshTradeIdeas(true);
+      if (isScanStale(saved, Date.now(), locked)) refreshTradeIdeas(true, locked);
     })();
 
     return () => {
@@ -402,6 +424,20 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   }, [tradeLeagueId, tradeRosterId]);
 
   const unreadTradeIdeas = countUnseen(tradeIdeas, seenTradeIdeaIds);
+
+  // Lock/unlock a player from trade ideas. Rescans shortly after the last change.
+  const untouchableTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toggleUntouchable = (playerId: string) => {
+    if (!tradeLeagueId || tradeRosterId === null || !untouchablesLoaded) return;
+    const id = String(playerId);
+    const next = untouchablePlayerIds.includes(id)
+      ? untouchablePlayerIds.filter(p => p !== id)
+      : [...untouchablePlayerIds, id];
+    setUntouchablePlayerIds(next);
+    saveUntouchables(tradeLeagueId, tradeRosterId, next);
+    if (untouchableTimerRef.current) clearTimeout(untouchableTimerRef.current);
+    untouchableTimerRef.current = setTimeout(() => refreshTradeIdeas(true, next), 1200);
+  };
 
   const markTradeIdeasSeen = () => {
     if (!tradeLeagueId || tradeRosterId === null || unreadTradeIdeas === 0) return;
@@ -435,6 +471,10 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   // =====================
   const addLeague = async (leagueId: string) => {
     if (!user || !leagueId) return;
+    if (leagues.some(l => l.leagueId === leagueId)) {
+      setActiveLeagueId(leagueId);
+      return;
+    }
     try {
       const leagueData = await getLeague(leagueId);
       const leagueDoc: League = { leagueId, name: leagueData.name };
@@ -524,7 +564,9 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
         tradeScanError,
         unreadTradeIdeas,
         refreshTradeIdeas,
-        markTradeIdeasSeen
+        markTradeIdeasSeen,
+        untouchablePlayerIds,
+        toggleUntouchable
       }}
     >
       {children}

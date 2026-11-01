@@ -20,7 +20,12 @@ export function buildDEFContext(defWeeks: any[]): PlayerContext | { error: strin
   }
 
   const sorted = [...filtered].sort((a, b) => Number(b.week) - Number(a.week));
-  const last3 = getLastNWeeks(sorted, 3);
+  // "Last 3" means the last 3 games actually played, so bye weeks and missed games
+  // don't drag the recent averages toward zero.
+  const playedWeeks = sorted.filter(
+    (w: any) => Boolean(w.game_played) || Number(w.fantasyPoints) !== 0 || w.team_status === "played"
+  );
+  const last3 = getLastNWeeks(playedWeeks.length > 0 ? playedWeeks : sorted, 3);
   const latest = sorted[0];
 
   const totalGames = sorted.filter(w => Boolean(w.game_played)).length;

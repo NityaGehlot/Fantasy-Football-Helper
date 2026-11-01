@@ -16,6 +16,12 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../AppNavigator';
 import { useFantasy } from '../context/FantasyContext';
+import { selectDiverseNews } from '../services/newsDiversity';
+import { getAvailableStatSeasons, getNewsFiles, TEAM_NEWS_FILES } from '../services/newsService';
+import InjuryReportCard from '../components/InjuryReportCard';
+
+import { useTheme, useLooseThemedStyles } from '../context/ThemeContext';
+import type { Palette } from '../theme';
 
 type NewsArticle = {
   title: string;
@@ -46,6 +52,8 @@ const getRookieSeason = (player: any, stats?: any): number | null => {
 };
 
 export default function PlayerDetailsScreen({ route }: any) {
+  const { colors: th } = useTheme();
+  const styles = useLooseThemedStyles(makeStyles);
   type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'MainTabs'>;
   const navigation = useNavigation<NavigationProp>();
   const { player, stats, week, fantasyPoints } = route.params;
@@ -67,7 +75,6 @@ export default function PlayerDetailsScreen({ route }: any) {
   const [playerNews, setPlayerNews] = useState<NewsArticle[]>([]);
   const [teamNews, setTeamNews] = useState<NewsArticle[]>([]);
 
-  const NEWS_BASE_URL = "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/news";
 
   const normalizeName = (value?: string) => String(value || "").trim().toLowerCase();
   const normalizeTeam = (value?: string) => {
@@ -230,19 +237,8 @@ export default function PlayerDetailsScreen({ route }: any) {
     // On mount: detect available seasons from GitHub repo and update dropdown
     const detectSeasons = async () => {
       try {
-        const apiUrl = 'https://api.github.com/repos/NityaGehlot/nfl-data/contents/data/Stats';
-        const resp = await fetch(apiUrl);
-        if (!resp.ok) throw new Error('Failed to list repo contents');
-        const items = await resp.json();
-        if (!Array.isArray(items)) return;
-
-        const seasons: number[] = items
-          .map((it: any) => String(it.name || ''))
-          .map((n: string) => {
-            const m = n.match(/^(\d{4})\s+Season$/);
-            return m ? Number(m[1]) : null;
-          })
-          .filter(Boolean) as number[];
+        // Cached for a day (GitHub's API allows 60 requests/hour without a login).
+        const seasons = await getAvailableStatSeasons();
 
         if (seasons.length > 0) {
           seasons.sort((a, b) => b - a);
@@ -456,13 +452,8 @@ export default function PlayerDetailsScreen({ route }: any) {
           return;
         }
 
-        const newsResponse = await fetch(`${NEWS_BASE_URL}/news_${fileKey}.json`);
-        if (!newsResponse.ok) {
-          throw new Error(`Failed to load news_${fileKey}.json`);
-        }
-
-        const rawNews = await newsResponse.json();
-        const newsList: NewsArticle[] = Array.isArray(rawNews) ? rawNews : [];
+        // The player's own position file plus the main offensive files for team news (cached).
+        const newsList = (await getNewsFiles([fileKey, ...TEAM_NEWS_FILES])) as NewsArticle[];
 
         const currentPlayerName = normalizeName(player?.full_name);
         const currentTeam = String(player?.team || stats?.team || '').trim();
@@ -489,8 +480,9 @@ export default function PlayerDetailsScreen({ route }: any) {
           );
         }
 
-        setPlayerNews(onlyPlayerNews.slice(0, 2));
-        setTeamNews(onlyTeamNews.slice(0, 2));
+        // Up to 3 articles each, covering different stories (and different teammates).
+        setPlayerNews(selectDiverseNews(onlyPlayerNews, 3) as NewsArticle[]);
+        setTeamNews(selectDiverseNews(onlyTeamNews, 3, { onePerPlayer: true }) as NewsArticle[]);
       } catch (err) {
         console.error('Error loading player/team news:', err);
         setPlayerNews([]);
@@ -518,8 +510,8 @@ export default function PlayerDetailsScreen({ route }: any) {
     if (!raw) {
       return {
         label: 'General',
-        backgroundColor: '#eef2f7',
-        borderColor: '#d9e2ec',
+        backgroundColor: th.surfaceMuted,
+        borderColor: th.border,
         textColor: '#475569',
       };
     }
@@ -527,7 +519,7 @@ export default function PlayerDetailsScreen({ route }: any) {
     if (raw === 'positive') {
       return {
         label: 'Positive',
-        backgroundColor: '#e8f7ee',
+        backgroundColor: th.successSoft,
         borderColor: '#b9e6c8',
         textColor: '#1f7a3d',
       };
@@ -536,7 +528,7 @@ export default function PlayerDetailsScreen({ route }: any) {
     if (raw === 'negative') {
       return {
         label: 'Negative',
-        backgroundColor: '#fdecec',
+        backgroundColor: th.dangerSoft,
         borderColor: '#f5c2c2',
         textColor: '#b42318',
       };
@@ -545,7 +537,7 @@ export default function PlayerDetailsScreen({ route }: any) {
     if (raw === 'slightly_negative') {
       return {
         label: 'Monitor',
-        backgroundColor: '#fff7e6',
+        backgroundColor: th.warningSoft,
         borderColor: '#fcd9a5',
         textColor: '#b45309',
       };
@@ -554,8 +546,8 @@ export default function PlayerDetailsScreen({ route }: any) {
     if (raw === 'neutral') {
       return {
         label: 'Neutral',
-        backgroundColor: '#f2f4f7',
-        borderColor: '#dde3ea',
+        backgroundColor: th.surfaceMuted,
+        borderColor: th.border,
         textColor: '#5f6b7a',
       };
     }
@@ -563,8 +555,8 @@ export default function PlayerDetailsScreen({ route }: any) {
     if (raw === 'roster_move' || raw === 'roster move' || raw === 'transaction') {
       return {
         label: 'Roster Move',
-        backgroundColor: '#eaf1ff',
-        borderColor: '#c7d9ff',
+        backgroundColor: th.primarySoft,
+        borderColor: th.border,
         textColor: '#2f5bb7',
       };
     }
@@ -577,8 +569,8 @@ export default function PlayerDetailsScreen({ route }: any) {
 
     return {
       label: titleCase || 'General',
-      backgroundColor: '#eef2f7',
-      borderColor: '#d9e2ec',
+      backgroundColor: th.surfaceMuted,
+      borderColor: th.border,
       textColor: '#475569',
     };
   };
@@ -1345,7 +1337,7 @@ export default function PlayerDetailsScreen({ route }: any) {
           })()}
         </Text>
         <View style={styles.seasonPickerRow}>
-          <Text style={{ color: '#666', marginRight: 8, fontWeight: '700' }}>Season:</Text>
+          <Text style={{ color: th.textMuted, marginRight: 8, fontWeight: '700' }}>Season:</Text>
           {isRookie ? (
             // Rookies have no previous seasons to pick from
             <View style={styles.seasonPicker}>
@@ -1373,6 +1365,9 @@ export default function PlayerDetailsScreen({ route }: any) {
         )}
 
       </View>
+
+      {/* INJURY REPORT (current designation + this week's practice report) */}
+      {['QB', 'RB', 'WR', 'TE', 'K'].includes(basePosition) && <InjuryReportCard player={player} />}
 
       {/* ========================= */}
       {/* CURRENT WEEK STATS */}
@@ -1607,7 +1602,7 @@ export default function PlayerDetailsScreen({ route }: any) {
             const weekStatus = weekStatuses[w];
             if (weekStatus === 'upcoming') {
               return (
-                <View key={w} style={[styles.weekBlock, { backgroundColor: '#f3f4f6' }]}>
+                <View key={w} style={[styles.weekBlock, { backgroundColor: th.surfaceMuted }]}>
                   <Text style={styles.weekTitle}>{getWeekLabel(w)}</Text>
                   {hasInjury && (
                     <Text style={{ fontSize: 16, color: isOut ? "#e53e3e" : "#d69e2e", marginBottom: 4 }}>
@@ -1625,7 +1620,7 @@ export default function PlayerDetailsScreen({ route }: any) {
                 style={[
                   styles.weekBlock,
                   (isByeWeek || isEliminatedWeek || postseasonMissingAndEliminated)
-                    ? { backgroundColor: '#e5e7eb' }
+                    ? { backgroundColor: th.surfaceMuted }
                     : { backgroundColor: getWeekCardBackground(weekStats) },
                 ]}
               >
@@ -1754,11 +1749,11 @@ export default function PlayerDetailsScreen({ route }: any) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (th: Palette) => ({
 
   container: {
     flex: 1,
-    backgroundColor: "#fff"
+    backgroundColor: th.surface
   },
 
   header: {
@@ -1775,30 +1770,30 @@ const styles = StyleSheet.create({
 
   dropAskBtn: {
     marginTop: 10,
-    backgroundColor: '#eef2ff',
+    backgroundColor: th.primarySoft,
     borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 7,
   },
   dropAskText: {
-    color: '#4f46e5',
+    color: th.primary,
     fontWeight: '700',
     fontSize: 13,
   },
-  playerName: {
+  playerName: { color: th.text,
     fontSize: 26,
     fontWeight: "700"
   },
 
   playerInfo: {
     fontSize: 16,
-    color: "#666",
+    color: th.textMuted,
     marginTop: 4
   },
 
   experience: {
     fontSize: 14,
-    color: '#6b7280',
+    color: th.textMuted,
     marginTop: 6,
   },
   seasonPickerRow: {
@@ -1811,20 +1806,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
-    backgroundColor: '#fff'
+    borderColor: th.border,
+    backgroundColor: th.surface
   },
   seasonPickerText: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#111827'
+    color: th.text
   },
   seasonDropdown: {
     marginTop: 8,
     borderWidth: 1,
-    borderColor: '#e6e9ef',
+    borderColor: th.border,
     borderRadius: 8,
-    backgroundColor: '#fff',
+    backgroundColor: th.surface,
     paddingVertical: 6,
     marginHorizontal: 20,
   },
@@ -1833,14 +1828,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   seasonOptionActive: {
-    backgroundColor: '#eef2ff',
+    backgroundColor: th.primarySoft,
   },
   seasonOptionText: {
     fontSize: 14,
-    color: '#111827',
+    color: th.text,
   },
   seasonOptionTextActive: {
-    color: '#1f2937',
+    color: th.text,
     fontWeight: '800'
   },
 
@@ -1862,16 +1857,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 15,
     borderTopWidth: 1,
-    borderColor: "#eee"
+    borderColor: th.border
   },
 
-  sectionTitle: {
+  sectionTitle: { color: th.text,
     fontSize: 18,
     fontWeight: "700",
     marginBottom: 10
   },
 
-  statLine: {
+  statLine: { color: th.text,
     fontSize: 16,
     marginBottom: 6
   },
@@ -1879,7 +1874,7 @@ const styles = StyleSheet.create({
   weekBlock: {
     marginBottom: 15,
     padding: 10,
-    backgroundColor: "#f9f9f9",
+    backgroundColor: th.surfaceMuted,
     borderRadius: 8
   },
 
@@ -1887,12 +1882,12 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "600",
     marginBottom: 8,
-    color: "#333"
+    color: th.text
   },
 
   weeklyLogContainer: {
     height: 500, // Fixed height for scrollable log
-    backgroundColor: "#f4f6fc",
+    backgroundColor: th.background,
     borderRadius: 8,
     padding: 10
   },
@@ -1900,14 +1895,14 @@ const styles = StyleSheet.create({
   weekFantasyPoints: {
     fontSize: 16,
     fontWeight: "700",
-    color: "#4f46e5",
+    color: th.primary,
     marginTop: 8
   },
 
   fantasyPoints: {
     fontSize: 28,
     fontWeight: "800",
-    color: "#4f46e5"
+    color: th.primary
   },
 
   seasonScopeRow: {
@@ -1921,20 +1916,20 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     paddingHorizontal: 10,
     borderRadius: 999,
-    backgroundColor: '#f1f3f8',
+    backgroundColor: th.surfaceMuted,
     borderWidth: 1,
-    borderColor: '#d9deea',
+    borderColor: th.border,
   },
 
   seasonScopeButtonActive: {
-    backgroundColor: '#4f46e5',
-    borderColor: '#4f46e5',
+    backgroundColor: th.primary,
+    borderColor: th.primary,
   },
 
   seasonScopeText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#333',
+    color: th.text,
   },
 
   seasonScopeTextActive: {
@@ -1943,7 +1938,7 @@ const styles = StyleSheet.create({
 
   disclaimerText: {
     fontSize: 13,
-    color: '#6b7280',
+    color: th.textMuted,
     marginTop: 6,
     marginBottom: 8,
   },
@@ -1960,21 +1955,21 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 4,
     marginBottom: 6,
-    backgroundColor: '#f4f6fc',
+    backgroundColor: th.background,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#e8eaf0',
+    borderColor: th.border,
   },
 
   seasonValue: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#1e1e1e',
+    color: th.text,
   },
 
   seasonLabel: {
     fontSize: 11,
-    color: '#666',
+    color: th.textMuted,
     marginTop: 2,
     textAlign: 'center',
   },
@@ -1989,20 +1984,20 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 14,
     borderRadius: 8,
-    backgroundColor: '#f1f3f8',
+    backgroundColor: th.surfaceMuted,
     borderWidth: 1,
-    borderColor: '#d9deea',
+    borderColor: th.border,
   },
 
   newsTabButtonActive: {
-    backgroundColor: '#4f46e5',
-    borderColor: '#4f46e5',
+    backgroundColor: th.primary,
+    borderColor: th.primary,
   },
 
   newsTabText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#333',
+    color: th.text,
   },
 
   newsTabTextActive: {
@@ -2013,21 +2008,21 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#e5e9f2',
-    backgroundColor: '#f8f9fc',
+    borderColor: th.border,
+    backgroundColor: th.surfaceMuted,
     marginBottom: 10,
   },
 
   newsTitle: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#1f2937',
+    color: th.text,
     marginBottom: 6,
   },
 
   newsSummary: {
     fontSize: 13,
-    color: '#4b5563',
+    color: th.textMuted,
     marginBottom: 8,
   },
 
@@ -2039,7 +2034,7 @@ const styles = StyleSheet.create({
 
   newsMetaText: {
     fontSize: 12,
-    color: '#6b7280',
+    color: th.textMuted,
   },
 
   impactBadge: {
@@ -2050,7 +2045,7 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
 
-  impactBadgeText: {
+  impactBadgeText: { color: th.text,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -2059,25 +2054,25 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 14,
     borderRadius: 10,
-    backgroundColor: '#eef2ff',
+    backgroundColor: th.primarySoft,
     borderWidth: 1,
-    borderColor: '#c7d2fe',
+    borderColor: th.border,
     alignItems: 'center',
   },
 
   defenseRosterButtonText: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#3730a3',
+    color: th.primary,
   },
   byeEliminatedText: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#6b7280',
+    color: th.textMuted,
     marginBottom: 6,
   },
   compareButton: {
-    backgroundColor: "#4f46e5",
+    backgroundColor: th.primary,
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",

@@ -55,3 +55,47 @@ export async function fantasyChatResponse(
     return "⚠️ Failed to reach chatbot.";
   }
 }
+
+/**
+ * Ask the chatbot and receive the answer as it's written. onText gets the full text so far
+ * while streaming; quick JSON replies (and errors) are only returned, not passed to onText.
+ * Streams on web (where fetch exposes a readable body); elsewhere it falls back to one reply.
+ */
+export async function streamFantasyChatResponse(
+  userMessage: string,
+  onText: (textSoFar: string) => void,
+  selectedWeek?: number,
+  myTeam?: MyTeamPayload | null
+): Promise<string> {
+  const canStream = typeof (globalThis as any).ReadableStream !== "undefined" && typeof TextDecoder !== "undefined";
+  try {
+    const res = await fetch(`${getApiBaseUrl()}/fantasy-chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: userMessage, selectedWeek, myTeam, stream: canStream }),
+    });
+
+    const type = res.headers.get("content-type") || "";
+    const reader = (res as any).body?.getReader?.();
+    if (!type.includes("text/plain") || !reader) {
+      // JSON reply (quick answers, errors, or no streaming support)
+      const data = (await res.json().catch(() => ({}))) as { reply?: string };
+      return data.reply ?? (res.ok ? "⚠️ No reply from chatbot." : "⚠️ Failed to reach chatbot.");
+    }
+
+    const decoder = new TextDecoder();
+    let text = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+      onText(text);
+    }
+    text += decoder.decode();
+    onText(text);
+    return text || "⚠️ No reply from chatbot.";
+  } catch (err) {
+    console.error("Chatbot fetch error:", err);
+    return "⚠️ Failed to reach chatbot.";
+  }
+}

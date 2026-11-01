@@ -69,3 +69,18 @@ test("pickup suggestions are capped at two per position", () => {
   assert.equal(picks.filter(s => s.add.position === "K").length, 2);
   assert.ok(picks.some(s => s.add.id === "faWR"));
 });
+
+test("untouchable players are never offered", () => {
+  const all = generateTradeIdeas(me, [them, rich], SLOTS);
+  const offered = new Set(all.flatMap(i => i.give.map(p => p.id)));
+  const lockId = [...offered][0];
+  const locked = generateTradeIdeas(me, [them, rich], SLOTS, { untouchable: [lockId] });
+  assert.ok(locked.every(i => i.give.every(p => p.id !== lockId)));
+});
+
+test("ideas report structured lineup changes for both sides", () => {
+  const idea = evaluateTrade(me, them, [me.players[3]], [them.players[5]], SLOTS);
+  assert.equal(idea.myLineup[0].in?.id, "wrZ");
+  assert.equal(idea.myLineup[0].out?.id, "wrB");
+  assert.equal(idea.theirLineup[0].in?.id, "rbC");
+});

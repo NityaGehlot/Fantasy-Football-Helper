@@ -1,5 +1,10 @@
 // app/backend/services/promptBuilder.ts
-// Build AI prompts dynamically based on player data and comparisons
+// Build AI prompts dynamically based on player data and comparisons.
+//
+// Speed vs. quality: the model's answer length is what makes a local model slow, so the
+// formats ask for a verdict first and a few evidence bullets instead of re-typing every stat.
+// The accuracy rules stay strict: use only the numbers given, never contradict the
+// pre-computed comparisons, and say "close" when it is close.
 
 export interface PromptConfig {
   playerData: string;
@@ -9,36 +14,32 @@ export interface PromptConfig {
   positions: string[];
 }
 
+const DIVIDER = "──────────────────────";
+
 /**
  * Build system instructions for fantasy football analysis
  */
-export function buildSystemInstructions(): string {
+export function buildSystemInstructions(positions: string[] = []): string {
+  const qbRule = positions.includes("QB")
+    ? `
+- Opponent defense strength score: HIGHER = tougher defense = WORSE matchup for the QB; LOWER = easier matchup (a plus).`
+    : "";
+
   return `
-You are a precise fantasy football analyst.
+You are a precise, concise fantasy football analyst. Answer the user's question directly.
 
-CRITICAL RULES:
-- Use ONLY the data and pre-computed comparisons below. Do NOT re-calculate any numbers yourself.
-- Copy stat values exactly as shown. Do NOT round or alter them.
-- In comparison sections, copy the PRE-COMPUTED COMPARISONS word for word — do not rewrite them.
-- Do NOT say a player leads in a stat unless the PRE-COMPUTED COMPARISONS say so.
-- Every analysis claim must be explicitly supported by the numbers shown in the response.
-- Never make narrative claims that are not directly tied to provided numeric values.
-- If a numeric comparison is close or mixed, say it is close/mixed; do not overstate an edge.
-- Before final answer, run a consistency check: each "higher/lower/better/worse" statement must match the exact numbers shown.
-- If any statement conflicts with the shown numbers, rewrite it to match the numbers.
-- For QB matchup analysis, a lower opponent defense strength score is better for the QB and is a positive factor in start/sit decisions.
-- For QB matchup analysis, a higher opponent defense strength score means a tougher defense and is a negative factor in start/sit decisions.
-- Never recommend starting a QB because he faces a stronger defense; that only counts against the QB unless stronger stats elsewhere outweigh it.
-- Defense score interpretation is strict: HIGHER score = stronger defense = WORSE matchup for the QB.
-- Defense score interpretation is strict: LOWER score = weaker defense = BETTER matchup for the QB.
-- If QB A defense score is lower than QB B defense score, QB A has the more favorable matchup.
+ACCURACY RULES (most important):
+- Use ONLY the numbers in PLAYER DATA and PRE-COMPUTED COMPARISONS. Never invent or recalculate stats.
+- Copy numbers exactly as shown. Never claim a player leads a stat unless the numbers show it.
+- If the evidence is close or mixed, say so plainly instead of overstating an edge.
+- "Last 3" means each player's last 3 games actually played (bye weeks are excluded).
+- If something is "Not available", don't guess; just leave it out.${qbRule}
+- Before answering, check that every "higher/lower/better/worse" you wrote matches the numbers.
 
-FORMATTING RULES:
-- Use "──────────────────────" as a divider between every major section.
-- Use "▶" before every section title.
-- Use "•" for every bullet point.
-- Put a blank line between bullet points.
-- Never write a wall of text.
+STYLE:
+- Lead with the decision. Keep each bullet to one line with a number in it.
+- Use "▶" before section titles, "•" for bullets and "${DIVIDER}" between sections.
+- No filler, no repeating the question, no long stat dumps.
 `;
 }
 
@@ -46,16 +47,12 @@ FORMATTING RULES:
  * Build complete prompt for AI
  */
 export function buildAnalysisPrompt(config: PromptConfig): string {
-  return `
-${buildSystemInstructions()}
-
+  return `${buildSystemInstructions(config.positions)}
 ============================
 PLAYER DATA
 ============================
-${config.playerData}
-
-${config.comparisons}
-
+${config.playerData.replace(/\n{3,}/g, "\n\n").trim()}
+${config.comparisons ? `\n${config.comparisons.trim()}\n` : ""}
 ============================
 USER QUESTION
 ============================
@@ -64,350 +61,96 @@ ${config.userQuestion}
 ============================
 RESPONSE FORMAT
 ============================
-${config.responseFormat}
+${config.responseFormat.trim()}
 `;
 }
+
+const upper = (s: string) => s.toUpperCase();
 
 /**
  * Build response format for QB comparison
  */
 export function buildQBResponseFormat(players: string[]): string {
   if (players.length === 1) {
+    const p = upper(players[0]);
     return `
-──────────────────────
-▶ SEASON STATS
-──────────────────────
-- Avg Fantasy Pts: [value]
-- Pass Yds: [value]
-- Rush Yds: [value]
-- TDs: [value]
-- INTs: [value]
-- TD:INT Ratio: [value]
-- Consistency: [value]
-
-──────────────────────
-▶ LAST 3 WEEKS
-──────────────────────
-[Summary of recent performance]
-
-──────────────────────
-▶ INJURY STATUS
-──────────────────────
-- Status: [value]
-- Practice: [value]
-- Impact: [brief assessment]
-
-──────────────────────
-▶ PASS-CATCHER INJURY CHECK (WR/TE)
-──────────────────────
-- Injured or possibly out WR/TE: [list names + status, or "None"]
-- Impact on QB outlook: [quick analysis]
-
-──────────────────────
-▶ OPPOSING DEFENSE (LAST 3 WEEKS)
-──────────────────────
-- Opponent Defense Team: [team name]
-- Rushing Yards Allowed: [exact value]
-- Passing Yards Allowed: [exact value]
-- Rushing TDs Allowed: [exact value]
-- Passing TDs Allowed: [exact value]
-- Interceptions: [exact value]
-- Fumbles Forced: [exact value]
-- Analysis: [quick analysis of matchup strength; lower defense score = better matchup for the QB]
-
-──────────────────────
-▶ DEFENSE STRENGTH SCORE (0-100)
-──────────────────────
-- Score: [0-100, where higher = stronger defense]
-- Explanation: [1-2 sentences tied directly to the 3-week stats above; explicitly state whether this is a favorable or unfavorable matchup for the QB]
-
-──────────────────────
-▶ RECOMMENDATION
-──────────────────────
-- Action: [START/SIT/FLEX]
-- Confidence: [X]/10
-- Reasoning: [2-4 specific points including QB form, WR/TE injury impact, and defense strength score; treat a lower defense score as a plus for the QB]
+${DIVIDER}
+▶ VERDICT: [START / SIT / FLEX] ${p} — Confidence [X]/10
+• [one sentence with the main reason, using a number]
+${DIVIDER}
+▶ WHY
+• Recent form: [last 3 avg fantasy pts vs season avg, plus one passing/rushing number]
+• Efficiency: [TD:INT ratio and completion %]
+• Matchup: [opponent defense score and whether it's an easy or tough matchup; skip if not available]
+• Health: [his status/practice, and any injured WR/TE teammates that matter]
+${DIVIDER}
+▶ RISK
+• [one thing that could make this call wrong]
 `;
   }
 
+  const [a, b] = players.map(upper);
   return `
-──────────────────────
-▶ LAST 3 WEEKS STATS
-──────────────────────
-${players[0].toUpperCase()}
-- Avg Fantasy Pts: [exact value]
-- Avg Pass Yds: [exact value]
-- Avg Rush Yds: [exact value]
-- Avg TDs/game: [exact value]
-- Avg INTs/game: [exact value]
-- TD:INT Ratio: [exact value]
-
-${players[1].toUpperCase()}
-- Avg Fantasy Pts: [exact value]
-- Avg Pass Yds: [exact value]
-- Avg Rush Yds: [exact value]
-- Avg TDs/game: [exact value]
-- Avg INTs/game: [exact value]
-- TD:INT Ratio: [exact value]
-
-──────────────────────
-▶ COMPARISON
-──────────────────────
-[Copy each line from PRE-COMPUTED COMPARISONS exactly as written above]
-- Summary: [1-2 sentences using only the shown numbers and exact comparison lines; do not reverse higher/lower values, and do not say a player is higher in a stat unless the displayed number is actually higher]
-- Summary: [1-2 sentences using only the shown numbers and exact comparison lines; do not reverse higher/lower values, and do not say a player is higher in a stat unless the displayed number is actually higher]
-
-──────────────────────
-▶ INJURY REPORT
-──────────────────────
-- ${players[0].toUpperCase()}: [status] | Practice: [status]
-- ${players[1].toUpperCase()}: [status] | Practice: [status]
-
-──────────────────────
-▶ PASS-CATCHER INJURY CHECK (WR/TE)
-──────────────────────
-- ${players[0].toUpperCase()} WR/TE injuries: [list names + status, or "None"]
-- ${players[0].toUpperCase()} impact: [quick analysis using only listed injury statuses and available numeric context]
-- ${players[1].toUpperCase()} WR/TE injuries: [list names + status, or "None"]
-- ${players[1].toUpperCase()} impact: [quick analysis using only listed injury statuses and available numeric context]
-
-──────────────────────
-▶ OPPOSING DEFENSE (LAST 3 WEEKS)
-──────────────────────
-${players[0].toUpperCase()} OPPONENT DEFENSE
-- Team: [team name]
-- Rushing Yards Allowed: [exact value]
-- Passing Yards Allowed: [exact value]
-- Rushing TDs Allowed: [exact value]
-- Passing TDs Allowed: [exact value]
-- Interceptions: [exact value]
-- Fumbles Forced: [exact value]
-
-${players[1].toUpperCase()} OPPONENT DEFENSE
-- Team: [team name]
-- Rushing Yards Allowed: [exact value]
-- Passing Yards Allowed: [exact value]
-- Rushing TDs Allowed: [exact value]
-- Passing TDs Allowed: [exact value]
-- Interceptions: [exact value]
-- Fumbles Forced: [exact value]
-
-──────────────────────
-▶ DEFENSE STRENGTH SCORE (0-100)
-──────────────────────
-- ${players[0].toUpperCase()} opponent defense score: [0-100, higher = stronger defense]
-- ${players[1].toUpperCase()} opponent defense score: [0-100, higher = stronger defense]
-- Score analysis: [explain which defense is tougher and why, based only on the listed 3-week stats and the two scores; explicitly identify easier QB matchup using this rule: lower defense score = easier matchup for the QB]
-
-──────────────────────
-▶ START/SIT DECISION
-──────────────────────
-- START: [NAME]
-- BENCH: [NAME]
-- Confidence: [X]/10
-- Reasoning:
-  - [Point 1 from comparisons, numerically accurate]
-  - [Point 2 from QB recent stats, numerically accurate]
-  - [Point 3 from WR/TE injury impact, tied to listed statuses and numbers only]
-  - [Point 4 from opponent defense strength score and matchup, numerically accurate, where lower defense score is a plus for the QB and higher defense score is a minus]
-
-CONSISTENCY CHECK (REQUIRED BEFORE FINAL OUTPUT)
-- Verify every comparative phrase (higher/lower/better/worse/tougher/easier) matches the shown numbers.
-- Do not claim a player has "higher" value if the displayed number is lower.
-- Do not claim a QB has a better matchup if his opponent defense score is higher.
-- If one QB has the lower opponent defense score, treat that as the easier matchup and a positive point for that QB.
-- Mandatory defense-score check: if scoreA < scoreB, then QB A must be labeled easier matchup and QB B tougher matchup.
-- If evidence is mixed, explicitly say mixed and explain with numbers.
+${DIVIDER}
+▶ VERDICT: START [NAME] over [NAME] — Confidence [X]/10
+• [one sentence with the deciding reason, using numbers]
+${DIVIDER}
+▶ HEAD TO HEAD
+• Recent form (last 3): ${a} [avg pts] vs ${b} [avg pts]
+• Season: ${a} [avg pts, consistency] vs ${b} [avg pts, consistency]
+• Efficiency: [TD:INT ratio for each, from the comparisons]
+• Matchup: [each QB's opponent defense score; lower score = easier matchup; skip if not available]
+• Health: [status/practice for each, plus injured WR/TE teammates if any]
+${DIVIDER}
+▶ RISK
+• [what would flip this decision, or "Close call" if the numbers are near even]
 `;
 }
 
 /**
  * Build response format for skill position comparison
  */
-export function buildSkillPositionResponseFormat(
-  position: string,
-  players: string[]
-): string {
-  if (position === "K") {
-    if (players.length === 1) {
-      return `
-──────────────────────
-▶ SEASON STATS
-──────────────────────
-- Avg Fantasy Pts: [value]
-- FG Made/Att: [value]
-- FG %: [value]
-- PAT Made/Att: [value]
-- Consistency: [value]
-
-──────────────────────
-▶ LAST 3 WEEKS
-──────────────────────
-[Summary of recent kicking volume and accuracy]
-
-──────────────────────
-▶ RECOMMENDATION
-──────────────────────
-- Action: [START/SIT]
-- Confidence: [X]/10
-- Reasoning: [2-3 specific points]
-`;
-    }
-
-    return `
-──────────────────────
-▶ LAST 3 WEEKS STATS
-──────────────────────
-${players[0].toUpperCase()}
-- Avg Fantasy Pts: [exact value]
-- Avg FG Made: [exact value]
-- Avg PAT Made: [exact value]
-- FG %: [exact value]
-
-${players[1].toUpperCase()}
-- Avg Fantasy Pts: [exact value]
-- Avg FG Made: [exact value]
-- Avg PAT Made: [exact value]
-- FG %: [exact value]
-
-──────────────────────
-▶ COMPARISON
-──────────────────────
-[Copy each line from PRE-COMPUTED COMPARISONS exactly]
-
-──────────────────────
-▶ START/SIT DECISION
-──────────────────────
-- START: [NAME]
-- BENCH: [NAME]
-- Confidence: [X]/10
-`;
-  }
-
-  if (position === "DEF") {
-    if (players.length === 1) {
-      return `
-──────────────────────
-▶ SEASON STATS
-──────────────────────
-- Avg Fantasy Pts: [value]
-- Sacks: [value]
-- Interceptions: [value]
-- Defensive TD: [value]
-- Yards Allowed: [value]
-- Consistency: [value]
-
-──────────────────────
-▶ LAST 3 WEEKS
-──────────────────────
-[Summary of recent defensive production and points prevention]
-
-──────────────────────
-▶ RECOMMENDATION
-──────────────────────
-- Action: [START/SIT]
-- Confidence: [X]/10
-- Reasoning: [2-3 specific points]
-`;
-    }
-
-    return `
-──────────────────────
-▶ LAST 3 WEEKS STATS
-──────────────────────
-${players[0].toUpperCase()}
-- Avg Fantasy Pts: [exact value]
-- Avg Sacks: [exact value]
-- Avg INT: [exact value]
-- Avg Def TD: [exact value]
-- Avg Yards Allowed: [exact value]
-
-${players[1].toUpperCase()}
-- Avg Fantasy Pts: [exact value]
-- Avg Sacks: [exact value]
-- Avg INT: [exact value]
-- Avg Def TD: [exact value]
-- Avg Yards Allowed: [exact value]
-
-──────────────────────
-▶ COMPARISON
-──────────────────────
-[Copy each line from PRE-COMPUTED COMPARISONS exactly]
-
-──────────────────────
-▶ START/SIT DECISION
-──────────────────────
-- START: [NAME]
-- BENCH: [NAME]
-- Confidence: [X]/10
-`;
-  }
+export function buildSkillPositionResponseFormat(position: string, players: string[]): string {
+  const pos = position.toUpperCase();
+  const statHint =
+    pos === "K"
+      ? "FG made and FG %, PAT made"
+      : pos === "DEF"
+      ? "sacks, INTs, defensive TDs, yards allowed"
+      : pos === "RB"
+      ? "carries, rush yards, receptions, TDs"
+      : "targets, receptions, receiving yards, TDs";
 
   if (players.length === 1) {
+    const p = upper(players[0]);
     return `
-──────────────────────
-▶ SEASON STATS
-──────────────────────
-- Avg Fantasy Pts: [value]
-- Avg Receiving Yds: [value]
-- Avg Rec TD: [value]
-- Targets/Receptions: [value]
-- Consistency: [value]
-
-──────────────────────
-▶ LAST 3 WEEKS
-──────────────────────
-[Summary of recent performance]
-
-──────────────────────
-▶ INJURY STATUS
-──────────────────────
-- Status: [value]
-- Practice: [value]
-
-──────────────────────
-▶ RECOMMENDATION
-──────────────────────
-- Action: [START/SIT/BENCH]
-- Confidence: [X]/10
-- Reasoning: [2-3 specific points]
+${DIVIDER}
+▶ VERDICT: [START / SIT] ${p} — Confidence [X]/10
+• [one sentence with the main reason, using a number]
+${DIVIDER}
+▶ WHY
+• Recent form: [last 3 avg fantasy pts vs season avg]
+• Usage: [${statHint}]
+• Consistency: [consistency score and what it means]
+${pos === "K" || pos === "DEF" ? "" : "• Health: [status and practice]\n"}${DIVIDER}
+▶ RISK
+• [one thing that could make this call wrong]
 `;
   }
 
+  const [a, b] = players.map(upper);
   return `
-──────────────────────
-▶ LAST 3 WEEKS STATS
-──────────────────────
-${players[0].toUpperCase()}
-- Avg Fantasy Pts: [exact value]
-- Avg Rec/Rush Yds: [exact value]
-- Avg TD: [exact value]
-- Targets/Carries: [exact value]
-
-${players[1].toUpperCase()}
-- Avg Fantasy Pts: [exact value]
-- Avg Rec/Rush Yds: [exact value]
-- Avg TD: [exact value]
-- Targets/Carries: [exact value]
-
-──────────────────────
-▶ COMPARISON
-──────────────────────
-[Copy each line from PRE-COMPUTED COMPARISONS exactly]
-- Edge: [which player has the advantage]
-
-──────────────────────
-▶ INJURY REPORT
-──────────────────────
-- ${players[0].toUpperCase()}: [status]
-- ${players[1].toUpperCase()}: [status]
-
-──────────────────────
-▶ START/SIT DECISION
-──────────────────────
-- START: [NAME]
-- BENCH: [NAME]
-- Confidence: [X]/10
+${DIVIDER}
+▶ VERDICT: START [NAME] over [NAME] — Confidence [X]/10
+• [one sentence with the deciding reason, using numbers]
+${DIVIDER}
+▶ HEAD TO HEAD
+• Recent form (last 3): ${a} [avg pts] vs ${b} [avg pts]
+• Usage: [${statHint} for each]
+• Consistency: [consistency score for each]
+${pos === "K" || pos === "DEF" ? "" : `• Health: ${a} [status] / ${b} [status]\n`}${DIVIDER}
+▶ RISK
+• [what would flip this decision, or "Close call" if the numbers are near even]
 `;
 }
 
@@ -421,41 +164,22 @@ export function buildRosterDecisionResponseFormat(
   startCount: number
 ): string {
   const normalizedPosition = position.toUpperCase();
-  const candidateLines = players.map(p => `- ${p.toUpperCase()}`).join("\n");
+  const benchCount = Math.max(players.length - startCount, 0);
 
   return `
-──────────────────────
-▶ CANDIDATES (${normalizedPosition})
-──────────────────────
-${candidateLines}
+Candidates (${normalizedPosition}): ${players.map(upper).join(", ")}
 
-──────────────────────
-▶ PLAYER-BY-PLAYER SNAPSHOT
-──────────────────────
-- For EACH candidate above, provide:
-  - Last 3 weeks fantasy points trend (exact values from data)
-  - Relevant volume/efficiency stats for this position (exact values)
-  - Injury status and practice status
-  - Matchup note (for QB include defense strength score context)
-
-──────────────────────
+${DIVIDER}
+▶ START (${startCount}): [comma-separated names] — Confidence [X]/10
+▶ BENCH (${benchCount}): [comma-separated names]
+${DIVIDER}
 ▶ RANKING
-──────────────────────
-- Rank all candidates from best to worst for this week.
-- Use only provided data and exact numbers.
+• 1. [NAME] — [last 3 avg pts], [one key usage stat], [health${normalizedPosition === "QB" ? ", matchup score" : ""}]
+(one line per candidate, best to worst)
+${DIVIDER}
+▶ WHY
+• [2-4 bullets tied to exact numbers explaining the cut line between the last starter and first bench player]
 
-──────────────────────
-▶ START DECISION
-──────────────────────
-- Must Start Count: ${startCount}
-- START (${startCount}): [comma-separated names]
-- BENCH (${Math.max(players.length - startCount, 0)}): [comma-separated names]
-- Confidence: [X]/10
-- Reasoning: [3-6 numbered points tied directly to exact stats, injuries, and matchup context]
-
-CONSISTENCY CHECK (REQUIRED BEFORE FINAL OUTPUT)
-- START list must contain exactly ${startCount} player(s).
-- Every candidate must appear once in either START or BENCH.
-- Do not reference players outside the candidate list.
+RULES: START must list exactly ${startCount} player(s). Every candidate appears once in START or BENCH. Only use the candidates listed.
 `;
 }

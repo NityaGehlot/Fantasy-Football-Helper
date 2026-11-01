@@ -25,13 +25,18 @@ import {
 // >>> ADDED
 import { getPlayerStatsByWeek, getNFLWeekStatus, getTeamsPlayingInWeek, type WeekStatus } from '../services/nflApi';
 import { getLineupAlerts, type LineupAlert } from '../services/lineupAlerts';
+import { fetchLiveScoreboard, livePlayerMap, LIVE_REFRESH_MS, type LiveScoreboard as LiveBoard } from '../services/liveMatchup';
+import LiveScoreboard from '../components/LiveScoreboard';
+import { getInjuryIndex } from '../services/injuryService';
+import { currentInjury, indexInjuries } from '../services/injuryFormat';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, radius, shadow } from '../theme';
+import { radius, shadowFor, type Palette } from '../theme';
+import { useTheme, useThemedStyles } from '../context/ThemeContext';
 import { useFantasy, type MyFantasyTeam } from "../context/FantasyContext";
 
 import { Picker } from '@react-native-picker/picker';
 import { User, Roster } from '../types';
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useIsFocused } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../AppNavigator";
 import PlayerCard from '../components/PlayerCard';
@@ -75,6 +80,8 @@ const isFantasyOffseason = (seasonType?: string) => {
 };
 
 export default function FantasyScreen() {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [league, setLeague] = useState<any>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [rosters, setRosters] = useState<Roster[]>([]);
@@ -95,6 +102,17 @@ export default function FantasyScreen() {
   const [espnWeekStatus, setEspnWeekStatus] = useState<WeekStatus | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [teamsPlaying, setTeamsPlaying] = useState<Set<string> | null>(null);
+  const [liveBoard, setLiveBoard] = useState<LiveBoard | null>(null);
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [liveNonce, setLiveNonce] = useState(0);
+  const isFocused = useIsFocused();
+  const [injuryIndex, setInjuryIndex] = useState(() => indexInjuries(null));
+
+  // Current injury designations (daily file from nfl-data), so upcoming weeks show injuries too.
+  useEffect(() => {
+    getInjuryIndex().then(setInjuryIndex).catch(() => undefined);
+  }, [refreshNonce]);
   type NavigationProp = NativeStackNavigationProp<
     RootStackParamList,
     "MainTabs"
@@ -367,6 +385,41 @@ useEffect(() => {
       cancelled = true;
     };
   }, [selectedSeasonLeagueId, selectedWeek, availableSeasons, nflState]);
+
+  // Live scoreboard + win odds for the viewed team's matchup (current season, unfinished weeks).
+  // Polls every minute while games are in progress and this screen is visible.
+  const liveRosterId = rosters.find(r => r.owner_id === viewedTeamId)?.roster_id;
+  const liveSeason = Number(availableSeasons.find(s => s.league_id === selectedSeasonLeagueId)?.season);
+  const liveEligible =
+    !!selectedSeasonLeagueId && liveRosterId !== undefined && !!liveSeason &&
+    liveSeason === Number(nflState?.season) && espnWeekStatus !== 'completed' && selectedWeek <= 18;
+
+  useEffect(() => {
+    setLiveBoard(null);
+    setLiveError(null);
+  }, [selectedSeasonLeagueId, selectedWeek, liveRosterId]);
+
+  useEffect(() => {
+    if (!liveEligible || !isFocused) return;
+    let cancelled = false;
+    const load = async () => {
+      setLiveLoading(true);
+      try {
+        const board = await fetchLiveScoreboard(selectedSeasonLeagueId, Number(liveRosterId), selectedWeek);
+        if (!cancelled) { setLiveBoard(board); setLiveError(null); }
+      } catch (err: any) {
+        if (!cancelled) setLiveError(err?.message || 'Live scoreboard failed');
+      } finally {
+        if (!cancelled) setLiveLoading(false);
+      }
+    };
+    load();
+    const timer = espnWeekStatus === 'in_progress' ? setInterval(load, LIVE_REFRESH_MS) : null;
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [liveEligible, isFocused, selectedSeasonLeagueId, selectedWeek, liveRosterId, espnWeekStatus, liveNonce]);
 
   const handleRefresh = async () => {
     if (!selectedSeasonLeagueId) return;
@@ -672,46 +725,42 @@ const formatPlayerStats = (position: string, stats: any) => {
 // when the first league is added.
 if (!activeLeagueId) {
   return (
-    <View style={styles.center}>
-      <Text style={{ fontSize: 18, marginBottom: 12 }}>
-        You don't have a league selected yet.
-      </Text>
-      <TextInput
-        placeholder="Enter League ID"
-        value={newLeagueInput}
-        onChangeText={setNewLeagueInput}
-        style={{
-          borderWidth: 1,
-          borderColor: "#ccc",
-          padding: 10,
-          borderRadius: 8,
-          width: "80%",
-          marginBottom: 12,
-        }}
-      />
-      <Pressable
-        style={{
-          backgroundColor: "#4f46e5",
-          padding: 12,
-          borderRadius: 8,
-          width: "50%",
-          alignItems: "center",
-        }}
-        onPress={async () => {
-          if (!newLeagueInput.trim()) return;
-          setAddingLeague(true);
-          try {
-            await addLeague(newLeagueInput.trim());
-            setNewLeagueInput("");
-          } catch (err) {
-            console.error("Error adding league:", err);
-          } finally {
-            setAddingLeague(false);
-          }
-        }}
-      >
-        <Text style={{ color: "#fff" }}>{addingLeague ? "Adding..." : "Add League"}</Text>
-      </Pressable>
+    <View style={[styles.center, { padding: 24 }]}>
+      <View style={styles.emptyCard}>
+        <View style={styles.emptyIcon}>
+          <Ionicons name="trophy-outline" size={26} color={colors.primary} />
+        </View>
+        <Text style={styles.emptyTitle}>Add your Sleeper league</Text>
+        <Text style={styles.emptyText}>
+          Paste your league ID to see rosters, live scores, win odds and lineup alerts. Find it in Sleeper under
+          League → Settings, or in the web address sleeper.com/leagues/ID.
+        </Text>
+        <TextInput
+          placeholder="Sleeper league ID"
+          placeholderTextColor={colors.textSubtle}
+          value={newLeagueInput}
+          onChangeText={setNewLeagueInput}
+          style={styles.emptyInput}
+        />
+        <Pressable
+          style={[styles.primaryBtn, addingLeague && { opacity: 0.7 }]}
+          disabled={addingLeague}
+          onPress={async () => {
+            if (!newLeagueInput.trim()) return;
+            setAddingLeague(true);
+            try {
+              await addLeague(newLeagueInput.trim());
+              setNewLeagueInput("");
+            } catch (err) {
+              console.error("Error adding league:", err);
+            } finally {
+              setAddingLeague(false);
+            }
+          }}
+        >
+          <Text style={styles.primaryBtnText}>{addingLeague ? "Adding..." : "Add league"}</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -720,8 +769,8 @@ if (!activeLeagueId) {
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" />
-        <Text>Loading Sleeper + NFL stats...</Text>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={styles.loadingText}>Loading your league…</Text>
       </View>
     );
   }
@@ -777,7 +826,8 @@ if (!activeLeagueId) {
       });
     const roster = rosters.find(r => r.roster_id === matchup?.roster_id);
     const owner = users.find(u => u.user_id === roster?.owner_id);
-    const total = (matchup?.starters_points || []).reduce((a: number, b: number) => a + b, 0);
+    const liveSide = [liveBoard?.me, liveBoard?.opponent].find(s => s && s.rosterId === matchup?.roster_id);
+    const total = liveSide?.points ?? (matchup?.starters_points || []).reduce((a: number, b: number) => a + b, 0);
     return { matchup, starterIds: sIds, starters, bench, name: owner ? getTeamName(owner) : 'Unknown', total };
   };
 
@@ -787,19 +837,30 @@ if (!activeLeagueId) {
   const mySide = buildSide(myWeekMatchup);
   const oppSide = opponentMatchup ? buildSide(opponentMatchup) : null;
 
-  const renderPlayer = (side: ReturnType<typeof buildSide>, player: any, isStarter: boolean) => {
-    const stats = getPlayerNFLStats(player.player_id, selectedWeek);
-    const statLine = formatPlayerStats(player.position, stats);
+  const liveById = livePlayerMap(liveBoard);
+  const renderPlayer = (side: ReturnType<typeof buildSide>, player: any, isStarter: boolean, dense = false) => {
+    let stats = getPlayerNFLStats(player.player_id, selectedWeek);
+    const live = weekStatus !== 'completed' ? liveById[String(player.player_id)] : undefined;
+    // Weeks that aren't over have no stats file yet: show today's injury designation instead.
+    if (weekStatus !== 'completed') {
+      const inj = currentInjury(injuryIndex, player);
+      if (inj.status) stats = { ...stats, injury_status: inj.status, primary_injury: inj.injury || stats?.primary_injury };
+    }
+    // During an unfinished week, show the live stat line and game clock instead of last week's file.
+    const statLine = live
+      ? [live.statLine, live.game.detail].filter(Boolean)
+      : formatPlayerStats(player.position, stats);
     const imageUri = player.position === 'DEF' ? getTeamLogo(stats?.team || player.team) : getHeadshotUrl(player);
-    const pts = side.matchup?.players_points?.[player.player_id] ?? 0;
+    const pts = live?.points ?? side.matchup?.players_points?.[player.player_id] ?? 0;
     const positionToShow = isStarter ? (player.assignedSlot || player.position) : player.position;
     return (
       <TouchableOpacity
         key={player.player_id}
         style={[styles.playerRow, { flex: 1 }]}
+        activeOpacity={0.7}
         onPress={() => navigation.navigate('PlayerDetails', { player, stats, week: selectedWeek, fantasyPoints: pts })}
       >
-        <PlayerCard player={player} stats={stats} statLine={statLine} points={pts} imageUri={imageUri} position={positionToShow} positionColor={getPositionColor(positionToShow || player.position)} team={getDisplayTeam(player, stats)} />
+        <PlayerCard player={player} stats={stats} statLine={statLine} points={pts} imageUri={imageUri} position={positionToShow} positionColor={getPositionColor(positionToShow || player.position)} team={getDisplayTeam(player, stats)} dense={dense} />
       </TouchableOpacity>
     );
   };
@@ -808,67 +869,66 @@ if (!activeLeagueId) {
     const outcome = other && weekStatus === 'completed'
       ? (side.total > other.total ? 'WIN' : side.total < other.total ? 'LOSS' : 'TIE')
       : null;
-    const outcomeColor = outcome === 'WIN' ? '#16a34a' : outcome === 'LOSS' ? '#dc2626' : '#f59e0b';
-    return outcome ? (
-      <View style={{ backgroundColor: outcomeColor, borderRadius: 8, padding: 8, marginTop: 15 }}>
-        <Text style={{ color: '#fff', fontWeight: '800', fontSize: 20 }} numberOfLines={1}>{side.name}</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
-          <Text style={{ color: '#fff', fontWeight: '600' }}>Points: {side.total.toFixed(2)}</Text>
-          <Text style={{ color: '#fff', fontWeight: '800', marginLeft: 10 }}>{outcome}</Text>
+    const outcomeColor = outcome === 'WIN' ? colors.success : outcome === 'LOSS' ? colors.danger : colors.warning;
+    return (
+      <View style={[styles.banner, outcome && { backgroundColor: outcomeColor, borderColor: outcomeColor }]}>
+        <Text style={[styles.bannerName, outcome && { color: '#fff' }]} numberOfLines={1}>{side.name}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8, marginTop: 2 }}>
+          <Text style={[styles.bannerPoints, outcome && { color: '#fff' }]}>{side.total.toFixed(2)}</Text>
+          {outcome && <Text style={styles.bannerOutcome}>{outcome}</Text>}
         </View>
       </View>
-    ) : (
-      <Text style={styles.subTitle}>{side.name} · {side.total.toFixed(2)}</Text>
     );
   };
 
   const renderRoster = (side: ReturnType<typeof buildSide>) => (
-    <ScrollView style={{ flex: 1 }}>
+    <View>
       {renderBanner(side)}
-      <Text style={styles.subTitle}>Starters</Text>
-      {side.starters.map(p => renderPlayer(side, p, true))}
-      <Text style={styles.subTitle}>Bench</Text>
-      {side.bench.map(p => renderPlayer(side, p, false))}
-    </ScrollView>
+      <Text style={styles.sectionLabel}>STARTERS</Text>
+      <View style={styles.listCard}>{side.starters.map(p => renderPlayer(side, p, true))}</View>
+      <Text style={styles.sectionLabel}>BENCH</Text>
+      <View style={styles.listCard}>{side.bench.map(p => renderPlayer(side, p, false))}</View>
+    </View>
   );
 
   // Rows are paired by index so each player lines up with their counterpart.
   const renderSideBySide = (left: ReturnType<typeof buildSide>, right: ReturnType<typeof buildSide>) => {
     const rowColor = (lp: any, rp: any, isStarter: boolean, forLeft: boolean) => {
       if (!highlightStarters || !isStarter || !lp || !rp) return undefined;
-      const a = left.matchup?.players_points?.[lp.player_id] ?? 0;
-      const b = right.matchup?.players_points?.[rp.player_id] ?? 0;
-      if (a === b) return '#e5e7eb';
-      return (a > b) === forLeft ? '#bbf7d0' : '#fecaca';
+      const a = liveById[String(lp.player_id)]?.points ?? left.matchup?.players_points?.[lp.player_id] ?? 0;
+      const b = liveById[String(rp.player_id)]?.points ?? right.matchup?.players_points?.[rp.player_id] ?? 0;
+      if (a === b) return colors.surfaceMuted;
+      return (a > b) === forLeft ? colors.successSoft : colors.dangerSoft;
     };
     const pairRows = (l: any[], r: any[], isStarter: boolean) =>
       Array.from({ length: Math.max(l.length, r.length) }, (_, i) => (
         <View key={i} style={{ flexDirection: 'row' }}>
-          <View style={{ flex: 1, marginRight: 4, borderRadius: 8, backgroundColor: rowColor(l[i], r[i], isStarter, true) }}>{l[i] ? renderPlayer(left, l[i], isStarter) : null}</View>
-          <View style={{ flex: 1, marginLeft: 4, borderRadius: 8, backgroundColor: rowColor(l[i], r[i], isStarter, false) }}>{r[i] ? renderPlayer(right, r[i], isStarter) : null}</View>
+          <View style={{ flex: 1, marginRight: 4, borderRadius: 8, backgroundColor: rowColor(l[i], r[i], isStarter, true) }}>{l[i] ? renderPlayer(left, l[i], isStarter, true) : null}</View>
+          <View style={{ flex: 1, marginLeft: 4, borderRadius: 8, backgroundColor: rowColor(l[i], r[i], isStarter, false) }}>{r[i] ? renderPlayer(right, r[i], isStarter, true) : null}</View>
         </View>
       ));
     return (
-      <ScrollView style={{ flex: 1 }}>
-        <View style={{ flexDirection: 'row' }}>
-          <View style={{ flex: 1, marginRight: 4 }}>{renderBanner(left, right)}</View>
-          <View style={{ flex: 1, marginLeft: 4 }}>{renderBanner(right, left)}</View>
+      <View>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <View style={{ flex: 1 }}>{renderBanner(left, right)}</View>
+          <View style={{ flex: 1 }}>{renderBanner(right, left)}</View>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <Text style={[styles.subTitle, { flex: 1 }]}>Starters</Text>
+          <Text style={[styles.sectionLabel, { flex: 1 }]}>STARTERS</Text>
           <TouchableOpacity
-            style={[styles.teamButton, { marginRight: 0 }, highlightStarters && styles.teamSelected]}
+            style={[styles.chip, highlightStarters && styles.chipOn, { marginTop: 10 }]}
             onPress={() => setHighlightStarters(v => !v)}
           >
-            <Text style={[styles.teamText, highlightStarters && styles.teamTextSelected]}>
-              {highlightStarters ? 'Hide Matchup Colors' : 'Show Head-to-Head'}
+            <Ionicons name="color-filter-outline" size={13} color={highlightStarters ? colors.onPrimary : colors.textMuted} />
+            <Text style={[styles.chipText, highlightStarters && styles.chipTextOn]}>
+              {highlightStarters ? 'Hide colors' : 'Head-to-head colors'}
             </Text>
           </TouchableOpacity>
         </View>
-        {pairRows(left.starters, right.starters, true)}
-        <Text style={styles.subTitle}>Bench</Text>
-        {pairRows(left.bench, right.bench, false)}
-      </ScrollView>
+        <View style={styles.listCard}>{pairRows(left.starters, right.starters, true)}</View>
+        <Text style={styles.sectionLabel}>BENCH</Text>
+        <View style={styles.listCard}>{pairRows(left.bench, right.bench, false)}</View>
+      </View>
     );
   };
 
@@ -892,9 +952,9 @@ if (!activeLeagueId) {
     weekStatus === 'in_progress' ? 'Week is in progress' :
     finalResult;
   const resultColor =
-    result === 'WIN' ? 'green' :
-    result === 'LOSS' ? 'red' :
-    weekStatus === 'completed' ? 'orange' : '#666';
+    result === 'WIN' ? colors.success :
+    result === 'LOSS' ? colors.danger :
+    weekStatus === 'completed' ? colors.warning : colors.textMuted;
 
   // Only warn about your own lineup, and only for weeks that aren't over.
   const isViewingMyTeam = !!myTeam && myTeam.ownerId === viewedTeamId;
@@ -903,114 +963,110 @@ if (!activeLeagueId) {
       ? getLineupAlerts({
           starterIds: myWeekMatchup?.starters ?? viewedRoster?.starters ?? [],
           rosterPositions: league?.roster_positions ?? [],
-          playersById: players,
+          // Prefer the daily injury file over Sleeper's cached copy of the player database.
+          playersById: Object.fromEntries(
+            (myWeekMatchup?.starters ?? viewedRoster?.starters ?? []).map((id: string) => {
+              const p = { ...(players[id] ?? {}), player_id: id };
+              const inj = currentInjury(injuryIndex, p);
+              return [id, inj.status ? { ...p, injury_status: inj.status } : p];
+            })
+          ),
           teamsPlaying,
           week: selectedWeek,
         })
       : [];
 
+  const viewingName = users.find(u => u.user_id === viewedTeamId);
+  const canSetMyTeam = !!viewedTeamId && myTeam?.ownerId !== viewedTeamId;
+
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.headerRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.leagueLabel}>LEAGUE</Text>
           <Text style={styles.title} numberOfLines={1}>{league?.name}</Text>
         </View>
-        <TouchableOpacity style={styles.refreshBtn} onPress={handleRefresh}>
-          <Ionicons name="refresh" size={16} color={colors.primary} />
-          <Text style={styles.refreshText}>Refresh</Text>
+        <TouchableOpacity style={styles.iconBtn} onPress={handleRefresh} accessibilityLabel="Refresh league data">
+          <Ionicons name="refresh" size={18} color={colors.primary} />
         </TouchableOpacity>
       </View>
 
-      {/* TEAM SELECTOR */}
-      <Text style={styles.subTitle}>View Team</Text>
-      <View style={{ height: 50 }}>
+      {/* CONTROLS: team, season, week */}
+      <View style={styles.controlsCard}>
+        <Text style={styles.controlLabel}>TEAM</Text>
         <FlatList
           horizontal
           data={users}
           keyExtractor={(u) => u.user_id}
           showsHorizontalScrollIndicator={false}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={[styles.teamButton, viewedTeamId === item.user_id && styles.teamSelected]}
-              onPress={() => setViewedTeamId(item.user_id)}
-            >
-              <Text style={[styles.teamText, viewedTeamId === item.user_id && styles.teamTextSelected]}>
-                {getTeamName(item)}
-                {myTeam?.ownerId === item.user_id ? " (My Team)" : ""}
-              </Text>
-            </TouchableOpacity>
-          )}
-        />
-      </View>
-
-      <View style={{ flexDirection: "row", alignItems: "center", marginTop: 8, marginBottom: 8 }}>
-        <TouchableOpacity
-          style={styles.setMyTeamButton}
-          onPress={async () => {
-            if (!viewedTeamId) return;
-            const selectedTeam = buildMyTeam(viewedTeamId);
-            if (selectedTeam) await setMyTeam(selectedTeam);
+          contentContainerStyle={{ gap: 8, paddingBottom: 2 }}
+          renderItem={({ item }) => {
+            const selected = viewedTeamId === item.user_id;
+            const mine = myTeam?.ownerId === item.user_id;
+            return (
+              <TouchableOpacity style={[styles.chip, selected && styles.chipOn]} onPress={() => setViewedTeamId(item.user_id)}>
+                {mine && <Ionicons name="star" size={12} color={selected ? colors.onPrimary : colors.warning} />}
+                <Text style={[styles.chipText, selected && styles.chipTextOn]} numberOfLines={1}>{getTeamName(item)}</Text>
+              </TouchableOpacity>
+            );
           }}
-        >
-          <Text style={styles.setMyTeamButtonText}>Set Viewed Team As My Team</Text>
-        </TouchableOpacity>
+        />
+        {canSetMyTeam && (
+          <TouchableOpacity
+            style={styles.setMineRow}
+            onPress={async () => {
+              const selectedTeam = buildMyTeam(viewedTeamId!);
+              if (selectedTeam) await setMyTeam(selectedTeam);
+            }}
+          >
+            <Ionicons name="star-outline" size={14} color={colors.primary} />
+            <Text style={styles.setMineText}>
+              Make {viewingName ? getTeamName(viewingName) : 'this team'} my team
+            </Text>
+          </TouchableOpacity>
+        )}
+        {!myTeam && !canSetMyTeam && (
+          <Text style={styles.hint}>Pick your team above and tap "Make … my team" to unlock alerts, trade ideas and AI advice.</Text>
+        )}
 
-        <Text style={styles.myTeamLabel}>
-          {myTeam ? `Current: ${myTeam.teamName}` : "Current: not set"}
-        </Text>
-      </View>
-
-      {/* WEEK + RESULTS */}
-      <View style={styles.weekContainer}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.weekLabel}>Select Season:</Text>
-          {loadingSeasons ? (
-            <Text style={{ color: '#666', padding: 10 }}>Loading seasons...</Text>
-          ) : (
+        <View style={styles.pickerRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.controlLabel}>SEASON</Text>
+            {loadingSeasons ? (
+              <Text style={styles.hint}>Loading…</Text>
+            ) : (
+              <Picker
+                selectedValue={selectedSeasonLeagueId}
+                style={styles.picker}
+                dropdownIconColor={colors.text}
+                onValueChange={(itemValue) => {
+                  setSelectedSeasonLeagueId(itemValue);
+                  setViewedTeamId(null); // Reset viewed team when changing season
+                }}
+              >
+                {availableSeasons.map((season) => (
+                  <Picker.Item key={season.league_id} label={String(season.season)} value={season.league_id} color={colors.text} />
+                ))}
+              </Picker>
+            )}
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.controlLabel}>WEEK</Text>
             <Picker
-              selectedValue={selectedSeasonLeagueId}
-              style={{ height: 40 }}
-              onValueChange={(itemValue) => {
-                setSelectedSeasonLeagueId(itemValue);
-                setViewedTeamId(null); // Reset viewed team when changing season
-              }}
+              selectedValue={selectedWeek}
+              style={styles.picker}
+              dropdownIconColor={colors.text}
+              onValueChange={(itemValue) => setSelectedWeek(clampWeek(Number(itemValue)))}
             >
-              {availableSeasons.map((season) => (
-                <Picker.Item key={season.league_id} label={season.name} value={season.league_id} />
+              {[...Array(MAX_FANTASY_WEEK_VISIBLE)].map((_, i) => (
+                <Picker.Item key={i + 1} label={`Week ${i + 1}`} value={i + 1} color={colors.text} />
               ))}
             </Picker>
-          )}
-        </View>
-        
-        <View style={{ flex: 1 }}>
-          <Text style={styles.weekLabel}>Select Week:</Text>
-          <Picker
-            selectedValue={selectedWeek}
-            style={{ height: 40 }}
-            onValueChange={(itemValue) => setSelectedWeek(clampWeek(Number(itemValue)))}
-          >
-            {[...Array(MAX_FANTASY_WEEK_VISIBLE)].map((_, i) => (
-              <Picker.Item key={i + 1} label={`Week ${i + 1}`} value={i + 1} />
-            ))}
-          </Picker>
-        </View>
-        
-        <View style={styles.weekResults}>
-          <Text style={styles.resultText}>Team Points: {points.toFixed(2)}</Text>
-          <Text style={[styles.resultText, { color: resultColor }]}>
-            {result}
-          </Text>
-        </View>
-      </View>
-
-      {/* HEADER */}
-      <View style={styles.statsHeader}>
-        <View style={{ width: 45 }} />
-        <View style={{ width: 50 }} />
-        <View style={{ flex: 1 }} />
-        <View style={styles.playerStats}>
-          <Text style={styles.statText}>PTS</Text>
+          </View>
+          <View style={styles.resultBox}>
+            <Text style={styles.resultPoints}>{(viewedRoster ? mySide.total : points).toFixed(2)}</Text>
+            <Text style={[styles.resultText, { color: resultColor }]} numberOfLines={2}>{result}</Text>
+          </View>
         </View>
       </View>
 
@@ -1037,15 +1093,25 @@ if (!activeLeagueId) {
         </View>
       )}
 
+      {/* LIVE SCOREBOARD + WIN ODDS */}
+      {liveEligible && weekStatus !== 'completed' && (
+        <LiveScoreboard
+          board={liveBoard}
+          loading={liveLoading}
+          error={liveError}
+          onRefresh={() => setLiveNonce(n => n + 1)}
+        />
+      )}
+
       {/* VIEW MODE */}
-      <View style={{ flexDirection: 'row', marginBottom: 8 }}>
-        {([['team', 'My Team'], ['both', 'Matchup']] as const).map(([mode, label]) => (
+      <View style={styles.segment}>
+        {([['team', 'Roster'], ['both', 'Matchup']] as const).map(([mode, label]) => (
           <TouchableOpacity
             key={mode}
-            style={[styles.teamButton, viewMode === mode && styles.teamSelected]}
+            style={[styles.segmentBtn, viewMode === mode && styles.segmentBtnOn]}
             onPress={() => setViewMode(mode)}
           >
-            <Text style={[styles.teamText, viewMode === mode && styles.teamTextSelected]}>{label}</Text>
+            <Text style={[styles.segmentText, viewMode === mode && styles.segmentTextOn]}>{label}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -1053,67 +1119,65 @@ if (!activeLeagueId) {
       {/* PLAYER LIST */}
       {viewedRoster && (
         viewMode === 'team' ? renderRoster(mySide) :
-        !oppSide ? <Text style={{ color: '#666', padding: 10 }}>No opponent found for this week.</Text> :
+        !oppSide ? <Text style={styles.hint}>No opponent found for this week.</Text> :
         renderSideBySide(mySide, oppSide)
       )}
-    </View>
+    </ScrollView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20, backgroundColor: '#fff' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+const makeStyles = (c: Palette) => ({
+  container: { flex: 1, backgroundColor: c.background },
+  content: { padding: 16, paddingBottom: 32 },
+  center: { flex: 1, justifyContent: 'center' as const, alignItems: 'center' as const, backgroundColor: c.background },
+  loadingText: { marginTop: 10, color: c.textMuted },
 
-  headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 12 },
-  leagueLabel: { fontSize: 11, fontWeight: '800', color: colors.textMuted, letterSpacing: 0.8 },
-  title: { fontSize: 26, fontWeight: 'bold', color: colors.text },
-  refreshBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.primarySoft, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 7 },
-  refreshText: { color: colors.primary, fontWeight: '700', fontSize: 13 },
-  alertBox: { backgroundColor: colors.warningSoft, borderRadius: radius.md, padding: 12, marginTop: 12, gap: 4, ...shadow },
-  alertBoxOk: { backgroundColor: colors.successSoft },
-  alertHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
-  alertTitle: { fontWeight: '800', color: colors.text, fontSize: 14 },
-  alertLine: { fontSize: 13, color: colors.text },
-  alertLineSevere: { color: colors.danger, fontWeight: '600' },
-  subTitle: { fontSize: 20, fontWeight: '600', marginTop: 15, marginBottom: 10 },
+  emptyCard: { width: '100%' as const, maxWidth: 420, backgroundColor: c.surface, borderRadius: radius.lg, padding: 22, borderWidth: 1, borderColor: c.border, alignItems: 'center' as const, gap: 10 },
+  emptyIcon: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.primarySoft, alignItems: 'center' as const, justifyContent: 'center' as const },
+  emptyTitle: { fontSize: 20, fontWeight: '800' as const, color: c.text },
+  emptyText: { fontSize: 13, color: c.textMuted, textAlign: 'center' as const, lineHeight: 19 },
+  emptyInput: { width: '100%' as const, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceMuted, color: c.text, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 11, fontSize: 15 },
+  primaryBtn: { width: '100%' as const, backgroundColor: c.primary, borderRadius: radius.md, paddingVertical: 13, alignItems: 'center' as const },
+  primaryBtnText: { color: c.onPrimary, fontWeight: '800' as const, fontSize: 15 },
 
-  teamButton: { paddingHorizontal: 14, paddingVertical: 8, backgroundColor: colors.surfaceMuted, borderRadius: radius.pill, marginRight: 8 },
-  teamSelected: { backgroundColor: colors.primary },
-  teamText: { fontSize: 16, color: '#000' },
-  teamTextSelected: { color: '#fff', fontWeight: 'bold' },
+  headerRow: { flexDirection: 'row' as const, alignItems: 'center' as const, marginBottom: 12, gap: 12 },
+  leagueLabel: { fontSize: 11, fontWeight: '800' as const, color: c.textMuted, letterSpacing: 0.8 },
+  title: { fontSize: 24, fontWeight: '800' as const, color: c.text },
+  iconBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: c.primarySoft, alignItems: 'center' as const, justifyContent: 'center' as const },
 
-  weekContainer: { flexDirection: 'row', padding: 12, backgroundColor: '#f2f2f2', borderRadius: 10, marginTop: 15, alignItems: 'flex-start' },
-  weekLabel: { fontWeight: '600', marginBottom: 5, fontSize: 12 },
-  weekResults: { marginLeft: 10, flex: 0.8, justifyContent: 'center' },
-  resultText: { fontSize: 14, fontWeight: '700' },
+  controlsCard: { backgroundColor: c.surface, borderRadius: radius.lg, padding: 14, borderWidth: 1, borderColor: c.border, gap: 6 },
+  controlLabel: { fontSize: 10, fontWeight: '800' as const, color: c.textSubtle, letterSpacing: 0.8, marginBottom: 4 },
+  chip: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 5, paddingHorizontal: 12, paddingVertical: 7, backgroundColor: c.surfaceMuted, borderRadius: radius.pill, maxWidth: 220 },
+  chipOn: { backgroundColor: c.primary },
+  chipText: { fontSize: 13, fontWeight: '600' as const, color: c.text },
+  chipTextOn: { color: c.onPrimary, fontWeight: '800' as const },
+  setMineRow: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 5, marginTop: 4, alignSelf: 'flex-start' as const },
+  setMineText: { color: c.primary, fontWeight: '700' as const, fontSize: 13 },
+  hint: { fontSize: 12, color: c.textMuted, lineHeight: 17 },
+  pickerRow: { flexDirection: 'row' as const, gap: 10, marginTop: 8, alignItems: 'flex-end' as const },
+  picker: { height: 40, color: c.text, backgroundColor: c.surfaceMuted, borderWidth: 0, borderRadius: radius.sm, paddingHorizontal: 6 },
+  resultBox: { flex: 0.9, alignItems: 'flex-end' as const, justifyContent: 'center' as const, minHeight: 40 },
+  resultPoints: { fontSize: 20, fontWeight: '800' as const, color: c.text },
+  resultText: { fontSize: 12, fontWeight: '700' as const, textAlign: 'right' as const },
 
-  playerRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#ddd' },
-  playerImage: { width: 50, height: 50, borderRadius: 25 },
-  playerName: { fontSize: 16, fontWeight: '600' },
-  playerSubText: { fontSize: 14, color: '#555' },
-  positionBadgeRect: { width: 45, height: 28, borderRadius: 6, justifyContent: 'center', alignItems: 'center', marginRight: 10 },
-  positionBadgeText: { color: '#fff', fontWeight: '700', fontSize: 14 },
-  statsHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, paddingRight: 14 },
-  playerStats: { width: 72, alignItems: 'flex-end' },
-  statText: { fontSize: 18, fontWeight: '800', textAlign: 'right' },
-  statLine: { fontSize: 12, color: '#333' },
-  setMyTeamButton: {
-    backgroundColor: '#2563eb',
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  setMyTeamButtonText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  myTeamLabel: {
-    marginLeft: 10,
-    color: '#374151',
-    fontSize: 13,
-    fontWeight: '600',
-    flexShrink: 1,
-  },
+  alertBox: { backgroundColor: c.warningSoft, borderRadius: radius.md, padding: 12, marginTop: 12, gap: 4 },
+  alertBoxOk: { backgroundColor: c.successSoft },
+  alertHeader: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6, marginBottom: 2 },
+  alertTitle: { fontWeight: '800' as const, color: c.text, fontSize: 14 },
+  alertLine: { fontSize: 13, color: c.text },
+  alertLineSevere: { color: c.danger, fontWeight: '600' as const },
 
+  segment: { flexDirection: 'row' as const, backgroundColor: c.surfaceMuted, borderRadius: radius.pill, padding: 3, marginTop: 14, alignSelf: 'flex-start' as const },
+  segmentBtn: { paddingHorizontal: 18, paddingVertical: 7, borderRadius: radius.pill },
+  segmentBtnOn: { backgroundColor: c.surface, ...shadowFor(c) },
+  segmentText: { fontSize: 13, fontWeight: '700' as const, color: c.textMuted },
+  segmentTextOn: { color: c.text },
+
+  banner: { marginTop: 12, padding: 12, borderRadius: radius.md, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border },
+  bannerName: { fontSize: 15, fontWeight: '800' as const, color: c.text },
+  bannerPoints: { fontSize: 22, fontWeight: '800' as const, color: c.text },
+  bannerOutcome: { fontSize: 13, fontWeight: '800' as const, color: '#fff' },
+  sectionLabel: { fontSize: 11, fontWeight: '800' as const, color: c.textSubtle, letterSpacing: 0.8, marginTop: 16, marginBottom: 6 },
+  listCard: { backgroundColor: c.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: c.border, overflow: 'hidden' as const },
+  playerRow: { flexDirection: 'row' as const, alignItems: 'center' as const, borderBottomWidth: 1, borderBottomColor: c.border },
 });

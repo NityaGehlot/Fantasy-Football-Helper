@@ -1,6 +1,8 @@
 // app/backend/utils/playerExtraction.ts
 // Generic player extraction utilities for all positions
 
+import { injuriesForTeam, lookupInjury, practiceLabel } from "../services/injuryStore";
+
 export type Position = string;
 
 /**
@@ -168,10 +170,21 @@ export function getInjuredTeammates(
     return sameTeam && isSkill && isCorrectWeek && isInjured && notExcluded;
   });
 
-  console.log(
-    `🏥 Injured teammates found for ${teamName} week ${currentWeek}:`,
-    teammates.map(t => `${t.player_name} (${t.injury_status})`)
+  // No report for this week yet (upcoming week): use today's injury designations.
+  const hasWeekRows = playerStats.some(
+    (p: any) => Number(p.week) === Number(currentWeek) && String(p.team).toUpperCase() === String(teamName).toUpperCase()
   );
+  if (!hasWeekRows) {
+    return injuriesForTeam(teamName)
+      .filter(r => ["WR", "TE", "RB"].includes(r.position) && (!excludePosition || r.position !== excludePosition))
+      .map(r => ({
+        name: r.full_name.toLowerCase(),
+        position: r.position,
+        status: r.status,
+        injury: r.injury || "Unknown",
+        practiceStatus: practiceLabel(r.practice_status) || "No practice data",
+      }));
+  }
 
   return teammates.map((p: any) => ({
     name: p.player_name,
@@ -218,6 +231,18 @@ export function getPlayerInjuryStatus(
       p.position === position &&
       Number(p.week) === currentWeek
   );
+
+  // No stats row for this week (it hasn't been played yet): use today's designation instead of
+  // assuming the player is healthy.
+  if (!injuryRow) {
+    const current = lookupInjury(playerName, position);
+    return {
+      status: current?.status ?? "No designation",
+      practiceStatus: practiceLabel(current?.practice_status) || "No report yet",
+      injuryType: current?.injury || "None",
+      teamStatus: "",
+    };
+  }
 
   return {
     status: injuryRow?.injury_status ?? "ACTIVE",

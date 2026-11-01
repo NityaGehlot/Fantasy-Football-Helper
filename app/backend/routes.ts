@@ -35,9 +35,15 @@ import {
 } from "./services/statsStore";
 import { detectIntent } from "./services/intent";
 import { handleAdvisorQuestion, AdvisorResult } from "./services/advisor";
-import { generateWithLLM } from "./services/llm";
+import { generateWithLLM, streamWithLLM } from "./services/llm";
 import { getLeagueContext } from "./services/leagueContext";
 import { generateTradeIdeas } from "./services/tradeEngine";
+import { getLiveScoreboard } from "./services/liveScoreboard";
+import { ensureInjuriesLoaded } from "./services/injuryStore";
+import { getLeagueNews } from "./services/leagueNews";
+
+// Overridable for local testing.
+const ESPN_SITE_API = process.env.ESPN_SITE_API || "https://site.api.espn.com/apis/site/v2/sports/football/nfl";
 
 // ===============================
 // Types
@@ -215,7 +221,7 @@ async function fetchOpponentMap(
   seasonYear: number,
   week: number
 ): Promise<Map<string, { opponentAbbreviation: string; opponentTeam: string }>> {
-  const scheduleUrl = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${seasonYear}&seasontype=2&week=${week}`;
+  const scheduleUrl = `${ESPN_SITE_API}/scoreboard?dates=${seasonYear}&seasontype=2&week=${week}`;
   const response = await fetch(scheduleUrl);
 
   if (!response.ok) {
@@ -468,13 +474,44 @@ export function registerRoutes(router: Router): void {
   });
 
   // ===============================
+  // League-wide news with cover images (trades, injuries, returns first)
+  // ===============================
+  router.get("/league-news", async (req: Request, res: Response) => {
+    try {
+      const limit = Math.min(40, Math.max(1, Number(req.query.limit) || 20));
+      res.set("Cache-Control", "public, max-age=300");
+      res.json({ source: "espn", articles: await getLeagueNews(limit) });
+    } catch (err) {
+      console.error("❌ League news failed:", err);
+      res.status(502).json({ error: "League news unavailable" });
+    }
+  });
+
+  // ===============================
+  // Live scoreboard: current points, projected finals and win odds
+  // ===============================
+  router.post("/live-matchup", async (req: Request, res: Response) => {
+    const { leagueId, rosterId, week } = (req.body ?? {}) as { leagueId?: string; rosterId?: number; week?: number };
+    if (!leagueId || rosterId === undefined) {
+      return res.status(400).json({ error: "leagueId and rosterId are required" });
+    }
+    try {
+      res.json(await getLiveScoreboard(String(leagueId), Number(rosterId), week));
+    } catch (err: any) {
+      console.error("❌ Live matchup failed:", err);
+      res.status(500).json({ error: err?.message || "Failed to load live matchup" });
+    }
+  });
+
+  // ===============================
   // Trade Agent: trade ideas for the user's team
   // ===============================
   router.post("/trade-ideas", async (req: Request, res: Response) => {
-    const { leagueId, rosterId, ownerId } = (req.body ?? {}) as {
+    const { leagueId, rosterId, ownerId, untouchable } = (req.body ?? {}) as {
       leagueId?: string;
       rosterId?: number;
       ownerId?: string;
+      untouchable?: string[];
     };
     if (!leagueId) {
       return res.status(400).json({ error: "leagueId is required" });
@@ -486,7 +523,11 @@ export function registerRoutes(router: Router): void {
         return res.status(404).json({ error: "Your team was not found in this league." });
       }
       const others = ctx.teams.filter(t => t.rosterId !== ctx.me!.rosterId);
-      const ideas = generateTradeIdeas(ctx.me, others, ctx.slots, { maxIdeas: 6, perPartner: 2 });
+      const ideas = generateTradeIdeas(ctx.me, others, ctx.slots, {
+        maxIdeas: 6,
+        perPartner: 2,
+        untouchable: Array.isArray(untouchable) ? untouchable.map(String) : [],
+      });
       res.json({
         generatedAt: new Date().toISOString(),
         season: ctx.values.season,
@@ -505,10 +546,42 @@ export function registerRoutes(router: Router): void {
   router.post("/fantasy-chat", async (req: Request, res: Response) => {
     console.log("➡️ /fantasy-chat hit");
 
-    const { message, selectedWeek, myTeam } = req.body as {
+    const { message, selectedWeek, myTeam, stream } = req.body as {
       message: string;
       selectedWeek?: number;
       myTeam?: MyTeamPayload | null;
+      stream?: boolean;
+    };
+    const FALLBACK_NOTE = "\n\n(AI explanation unavailable — showing the computed answer.)";
+
+    // Send the model's answer. With stream: true the text is written as it's generated
+    // (plain text), so the app can show words immediately instead of waiting for the end.
+    const answer = async (prompt: string, fallback = "", errorReply = "⚠️ AI returned an error.") => {
+      if (!stream) {
+        try {
+          const text = await generateWithLLM(prompt);
+          return res.json({ reply: text || fallback || "⚠️ AI returned no text." });
+        } catch (err) {
+          console.error("❌ Ollama error:", err);
+          return fallback ? res.json({ reply: fallback + FALLBACK_NOTE }) : res.status(500).json({ reply: errorReply });
+        }
+      }
+      res.status(200);
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("X-Accel-Buffering", "no");
+      let wrote = false;
+      try {
+        const full = await streamWithLLM(prompt, piece => {
+          wrote = true;
+          res.write(piece);
+        });
+        if (!full) res.write(fallback || "⚠️ AI returned no text.");
+      } catch (err) {
+        console.error("❌ Ollama stream error:", err);
+        if (!wrote) res.write(fallback ? fallback + FALLBACK_NOTE : errorReply);
+      }
+      res.end();
     };
     if (!message || message.trim() === "") {
       return res.status(400).json({ reply: "⚠️ No question provided." });
@@ -516,7 +589,7 @@ export function registerRoutes(router: Router): void {
 
     try {
       const season = await resolveStatsSeason();
-      const playerStats = await getSeasonRows(season);
+      const [playerStats] = await Promise.all([getSeasonRows(season), ensureInjuriesLoaded()]);
 
       const currentWeek = resolveAnalysisWeek(playerStats, selectedWeek);
       const seasonYear = season;
@@ -548,17 +621,7 @@ export function registerRoutes(router: Router): void {
 
       if (advisor) {
         if (advisor.reply) return res.json({ reply: advisor.reply });
-        try {
-          const text = await generateWithLLM(advisor.prompt ?? "");
-          return res.json({ reply: text || advisor.fallback || "⚠️ AI returned no text." });
-        } catch (err) {
-          console.error("❌ Ollama unavailable, sending computed answer:", err);
-          return res.json({
-            reply: advisor.fallback
-              ? `${advisor.fallback}\n\n(AI explanation unavailable — showing the computed answer.)`
-              : "⚠️ AI returned an error.",
-          });
-        }
+        return answer(advisor.prompt ?? "", advisor.fallback);
       }
 
       const opponentMap = await fetchOpponentMap(seasonYear, currentWeek).catch(err => {
@@ -785,15 +848,10 @@ export function registerRoutes(router: Router): void {
 
       console.log("🤖 Calling Ollama...");
 
-      try {
-        const text = await generateWithLLM(prompt);
-        res.json({ reply: text || "⚠️ AI returned no text." });
-      } catch (err) {
-        console.error("❌ Ollama error:", err);
-        return res.status(500).json({ reply: "⚠️ AI returned an error." });
-      }
+      return answer(prompt);
     } catch (err) {
       console.error("❌ Backend error:", err);
+      if (res.headersSent) return res.end();
       res.status(500).json({
         reply: "⚠️ Backend crashed while processing request.",
       });

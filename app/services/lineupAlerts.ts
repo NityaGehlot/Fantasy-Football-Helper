@@ -10,7 +10,7 @@ export type LineupAlert = {
   message: string;
 };
 
-const OUT_STATUSES = ['OUT', 'IR', 'PUP', 'SUS', 'SUSPENDED', 'NA', 'INJURED RESERVE'];
+const OUT_STATUSES = ['OUT', 'IR', 'PUP', 'SUS', 'SUSPENDED', 'NA', 'NOT_ACTIVE', 'INJURED RESERVE'];
 const SEVERITY: Record<LineupAlertKind, number> = { empty: 0, out: 1, bye: 2, doubtful: 3, questionable: 4 };
 
 const TEAM_ALIASES: Record<string, string> = { WSH: 'WAS', JAC: 'JAX', LA: 'LAR' };

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { getLineupAlerts } from "../app/services/lineupAlerts";
-import { buildTradeMessage, tradeSteps, sleeperLeagueUrl, type TradeIdea } from "../app/services/tradeFormat";
+import { buildTradeMessage, tradeSteps, sleeperLeagueUrl, summarizeIdea, type TradeIdea } from "../app/services/tradeFormat";
 import { countUnseen, isScanStale } from "../app/services/tradeFormat";
 
 const players = {
@@ -42,14 +42,30 @@ const idea: TradeIdea = {
   theirGain: 2.05,
   fairness: 0.77,
   reasons: [],
+  myLineup: [{ in: { id: "b", name: "George Pickens", position: "WR", value: 16 }, out: { id: "a", name: "Blake Corum", position: "RB", value: 12.26 } }],
+  theirLineup: [{ in: { id: "a", name: "Blake Corum", position: "RB", value: 12.26 }, out: { id: "j", name: "Jeremiyah Love", position: "RB", value: 10.2 } }],
 };
 
-test("trade message and steps describe the trade for Sleeper", () => {
+test("trade message pitches what the other team gains", () => {
+  const msg = buildTradeMessage(idea);
+  assert.match(msg, /^Hey! Trade idea: my Blake Corum for your George Pickens\./);
+  assert.match(msg, /Blake Corum would start for you over Jeremiyah Love \(12\.3 vs 10\.2 pts\/game\)/);
+  assert.match(msg, /about 2\.1 points a week better/);
+  assert.match(msg, /shore up WR/);
+  // Older saved scans without lineup details still produce a sensible message
+  assert.match(buildTradeMessage({ ...idea, myLineup: undefined, theirLineup: undefined }), /adds depth/);
+});
+
+test("card summary and Sleeper steps", () => {
   assert.equal(
-    buildTradeMessage(idea),
-    "Trade offer for Team Two: my Blake Corum (RB) for your George Pickens (WR). By my numbers it makes your starting lineup about 2.1 pts/week better. Interested?"
+    summarizeIdea(idea),
+    "George Pickens replaces Blake Corum in your lineup (+3.7 pts/week), and Team Two starts Blake Corum over Jeremiyah Love."
   );
-  assert.match(tradeSteps(idea)[1], /George Pickens/);
+  const steps = tradeSteps(idea);
+  assert.ok(steps.some(s => s.includes('"Propose Trade"')));
+  assert.ok(steps.some(s => /direct message/.test(s)));
+  assert.ok(!steps.some(s => /drop/.test(s)), "1-for-1 needs no drop step");
+  assert.ok(tradeSteps({ ...idea, give: [...idea.give, idea.give[0]] }).some(s => /dropped/.test(s)));
   assert.equal(sleeperLeagueUrl("123"), "https://sleeper.com/leagues/123");
 });
 
@@ -59,4 +75,8 @@ test("trade agent counts unseen ideas and rescans after 6 hours", () => {
   assert.equal(isScanStale(null, now), true);
   assert.equal(isScanStale({ generatedAt: "2026-10-31T07:00:00Z", leagueId: "1", rosterId: 1, ideas: [] }, now), false);
   assert.equal(isScanStale({ generatedAt: "2026-10-31T05:00:00Z", leagueId: "1", rosterId: 1, ideas: [] }, now), true);
+  // Changing untouchable players forces a fresh scan
+  const fresh = { generatedAt: "2026-10-31T11:00:00Z", leagueId: "1", rosterId: 1, ideas: [], untouchableKey: "5,9" };
+  assert.equal(isScanStale(fresh, now, ["9", "5"]), false);
+  assert.equal(isScanStale(fresh, now, ["5"]), true);
 });

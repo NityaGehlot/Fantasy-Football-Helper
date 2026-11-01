@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, Image, TouchableOpacity, FlatList, ScrollView, ActivityIndicator } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { getPlayersFromGithub, getTrendingPlayers, TrendType } from '../services/sleeperAPI';
 import { useNavigation } from '@react-navigation/native';
@@ -7,16 +7,34 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../AppNavigator';
 import PlayerCard from '../components/PlayerCard';
 import SearchBarAndFilter from '../components/SearchBarAndFilter';
+import LeagueNewsCarousel from '../components/LeagueNewsCarousel';
 import { useFantasy } from '../context/FantasyContext';
-import { colors, radius } from '../theme';
+import { useTheme, useThemedStyles } from '../context/ThemeContext';
+import { getPositionColor, radius, shadowFor, type Palette } from '../theme';
+
+const TRENDING_PREVIEW = 10;
+
+const getHeadshotUrl = (player: any) => {
+  if (player?.espn_id) return `https://a.espncdn.com/i/headshots/nfl/players/full/${player.espn_id}.png`;
+  if (player?.player_id) return `https://sleepercdn.com/content/nfl/players/thumb/${player.player_id}.jpg`;
+  return 'https://upload.wikimedia.org/wikipedia/commons/1/14/No_Image_Available.jpg';
+};
+
+const getTeamLogo = (teamAbbrev: string) => {
+  if (!teamAbbrev) return 'https://upload.wikimedia.org/wikipedia/commons/1/14/No_Image_Available.jpg';
+  return `https://static.www.nfl.com/t_q-best/league/api/clubs/logos/${teamAbbrev.trim()}`;
+};
+
+const formatCount = (n: number) => (n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
 export default function HomeScreen() {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [players, setPlayers] = useState<any>({});
   const [trendingPlayers, setTrendingPlayers] = useState<any[]>([]);
-  const [loadingPlayers, setLoadingPlayers] = useState(true);
   const [loadingTrending, setLoadingTrending] = useState(true);
   const [trendType, setTrendType] = useState<TrendType>('add');
-  
+  const [showAllTrending, setShowAllTrending] = useState(false);
 
   type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'MainTabs'>;
   const navigation = useNavigation<NavigationProp>();
@@ -29,621 +47,132 @@ export default function HomeScreen() {
     navigation.navigate('MainTabs', { screen: 'ChatBot' });
   };
 
-  const OFFENSE_POSITIONS = ['QB', 'RB', 'WR', 'TE', 'K'];
-  const DEFENSE_TRENCHES = ['DL', 'DE', 'DT', 'NT'];
-  const DEFENSE_LINEBACKERS = ['LB', 'ILB', 'MLB', 'OLB'];
-  const DEFENSE_SECONDARY = ['CB', 'DB', 'S', 'SS', 'FS'];
-  const NFL_TEAMS = [
-    'ARI','ATL','BAL','BUF','CAR','CHI','CIN','CLE',
-    'DAL','DEN','DET','GB','HOU','IND','JAX','KC',
-    'LAC','LAR','LV','MIA','MIN','NE','NO','NYG',
-    'NYJ','PHI','PIT','SEA','SF','TB','TEN','WAS'
-  ];
-
-  
-
   useEffect(() => {
-    const loadPlayers = async () => {
-      setLoadingPlayers(true);
-      try {
-        const playersData = await getPlayersFromGithub();
-        setPlayers(playersData);
-      } catch (err) {
-        console.error('Error loading players:', err);
-      } finally {
-        setLoadingPlayers(false);
-      }
-    };
-    loadPlayers();
+    getPlayersFromGithub().then(setPlayers).catch(err => console.error('Error loading players:', err));
   }, []);
 
   useEffect(() => {
-    const loadTrending = async () => {
-      setLoadingTrending(true);
-      try {
-        const trendingData = await getTrendingPlayers(trendType, 25);
-        setTrendingPlayers(trendingData);
-      } catch (err) {
-        console.error('Error loading trending players:', err);
-      } finally {
-        setLoadingTrending(false);
-      }
+    let cancelled = false;
+    setLoadingTrending(true);
+    getTrendingPlayers(trendType, 25)
+      .then(data => !cancelled && setTrendingPlayers(data))
+      .catch(err => console.error('Error loading trending players:', err))
+      .finally(() => !cancelled && setLoadingTrending(false));
+    return () => {
+      cancelled = true;
     };
-    loadTrending();
   }, [trendType]);
 
-  const getHeadshotUrl = (player: any) => {
-    if (player?.espn_id) {
-      return `https://a.espncdn.com/i/headshots/nfl/players/full/${player.espn_id}.png`;
-    }
-    if (player?.player_id) {
-      return `https://sleepercdn.com/content/nfl/players/thumb/${player.player_id}.jpg`;
-    }
-    return 'https://upload.wikimedia.org/wikipedia/commons/1/14/No_Image_Available.jpg';
-  };
-
-  const getTeamLogo = (teamAbbrev: string) => {
-    if (!teamAbbrev) return 'https://upload.wikimedia.org/wikipedia/commons/1/14/No_Image_Available.jpg';
-    return `https://static.www.nfl.com/t_q-best/league/api/clubs/logos/${teamAbbrev.trim()}`;
-  };
-
-  const getPositionColor = (pos: string) => {
-    switch (pos) {
-      case 'QB': return '#ff6b6b';
-      case 'RB': return '#2ec4b6';
-      case 'WR': return '#48b0f7';
-      case 'TE': return '#ffbe0b';
-      case 'K': return '#9d4edd';
-      case 'DEF': return '#777';
-      default: return '#aaa';
-    }
-  };
-
-  const renderTrendingItem = ({ item, index }: { item: any; index: number }) => {
-    const player = players[item.player_id] ?? item;
-    if (!player) return null;
-    const isAdd = trendType === 'add';
-
-    const posToUse = String(player.position_for_FFHelper || player.position || player.position_listed_on_sleeper || '').toUpperCase().trim();
-    return (
-      <TouchableOpacity
-        key={item.player_id}
-        style={[styles.trendingItem, isAdd && styles.trendingItemWithAction]}
-        onPress={() =>
-          navigation.navigate('PlayerDetails', {
-            player: { ...player, player_id: item.player_id },
-            stats: {},
-                        fantasyPoints: 0,
-          })
-        }
-      >
-        <View style={styles.rankBadge}>
-          <Text style={styles.rankText}>{index + 1}</Text>
-        </View>
-
-        <View style={styles.trendPlayer}>
-          <PlayerCard
-            player={{ ...player, player_id: item.player_id }}
-            compact
-            position={posToUse}
-            positionColor={getPositionColor(posToUse)}
-            imageUri={posToUse === 'DEF' || player.position === 'DEF' ? getTeamLogo(player.team) : getHeadshotUrl(player)}
-          />
-        </View>
-
-        <View style={styles.trendInfo}>
-          <View style={styles.trendCountRow}>
-            <Text style={[styles.trendCount, isAdd ? styles.trendCountAdd : styles.trendCountDrop]}>{item.count}</Text>
-            <Ionicons
-              name={isAdd ? 'arrow-up' : 'arrow-down'}
-              size={14}
-              color={isAdd ? '#16a34a' : '#dc2626'}
-              style={styles.trendArrow}
-            />
-          </View>
-          <Text style={styles.trendLabel}>{isAdd ? 'adds' : 'drops'}</Text>
-        </View>
-
-        {isAdd && (
-          <TouchableOpacity
-            style={styles.dropAskBtn}
-            onPress={() => askWhoToDrop(player.full_name || `${player.first_name ?? ''} ${player.last_name ?? ''}`.trim())}
-            accessibilityLabel={`Ask who to drop to pick up ${player.full_name}`}
-          >
-            <Ionicons name="swap-vertical" size={12} color={colors.primary} />
-            <Text style={styles.dropAskText} numberOfLines={1}>Who should I drop?</Text>
-          </TouchableOpacity>
-        )}
-      </TouchableOpacity>
-    );
-  };
-
-  const renderSearchResult = ({ item }: { item: any }) => (
-    <TouchableOpacity
-        style={styles.searchResultItem}
-        onPress={() =>
-          navigation.navigate('PlayerDetails', {
-            player: item,
-            stats: {},
-                        fantasyPoints: 0,
-          })
-        }
-      >
-        <View style={{ flex: 1 }}>
-          <PlayerCard
-            player={item}
-            compact
-            position={String(item.position_for_FFHelper || item.position || item.position_listed_on_sleeper || '').toUpperCase().trim()}
-            positionColor={getPositionColor(String(item.position_for_FFHelper || item.position || item.position_listed_on_sleeper || '').toUpperCase().trim())}
-            imageUri={(String(item.position_for_FFHelper || item.position || '').toUpperCase().trim() === 'DEF' || item.position === 'DEF') ? getTeamLogo(item.team) : getHeadshotUrl(item)}
-          />
-        </View>
-        <Ionicons name="chevron-forward" size={20} color="#aaa" style={{ marginLeft: 10 }} />
-      </TouchableOpacity>
-  );
-
-  if (loadingPlayers || loadingTrending) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.center}>
-          <ActivityIndicator size="large" />
-          <Text>Loading trending players...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  const openPlayer = (player: any) => navigation.navigate('PlayerDetails', { player, stats: {}, fantasyPoints: 0 });
+  const isAdd = trendType === 'add';
+  const visibleTrending = showAllTrending ? trendingPlayers : trendingPlayers.slice(0, TRENDING_PREVIEW);
 
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="handled">
-        <View style={styles.sectionHeader}>
-          <Text style={styles.title}>Search for Players</Text>
+    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 28 }} keyboardShouldPersistTaps="handled">
+      <SearchBarAndFilter players={players} onSelect={openPlayer} />
+
+      <LeagueNewsCarousel />
+
+      <TouchableOpacity style={styles.compareCard} onPress={() => navigation.navigate('ComparePlayer', {})}>
+        <View style={styles.compareIcon}>
+          <Ionicons name="git-compare-outline" size={20} color={colors.primary} />
         </View>
-
-        <SearchBarAndFilter players={players} onSelect={(p) => navigation.navigate('PlayerDetails', { player: p, stats: {}, fantasyPoints: 0 })} />
-
-        {/* ── Trending heading ── */}
-        <View style={styles.trendingSectionHeader}>
-          <Text style={styles.title}>Player News & Trends</Text>
-          <Text style={styles.subtitle}>
-            Top trending {trendType === 'add' ? 'adds' : 'drops'} in the last 24 hours
-          </Text>
-          <View style={styles.trendToggleRow}>
-            <TouchableOpacity
-              style={[styles.trendToggleBtn, trendType === 'add' && styles.trendToggleBtnAddActive]}
-              onPress={() => setTrendType('add')}
-            >
-              <Text style={[styles.trendToggleText, trendType === 'add' && styles.trendToggleTextActive]}>Adds</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.trendToggleBtn, trendType === 'drop' && styles.trendToggleBtnDropActive]}
-              onPress={() => setTrendType('drop')}
-            >
-              <Text style={[styles.trendToggleText, trendType === 'drop' && styles.trendToggleTextActive]}>Drops</Text>
-            </TouchableOpacity>
-          </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.compareTitle}>Compare players</Text>
+          <Text style={styles.compareSub}>Put any two players side by side</Text>
         </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.textSubtle} />
+      </TouchableOpacity>
 
-        {/* Quick Compare shortcut: navigates to ComparePlayer screen allowing user to pick two players */}
-        <View style={{ paddingHorizontal: 16, marginTop: 12 }}>
-          <TouchableOpacity
-            style={{ backgroundColor: '#eef2ff', padding: 12, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: '#dbe7ff' }}
-            onPress={() => navigation.navigate('ComparePlayer', {})}
-          >
-            <Text style={{ color: '#3730a3', fontWeight: '700' }}>Compare Players</Text>
-            <Text style={{ color: '#6b7280', fontSize: 12 }}>Select two players to compare</Text>
+      <View style={styles.sectionHeader}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>Trending on Sleeper</Text>
+          <Text style={styles.subtitle}>Most {isAdd ? 'added' : 'dropped'} players in the last 24 hours</Text>
+        </View>
+        <View style={styles.segment}>
+          {(['add', 'drop'] as TrendType[]).map(t => (
+            <TouchableOpacity key={t} style={[styles.segmentBtn, trendType === t && styles.segmentBtnOn]} onPress={() => setTrendType(t)}>
+              <Text style={[styles.segmentText, trendType === t && styles.segmentTextOn]}>{t === 'add' ? 'Adds' : 'Drops'}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+
+      <View style={styles.trendingCard}>
+        {loadingTrending ? (
+          <View style={{ padding: 30 }}><ActivityIndicator /></View>
+        ) : trendingPlayers.length === 0 ? (
+          <Text style={styles.empty}>No trending data right now.</Text>
+        ) : (
+          visibleTrending.map((item, index) => {
+            const player = { ...(players[item.player_id] ?? item), player_id: item.player_id };
+            const pos = String(player.position_for_FFHelper || player.position || player.position_listed_on_sleeper || '').toUpperCase().trim();
+            const name = player.full_name || `${player.first_name ?? ''} ${player.last_name ?? ''}`.trim();
+            return (
+              <TouchableOpacity key={item.player_id} style={styles.trendRow} onPress={() => openPlayer(player)}>
+                <Text style={styles.rank}>{index + 1}</Text>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <PlayerCard
+                    player={player}
+                    compact
+                    position={pos}
+                    positionColor={getPositionColor(pos)}
+                    imageUri={pos === 'DEF' ? getTeamLogo(player.team) : getHeadshotUrl(player)}
+                  />
+                </View>
+                <View style={styles.trendInfo}>
+                  <View style={styles.trendCountRow}>
+                    <Ionicons name={isAdd ? 'arrow-up' : 'arrow-down'} size={13} color={isAdd ? colors.success : colors.danger} />
+                    <Text style={[styles.trendCount, { color: isAdd ? colors.success : colors.danger }]}>{formatCount(Number(item.count) || 0)}</Text>
+                  </View>
+                  {isAdd && (
+                    <TouchableOpacity
+                      style={styles.dropAskBtn}
+                      onPress={() => askWhoToDrop(name)}
+                      accessibilityLabel={`Ask who to drop to pick up ${name}`}
+                    >
+                      <Text style={styles.dropAskText} numberOfLines={1}>Who to drop?</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </TouchableOpacity>
+            );
+          })
+        )}
+        {trendingPlayers.length > TRENDING_PREVIEW && (
+          <TouchableOpacity style={styles.showMore} onPress={() => setShowAllTrending(s => !s)}>
+            <Text style={styles.showMoreText}>{showAllTrending ? 'Show less' : `Show all ${trendingPlayers.length}`}</Text>
+            <Ionicons name={showAllTrending ? 'chevron-up' : 'chevron-down'} size={16} color={colors.primary} />
           </TouchableOpacity>
-        </View>
-
-        {/* ── Trending list (always shown) ── */}
-        <View style={styles.trendingContainer}>
-          <FlatList
-            data={trendingPlayers}
-            keyExtractor={(item) => item.player_id}
-            renderItem={renderTrendingItem}
-            showsVerticalScrollIndicator={true}
-            nestedScrollEnabled={true}
-            scrollEnabled={true}
-          />
-        </View>
-      </ScrollView>
-
-      {/* Filter modal moved into SearchBarAndFilter component */}
-    </SafeAreaView>
+        )}
+      </View>
+    </ScrollView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f4f6fc',
-  },
-  pageContent: {
-    flexGrow: 1,
-    paddingBottom: 20,
-  },
-  trendingContainer: {
-    height: 500,
-    marginHorizontal: 16,
-    marginTop: 12,
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    overflow: 'hidden',
-    boxShadow: '0px 2px 6px rgba(0,0,0,0.08)',
-    elevation: 3,
-  },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  sectionHeader: {
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 8,
-    backgroundColor: '#f5f5f5',
-  },
-  trendingSectionHeader: {
-    paddingHorizontal: 16,
-    paddingTop: 28,
-    paddingBottom: 10,
-  },
-  trendToggleRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 10,
-  },
-  trendToggleBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    backgroundColor: '#fff',
-  },
-  trendToggleBtnAddActive: {
-    backgroundColor: '#dcfce7',
-    borderColor: '#16a34a',
-  },
-  trendToggleBtnDropActive: {
-    backgroundColor: '#fee2e2',
-    borderColor: '#dc2626',
-  },
-  trendToggleText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#374151',
-  },
-  trendToggleTextActive: {
-    color: '#111827',
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#1e1e1e',
-    marginBottom: 5,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#666',
-  },
-  trendingItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 0,
-    padding: 15,
-    marginBottom: 0,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-    boxShadow: '0px 2px 4px rgba(0,0,0,0.1)',
-    elevation: 3,
-  },
-  rankBadge: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#4f46e5',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10,
-  },
-  rankText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
-  positionBadge: {
-    width: 40,
-    height: 25,
-    borderRadius: 6,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10,
-  },
-  positionText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 12,
-  },
-  playerImage: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    marginRight: 15,
-  },
-  playerInfo: {
-    flex: 1,
-  },
-  playerName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1e1e1e',
-  },
-  playerTeam: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 2,
-  },
-  trendPlayer: {
-    flex: 1,
-    minWidth: 0,
-  },
-  trendInfo: {
-    flexShrink: 0,
-    marginLeft: 8,
-    alignItems: 'flex-end',
-  },
-  trendCountRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-  },
-  trendCount: {
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  trendCountAdd: {
-    color: '#16a34a',
-  },
-  trendCountDrop: {
-    color: '#dc2626',
-  },
-  trendArrow: {
-    marginLeft: 4,
-  },
-  trendLabel: {
-    fontSize: 12,
-    color: '#666',
-  },
-  trendingItemWithAction: {
-    paddingBottom: 34,
-  },
-  dropAskBtn: {
-    position: 'absolute',
-    right: 15,
-    bottom: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    backgroundColor: colors.primarySoft,
-    borderRadius: radius.pill,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  dropAskText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.primary,
-  },
-
-  // ── Search ──
-  searchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-    gap: 8,
-  },
-  searchInputWrap: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f0f0f5',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 15,
-    color: '#1e1e1e',
-    padding: 0,
-  },
-  searchClearBtn: {
-    marginLeft: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  filterBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: '#4f46e5',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  filterBtnActive: {
-    backgroundColor: '#4f46e5',
-    borderColor: '#4f46e5',
-  },
-  filterBadge: {
-    position: 'absolute',
-    top: -5,
-    right: -5,
-    backgroundColor: '#ef4444',
-    borderRadius: 8,
-    width: 16,
-    height: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  filterBadgeText: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    gap: 8,
-    backgroundColor: '#fff',
-  },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ede9fe',
-    borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    gap: 4,
-  },
-  chipText: {
-    fontSize: 13,
-    color: '#4f46e5',
-    fontWeight: '600',
-  },
-  searchResultsContainer: {
-    height: 360,
-    marginHorizontal: 16,
-    marginTop: 10,
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    overflow: 'hidden',
-    boxShadow: '0px 2px 6px rgba(0,0,0,0.08)',
-    elevation: 3,
-  },
-  searchResultItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    padding: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-    justifyContent: 'space-between',
-  },
-  searchResultImage: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    marginHorizontal: 10,
-  },
-  emptyText: {
-    textAlign: 'center',
-    marginTop: 40,
-    color: '#999',
-    fontSize: 15,
-  },
-
-  // ── Filter Modal ──
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-  },
-  modalSheet: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    paddingBottom: 36,
-    maxHeight: '80%',
-  },
-  modalHandle: {
-    width: 40,
-    height: 4,
-    backgroundColor: '#ddd',
-    borderRadius: 2,
-    alignSelf: 'center',
-    marginBottom: 16,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 16,
-    color: '#1e1e1e',
-  },
-  filterSectionLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#666',
-    marginBottom: 8,
-    marginTop: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  subFilterLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#7c8797',
-    marginBottom: 8,
-    marginTop: 4,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  filterGroup: {
-    marginBottom: 4,
-  },
-  pillRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  pill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1.5,
-    borderColor: '#ddd',
-    backgroundColor: '#fafafa',
-  },
-  pillActive: {
-    backgroundColor: '#4f46e5',
-    borderColor: '#4f46e5',
-  },
-  pillText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#444',
-  },
-  pillTextActive: {
-    color: '#fff',
-  },
-  clearBtn: {
-    marginTop: 20,
-    alignItems: 'center',
-    paddingVertical: 10,
-  },
-  clearBtnText: {
-    color: '#ef4444',
-    fontWeight: '600',
-    fontSize: 15,
-  },
-  applyBtn: {
-    marginTop: 10,
-    backgroundColor: '#4f46e5',
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  applyBtnText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 16,
-  },
+const makeStyles = (c: Palette) => ({
+  container: { flex: 1, backgroundColor: c.background },
+  compareCard: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 12, marginHorizontal: 16, marginTop: 14, padding: 14, backgroundColor: c.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: c.border },
+  compareIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: c.primarySoft, alignItems: 'center' as const, justifyContent: 'center' as const },
+  compareTitle: { fontSize: 15, fontWeight: '800' as const, color: c.text },
+  compareSub: { fontSize: 12, color: c.textMuted, marginTop: 1 },
+  sectionHeader: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 10, paddingHorizontal: 16, marginTop: 22, marginBottom: 10 },
+  title: { fontSize: 20, fontWeight: '800' as const, color: c.text },
+  subtitle: { fontSize: 12, color: c.textMuted, marginTop: 2 },
+  segment: { flexDirection: 'row' as const, backgroundColor: c.surfaceMuted, borderRadius: radius.pill, padding: 3 },
+  segmentBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.pill },
+  segmentBtnOn: { backgroundColor: c.surface, ...shadowFor(c) },
+  segmentText: { fontSize: 12, fontWeight: '700' as const, color: c.textMuted },
+  segmentTextOn: { color: c.text },
+  trendingCard: { marginHorizontal: 16, backgroundColor: c.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: c.border, overflow: 'hidden' as const },
+  empty: { color: c.textMuted, padding: 20, textAlign: 'center' as const },
+  trendRow: { flexDirection: 'row' as const, alignItems: 'center' as const, paddingVertical: 10, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: c.border, gap: 8 },
+  rank: { width: 20, textAlign: 'center' as const, fontSize: 13, fontWeight: '800' as const, color: c.textSubtle },
+  trendInfo: { alignItems: 'flex-end' as const, gap: 6, flexShrink: 0 },
+  trendCountRow: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 2 },
+  trendCount: { fontSize: 15, fontWeight: '800' as const },
+  dropAskBtn: { backgroundColor: c.primarySoft, borderRadius: radius.pill, paddingHorizontal: 9, paddingVertical: 4 },
+  dropAskText: { fontSize: 11, fontWeight: '700' as const, color: c.primary },
+  showMore: { flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const, gap: 4, paddingVertical: 12 },
+  showMoreText: { color: c.primary, fontWeight: '700' as const, fontSize: 13 },
 });
