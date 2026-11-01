@@ -36,3 +36,21 @@ test("labels and the practice report table", () => {
   assert.deepEqual(rows.map(r => r.practiceLabel), ["Did not practice", "Limited", "Limited"]);
   assert.equal(rows[2].status, "Questionable");
 });
+
+import { byeTeamsFrom, statusForPlayer, EMPTY_STATUS } from "../app/services/playerStatus";
+
+test("bye teams are everyone missing from the week's schedule", () => {
+  const playing = new Set(["KC", "BUF", "WSH"]);
+  const bye = byeTeamsFrom(playing)!;
+  assert.equal(bye.size, 29);
+  assert.ok(bye.has("PHI") && !bye.has("WAS") && !bye.has("KC"));
+  assert.equal(byeTeamsFrom(new Set()), null);
+  assert.equal(byeTeamsFrom(null), null);
+});
+
+test("player status combines injury and bye", () => {
+  const data = { ...EMPTY_STATUS, injuries: indexInjuries(file), byeTeams: new Set(["GB"]) };
+  assert.deepEqual(statusForPlayer(data, { player_id: "4881", team: "GB" }), { injuryStatus: "IR", injury: "Hamstring", onBye: true });
+  assert.equal(statusForPlayer(data, { player_id: "x", team: "KC" }).onBye, false);
+  assert.equal(statusForPlayer(EMPTY_STATUS, { player_id: "x", team: "GB" }).onBye, false);
+});

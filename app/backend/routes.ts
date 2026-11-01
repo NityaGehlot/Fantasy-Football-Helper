@@ -480,7 +480,8 @@ export function registerRoutes(router: Router): void {
     try {
       const limit = Math.min(40, Math.max(1, Number(req.query.limit) || 20));
       res.set("Cache-Control", "public, max-age=300");
-      res.json({ source: "espn", articles: await getLeagueNews(limit) });
+      const news = await getLeagueNews(limit);
+      res.json({ source: "espn", articles: news.top, pool: news.pool, fetchedAt: news.fetchedAt });
     } catch (err) {
       console.error("❌ League news failed:", err);
       res.status(502).json({ error: "League news unavailable" });

@@ -17,7 +17,8 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../AppNavigator';
 import { useFantasy } from '../context/FantasyContext';
 import { selectDiverseNews } from '../services/newsDiversity';
-import { getAvailableStatSeasons, getNewsFiles, TEAM_NEWS_FILES } from '../services/newsService';
+import { getAvailableStatSeasons, getNewsFiles, getNewsUpdatedAt, TEAM_NEWS_FILES } from '../services/newsService';
+import { timeAgo } from '../services/leagueNews';
 import InjuryReportCard from '../components/InjuryReportCard';
 
 import { useTheme, useLooseThemedStyles } from '../context/ThemeContext';
@@ -67,6 +68,7 @@ export default function PlayerDetailsScreen({ route }: any) {
   const [availableSeasons, setAvailableSeasons] = useState<number[]>(() => [getCurrentNFLSeason()]);
   const [displaySeasons, setDisplaySeasons] = useState<number[]>(() => [getCurrentNFLSeason()]);
   const [loadingNews, setLoadingNews] = useState(true);
+  const [newsUpdatedAt, setNewsUpdatedAt] = useState<string | null>(null);
   const [newsTab, setNewsTab] = useState<'player' | 'team'>('player');
   const [seasonScope, setSeasonScope] = useState<'whole' | 'regular' | 'post'>('regular');
   const [seasonViewMode, setSeasonViewMode] = useState<'totals' | 'averages'>('totals');
@@ -452,6 +454,7 @@ export default function PlayerDetailsScreen({ route }: any) {
           return;
         }
 
+        getNewsUpdatedAt().then(setNewsUpdatedAt);
         // The player's own position file plus the main offensive files for team news (cached).
         const newsList = (await getNewsFiles([fileKey, ...TEAM_NEWS_FILES])) as NewsArticle[];
 
@@ -1516,7 +1519,12 @@ export default function PlayerDetailsScreen({ route }: any) {
       )}
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>News</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' }}>
+          <Text style={styles.sectionTitle}>News</Text>
+          {!!newsUpdatedAt && (
+            <Text style={{ fontSize: 12, color: th.textMuted }}>Updated {timeAgo(newsUpdatedAt).toLowerCase()}</Text>
+          )}
+        </View>
         <View style={styles.newsTabsRow}>
           <TouchableOpacity
             style={[styles.newsTabButton, newsTab === 'player' && styles.newsTabButtonActive]}

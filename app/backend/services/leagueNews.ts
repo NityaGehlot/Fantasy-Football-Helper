@@ -8,7 +8,7 @@ import { createTtlCache, MINUTE } from "../utils/ttlCache";
 // Overridable for local testing.
 const ESPN_SITE_API = process.env.ESPN_SITE_API || "https://site.api.espn.com/apis/site/v2/sports/football/nfl";
 
-const ESPN_NEWS_URL = `${ESPN_SITE_API}/news?limit=60`;
+const ESPN_NEWS_URL = `${ESPN_SITE_API}/news?limit=100`;
 const cache = createTtlCache();
 
 export type LeagueNewsCategory = "trade" | "signing" | "release" | "injury" | "return" | "suspension" | "other";
@@ -98,11 +98,22 @@ export function rankLeagueNews(articles: LeagueNewsArticle[], limit = 20): Leagu
     .slice(0, limit);
 }
 
-export async function getLeagueNews(limit = 20): Promise<LeagueNewsArticle[]> {
-  const all = await cache.get("espn", 10 * MINUTE, async () => {
+type EspnFeed = { articles: LeagueNewsArticle[]; fetchedAt: string };
+
+async function getEspnFeed(): Promise<EspnFeed> {
+  return cache.get("espn", 10 * MINUTE, async () => {
     const res = await fetch(ESPN_NEWS_URL);
     if (!res.ok) throw new Error(`ESPN news failed (${res.status})`);
-    return parseEspnNews(await res.json());
+    return { articles: parseEspnNews(await res.json()), fetchedAt: new Date().toISOString() };
   });
-  return rankLeagueNews(all, limit);
+}
+
+/**
+ * top: the biggest stories for the unfiltered view.
+ * pool: every parsed article, ranked, so category filters have plenty to show.
+ */
+export async function getLeagueNews(limit = 20): Promise<{ top: LeagueNewsArticle[]; pool: LeagueNewsArticle[]; fetchedAt: string }> {
+  const feed = await getEspnFeed();
+  const ranked = rankLeagueNews(feed.articles, feed.articles.length);
+  return { top: ranked.slice(0, limit), pool: ranked, fetchedAt: feed.fetchedAt };
 }

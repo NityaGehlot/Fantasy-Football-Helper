@@ -52,3 +52,31 @@ test("time ago labels", () => {
   assert.equal(timeAgo("2026-10-31T10:00:00Z", now), "Yesterday");
   assert.equal(timeAgo("not a date", now), "");
 });
+
+import { articlesForFilter, mergeNewsPools, type LeagueNewsArticle } from "../app/services/leagueNews";
+
+const art = (id: string, headline: string, category: LeagueNewsArticle["category"], published: string, players: string[] = []): LeagueNewsArticle =>
+  ({ id, headline, description: "", published, image: null, link: id, category, label: category, players });
+
+test("filters draw from the whole pool, not just the top stories", () => {
+  const top = [art("t1", "Bears trade for DT", "trade", "2026-11-01")];
+  const pool = [
+    ...top,
+    art("i1", "Romeo Doubs placed on IR", "injury", "2026-10-31", ["Romeo Doubs"]),
+    art("i2", "Chase Brown questionable", "injury", "2026-11-01", ["Chase Brown"]),
+    art("r1", "McCaffrey returns to practice", "return", "2026-10-30", ["Christian McCaffrey"]),
+  ];
+  const feed = { top, pool, updatedAt: null, source: "espn" as const };
+  assert.deepEqual(articlesForFilter(feed, null).map(a => a.id), ["t1"]);
+  assert.deepEqual(articlesForFilter(feed, ["injury"]).map(a => a.id), ["i2", "i1"]); // newest first
+  assert.equal(articlesForFilter(feed, ["injury", "return"], 2).length, 2);
+});
+
+test("player news fills the pool without repeating ESPN headlines", () => {
+  const espn = [art("e1", "Packers place WR Romeo Doubs on injured reserve", "injury", "2026-10-31", ["Romeo Doubs"])];
+  const extra = [
+    art("p1", "Romeo Doubs placed on injured reserve by Packers", "injury", "2026-10-31", ["Romeo Doubs"]),
+    art("p2", "Jaylen Waddle limited in practice", "injury", "2026-10-31", ["Jaylen Waddle"]),
+  ];
+  assert.deepEqual(mergeNewsPools(espn, extra).map(a => a.id), ["e1", "p2"]);
+});

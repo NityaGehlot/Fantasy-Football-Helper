@@ -21,6 +21,8 @@ export type LivePlayer = {
   fractionRemaining: number;
   game: { state: "pre" | "in" | "post" | "bye"; detail: string; opponent: string | null };
   statLine: string;
+  // Points so far + projected points still to come in this game
+  projectedFinal: number;
 };
 
 export type LiveSide = {
@@ -33,6 +35,8 @@ export type LiveSide = {
   playersYetToPlay: number;
   playersInProgress: number;
   starters: LivePlayer[];
+  // Bench players get the same live projection (not counted in the team total)
+  bench: LivePlayer[];
 };
 
 const round = (n: number, digits = 2) => {
@@ -150,7 +154,7 @@ export function buildLiveSide({
   const starterIds: string[] = (matchup?.starters ?? []).map(String);
   const pointsById: Record<string, number> = matchup?.players_points ?? {};
 
-  const starters: LivePlayer[] = starterIds.map((id, i) => {
+  const toLive = (id: string, slot: string | undefined): LivePlayer => {
     const p = players[id] ?? {};
     const position = String(p.position ?? "").toUpperCase();
     const team = String(p.team ?? (position === "DEF" ? id : "")).toUpperCase();
@@ -169,7 +173,7 @@ export function buildLiveSide({
       id,
       name: id === "0" ? "Empty slot" : p.full_name || (position === "DEF" ? `${team} DEF` : id),
       position,
-      slot: String(rosterPositions[i] ?? position).toUpperCase(),
+      slot: String(slot ?? position).toUpperCase(),
       team,
       points: round(points),
       projectedTotal: round(projectedTotal),
@@ -177,8 +181,15 @@ export function buildLiveSide({
       fractionRemaining: round(fraction, 3),
       game: knownSchedule ? gameDetail(game) : { state: "pre", detail: "", opponent: null },
       statLine: formatStatLine(position, stats[id]),
+      projectedFinal: round(points + projectedTotal * fraction),
     };
-  });
+  };
+
+  const starters: LivePlayer[] = starterIds.map((id, i) => toLive(id, rosterPositions[i]));
+  const bench: LivePlayer[] = (matchup?.players ?? [])
+    .map(String)
+    .filter((id: string) => !starterIds.includes(id))
+    .map((id: string) => toLive(id, "BN"));
 
   const points = starters.reduce((t, s) => t + s.points, 0);
   const remaining = starters.reduce((t, s) => t + s.projectedRemaining, 0);
@@ -193,5 +204,6 @@ export function buildLiveSide({
     playersYetToPlay: starters.filter(s => s.id !== "0" && s.game.state === "pre" && s.fractionRemaining > 0).length,
     playersInProgress: starters.filter(s => s.game.state === "in").length,
     starters,
+    bench,
   };
 }

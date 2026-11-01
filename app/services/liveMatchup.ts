@@ -15,6 +15,7 @@ export type LivePlayer = {
   fractionRemaining: number;
   game: { state: 'pre' | 'in' | 'post' | 'bye'; detail: string; opponent: string | null };
   statLine: string;
+  projectedFinal: number;
 };
 
 export type LiveSide = {
@@ -27,6 +28,7 @@ export type LiveSide = {
   playersYetToPlay: number;
   playersInProgress: number;
   starters: LivePlayer[];
+  bench?: LivePlayer[];
 };
 
 export type LiveScoreboard = {
@@ -57,6 +59,8 @@ export async function fetchLiveScoreboard(leagueId: string, rosterId: number, we
 export function livePlayerMap(board: LiveScoreboard | null): Record<string, LivePlayer> {
   const map: Record<string, LivePlayer> = {};
   if (!board) return map;
-  [...board.me.starters, ...(board.opponent?.starters ?? [])].forEach(p => (map[p.id] = p));
+  [board.me, board.opponent].forEach(side => {
+    [...(side?.starters ?? []), ...(side?.bench ?? [])].forEach(p => (map[p.id] = p));
+  });
   return map;
 }

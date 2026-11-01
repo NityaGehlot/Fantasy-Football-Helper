@@ -40,3 +40,17 @@ export async function getAvailableStatSeasons(): Promise<number[]> {
       .sort((a: number, b: number) => b - a);
   }, { persist: true });
 }
+
+// When nfl-data's news job last finished (data/news/news_meta.json), or null if unknown.
+export async function getNewsUpdatedAt(): Promise<string | null> {
+  try {
+    const meta = await cache.get('news:meta', 10 * MINUTE, async () => {
+      const res = await fetch(`${NEWS_BASE_URL}/news_meta.json`);
+      if (!res.ok) throw new Error('no news meta');
+      return res.json();
+    });
+    return typeof meta?.generated_at === 'string' ? meta.generated_at : null;
+  } catch {
+    return null;
+  }
+}

@@ -105,3 +105,19 @@ test("without the schedule, remaining points = projection minus points scored", 
   });
   assert.equal(side.projectedFinal, 45); // 40 scored + 5 left for A + 0 left for B
 });
+
+test("every player gets a live projected final, bench included", () => {
+  const games = new Map<string, GameState>([["KC", game({ team: "KC", state: "in", period: 3, clock: "15:00" })]]);
+  const side = buildLiveSide({
+    matchup: { roster_id: 1, starters: ["a"], players: ["a", "b"], players_points: { a: 10, b: 4 } },
+    teamName: "Me", rosterPositions: ["QB"],
+    players: { a: { full_name: "A", position: "QB", team: "KC" }, b: { full_name: "B", position: "WR", team: "KC" } },
+    projections: { a: { pts_ppr: 20 }, b: { pts_ppr: 12 } }, stats: {}, games,
+    receptionPoints: 1, fallbackProjection: () => 0,
+  });
+  assert.equal(side.starters[0].projectedFinal, 20); // 10 scored + 20 * half the game left
+  assert.equal(side.bench.length, 1);
+  assert.equal(side.bench[0].slot, "BN");
+  assert.equal(side.bench[0].projectedFinal, 10); // 4 + 12 * 0.5
+  assert.equal(side.points, 10, "bench points don't count toward the team");
+});

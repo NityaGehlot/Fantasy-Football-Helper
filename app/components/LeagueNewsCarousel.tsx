@@ -4,7 +4,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Image, Linking, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { getLeagueNews, timeAgo, type LeagueNewsArticle, type LeagueNewsCategory } from '../services/leagueNews';
+import { articlesForFilter, getLeagueNews, timeAgo, type LeagueNewsCategory, type LeagueNewsFeed } from '../services/leagueNews';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
 import { radius, shadowFor, type Palette } from '../theme';
 
@@ -28,23 +28,28 @@ const CATEGORY_STYLE: Record<LeagueNewsCategory, { icon: keyof typeof Ionicons.g
 export default function LeagueNewsCarousel() {
   const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const [articles, setArticles] = useState<LeagueNewsArticle[] | null>(null);
+  const [feed, setFeed] = useState<LeagueNewsFeed | null>(null);
   const [filter, setFilter] = useState('all');
 
   useEffect(() => {
     let cancelled = false;
     getLeagueNews()
-      .then(a => !cancelled && setArticles(a))
-      .catch(() => !cancelled && setArticles([]));
+      .then(f => !cancelled && setFeed(f))
+      .catch(() => !cancelled && setFeed({ top: [], pool: [], updatedAt: null, source: 'player-news' }));
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const visible = useMemo(() => {
-    const cats = FILTERS.find(f => f.key === filter)?.categories;
-    return (articles ?? []).filter(a => !cats || cats.includes(a.category));
-  }, [articles, filter]);
+  // Filters draw from the whole pool, not just the top stories, so each one stays full.
+  const visible = useMemo(
+    () => (feed ? articlesForFilter(feed, FILTERS.find(f => f.key === filter)?.categories ?? null) : []),
+    [feed, filter]
+  );
+  const counts = useMemo(
+    () => Object.fromEntries(FILTERS.map(f => [f.key, feed ? articlesForFilter(feed, f.categories).length : 0])),
+    [feed]
+  );
 
   return (
     <View style={styles.section}>
@@ -52,16 +57,23 @@ export default function LeagueNewsCarousel() {
         <Text style={styles.title}>Around the League</Text>
         <Ionicons name="flash" size={16} color={colors.warning} />
       </View>
+      {!!feed?.updatedAt && (
+        <Text style={styles.updated}>
+          {feed.source === 'espn' ? 'Live headlines' : 'Player news'} · updated {timeAgo(feed.updatedAt).toLowerCase()}
+        </Text>
+      )}
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
         {FILTERS.map(f => (
           <TouchableOpacity key={f.key} style={[styles.filter, filter === f.key && styles.filterOn]} onPress={() => setFilter(f.key)}>
-            <Text style={[styles.filterText, filter === f.key && styles.filterTextOn]}>{f.label}</Text>
+            <Text style={[styles.filterText, filter === f.key && styles.filterTextOn]}>
+              {f.label}{feed && f.categories ? ` ${counts[f.key]}` : ''}
+            </Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
 
-      {articles === null ? (
+      {feed === null ? (
         <View style={styles.loading}><ActivityIndicator /></View>
       ) : visible.length === 0 ? (
         <Text style={styles.empty}>No {filter === 'all' ? '' : 'matching '}news right now.</Text>
@@ -105,6 +117,7 @@ const makeStyles = (c: Palette) => ({
   section: { marginTop: 18 },
   headerRow: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6, paddingHorizontal: 16 },
   title: { fontSize: 20, fontWeight: '800' as const, color: c.text },
+  updated: { fontSize: 12, color: c.textMuted, paddingHorizontal: 16, marginTop: 2 },
   filters: { gap: 8, paddingHorizontal: 16, paddingVertical: 10 },
   filter: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface },
   filterOn: { backgroundColor: c.text, borderColor: c.text },

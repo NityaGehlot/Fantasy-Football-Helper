@@ -3,9 +3,9 @@
 // (with cover images); if that's unavailable, builds a feed from nfl-data's news files.
 
 import { getApiBaseUrl } from './apiBaseUrl';
-import { getNewsFiles } from './newsService';
+import { getNewsFiles, getNewsUpdatedAt } from './newsService';
 import type { NewsItem } from './newsDiversity';
-import { selectDiverseNews } from './newsDiversity';
+import { selectDiverseNews, titleSimilarity } from './newsDiversity';
 
 export type LeagueNewsCategory = 'trade' | 'signing' | 'release' | 'injury' | 'return' | 'suspension' | 'other';
 
@@ -50,16 +50,58 @@ export function leagueNewsFromPlayerNews(items: NewsItem[], limit = 20): LeagueN
   });
 }
 
-export async function getLeagueNews(): Promise<LeagueNewsArticle[]> {
-  try {
-    const res = await fetch(`${getApiBaseUrl()}/league-news?limit=24`);
-    if (!res.ok) throw new Error('league news unavailable');
-    const data = await res.json();
-    if (Array.isArray(data?.articles) && data.articles.length > 0) return data.articles;
-    throw new Error('empty');
-  } catch {
-    return leagueNewsFromPlayerNews(await getNewsFiles(['qb', 'rb', 'wr', 'te', 'k']));
+export type LeagueNewsFeed = {
+  // Biggest stories, for the unfiltered "Top stories" view
+  top: LeagueNewsArticle[];
+  // Everything available, for category filters
+  pool: LeagueNewsArticle[];
+  updatedAt: string | null;
+  source: 'espn' | 'player-news';
+};
+
+// Add player-news stories to the ESPN pool, skipping ones that repeat an ESPN headline.
+export function mergeNewsPools(primary: LeagueNewsArticle[], extra: LeagueNewsArticle[]): LeagueNewsArticle[] {
+  const asItem = (a: LeagueNewsArticle) => ({ title: a.headline, player: a.players[0] });
+  const merged = [...primary];
+  for (const a of extra) {
+    if (merged.some(m => m.link === a.link || titleSimilarity(asItem(m), asItem(a)) >= 0.5)) continue;
+    merged.push(a);
   }
+  return merged;
+}
+
+export const FILTER_LIMIT = 25;
+
+// Articles for one filter: the top stories when unfiltered, otherwise everything in the pool
+// for those categories (newest first), so filters aren't limited to what made the top list.
+export function articlesForFilter(feed: LeagueNewsFeed, categories: LeagueNewsCategory[] | null, limit = FILTER_LIMIT) {
+  if (!categories) return feed.top;
+  return feed.pool
+    .filter(a => categories.includes(a.category))
+    .sort((a, b) => String(b.published).localeCompare(String(a.published)))
+    .slice(0, limit);
+}
+
+export async function getLeagueNews(): Promise<LeagueNewsFeed> {
+  const [espn, playerNews, newsUpdatedAt] = await Promise.all([
+    fetch(`${getApiBaseUrl()}/league-news?limit=24`)
+      .then(res => (res.ok ? res.json() : null))
+      .catch(() => null),
+    getNewsFiles(['qb', 'rb', 'wr', 'te', 'k']).catch(() => [] as NewsItem[]),
+    getNewsUpdatedAt(),
+  ]);
+  const fromPlayers = leagueNewsFromPlayerNews(playerNews, 80);
+
+  if (Array.isArray(espn?.articles) && espn.articles.length > 0) {
+    const pool = Array.isArray(espn.pool) ? espn.pool : espn.articles;
+    return {
+      top: espn.articles,
+      pool: mergeNewsPools(pool, fromPlayers),
+      updatedAt: espn.fetchedAt ?? null,
+      source: 'espn',
+    };
+  }
+  return { top: fromPlayers.slice(0, 20), pool: fromPlayers, updatedAt: newsUpdatedAt, source: 'player-news' };
 }
 
 export function timeAgo(iso: string, now = Date.now()): string {

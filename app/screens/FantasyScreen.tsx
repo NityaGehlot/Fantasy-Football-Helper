@@ -838,6 +838,13 @@ if (!activeLeagueId) {
   const oppSide = opponentMatchup ? buildSide(opponentMatchup) : null;
 
   const liveById = livePlayerMap(liveBoard);
+  // Bye for the week being viewed (completed weeks use the stats file's own bye flag).
+  const byeForSelectedWeek = (player: any): boolean | undefined => {
+    if (weekStatus === 'completed' || !teamsPlaying || teamsPlaying.size === 0) return undefined;
+    const team = String(player?.team ?? '').toUpperCase();
+    const aliases: Record<string, string> = { WSH: 'WAS', JAC: 'JAX', LA: 'LAR' };
+    return !!team && !teamsPlaying.has(aliases[team] ?? team);
+  };
   const renderPlayer = (side: ReturnType<typeof buildSide>, player: any, isStarter: boolean, dense = false) => {
     let stats = getPlayerNFLStats(player.player_id, selectedWeek);
     const live = weekStatus !== 'completed' ? liveById[String(player.player_id)] : undefined;
@@ -860,7 +867,20 @@ if (!activeLeagueId) {
         activeOpacity={0.7}
         onPress={() => navigation.navigate('PlayerDetails', { player, stats, week: selectedWeek, fantasyPoints: pts })}
       >
-        <PlayerCard player={player} stats={stats} statLine={statLine} points={pts} imageUri={imageUri} position={positionToShow} positionColor={getPositionColor(positionToShow || player.position)} team={getDisplayTeam(player, stats)} dense={dense} />
+        <PlayerCard
+          player={player}
+          stats={stats}
+          statLine={statLine}
+          points={pts}
+          imageUri={imageUri}
+          position={positionToShow}
+          positionColor={getPositionColor(positionToShow || player.position)}
+          team={getDisplayTeam(player, stats)}
+          dense={dense}
+          showCurrentStatus={weekStatus !== 'completed'}
+          onBye={byeForSelectedWeek(player)}
+          projected={live && live.game.state !== 'post' && live.game.state !== 'bye' && live.id !== '0' ? live.projectedFinal : undefined}
+        />
       </TouchableOpacity>
     );
   };
