@@ -27,6 +27,7 @@ export type LiveSide = {
   winProbability: number;
   playersYetToPlay: number;
   playersInProgress: number;
+  yetToPlayPositions?: string[];
   starters: LivePlayer[];
   bench?: LivePlayer[];
 };
@@ -41,6 +42,23 @@ export type LiveScoreboard = {
   me: LiveSide;
   opponent: LiveSide | null;
 };
+
+// Whole-number percentages for both sides that always add up to 100.
+export function oddsPercents(p: number): [number, number] {
+  const mine = Math.round(Math.min(1, Math.max(0, p)) * 100);
+  return [mine, 100 - mine];
+}
+
+// "QB, 2 WR" style summary of positions still to play, in lineup order.
+export function summarizePositions(positions: string[]): string {
+  const order = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
+  const counts = new Map<string, number>();
+  positions.forEach(p => counts.set(p, (counts.get(p) ?? 0) + 1));
+  return [...counts.entries()]
+    .sort((a, b) => (order.indexOf(a[0]) + 99) % 99 - (order.indexOf(b[0]) + 99) % 99)
+    .map(([pos, n]) => (n > 1 ? `${n} ${pos}` : pos))
+    .join(', ');
+}
 
 export const LIVE_REFRESH_MS = 60 * 1000;
 

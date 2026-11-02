@@ -4,11 +4,9 @@
 import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { LiveScoreboard as Board, LiveSide } from '../services/liveMatchup';
+import { oddsPercents, summarizePositions, type LiveScoreboard as Board, type LiveSide } from '../services/liveMatchup';
 import { radius, shadowFor, type Palette } from '../theme';
 import { useTheme, useLooseThemedStyles } from '../context/ThemeContext';
-
-const pct = (p: number) => `${Math.round(p * 100)}%`;
 
 function Side({ side, align }: { side: LiveSide; align: 'left' | 'right' }) {
   const styles = useLooseThemedStyles(makeStyles);
@@ -22,6 +20,11 @@ function Side({ side, align }: { side: LiveSide; align: 'left' | 'right' }) {
         {side.playersInProgress > 0 ? `${side.playersInProgress} playing · ` : ''}
         {side.playersYetToPlay} yet to play
       </Text>
+      {side.playersYetToPlay > 0 && (side.yetToPlayPositions?.length ?? 0) > 0 && (
+        <Text style={[styles.positions, { textAlign }]} numberOfLines={2}>
+          {summarizePositions(side.yetToPlayPositions!)}
+        </Text>
+      )}
     </View>
   );
 }
@@ -56,6 +59,11 @@ export default function LiveScoreboard({
   const me = board.me;
   const opp = board.opponent;
   const myWin = opp ? me.winProbability : 1;
+  const [myPct, oppPct] = oddsPercents(myWin);
+  // The favorite is green and the underdog red (gray when it's a coin flip).
+  const toneFor = (p: number, other: number) => (p > other ? colors.success : p < other ? colors.danger : colors.textMuted);
+  const myTone = toneFor(myPct, oppPct);
+  const oppTone = toneFor(oppPct, myPct);
   const label = board.isLive ? 'LIVE' : board.isFinal ? 'FINAL' : 'PROJECTED';
 
   return (
@@ -84,12 +92,13 @@ export default function LiveScoreboard({
       {opp && (
         <View style={{ marginTop: 12 }}>
           <View style={styles.oddsLabels}>
-            <Text style={[styles.oddsText, { color: colors.primary }]}>{pct(myWin)} to win</Text>
-            <Text style={[styles.oddsText, { color: colors.danger }]}>{pct(1 - myWin)}</Text>
+            <Text style={[styles.oddsText, { color: myTone }]}>{myPct}% to win</Text>
+            <Text style={[styles.oddsText, { color: oppTone }]}>{oppPct}% to win</Text>
           </View>
           <View style={styles.bar}>
-            <View style={[styles.barFill, { flex: Math.max(myWin, 0.001) }]} />
-            <View style={[styles.barRest, { flex: Math.max(1 - myWin, 0.001) }]} />
+            <View style={{ flex: Math.max(myPct, 0.1), backgroundColor: myTone }} />
+            <View style={{ width: 2, backgroundColor: colors.surface }} />
+            <View style={{ flex: Math.max(oppPct, 0.1), backgroundColor: oppTone }} />
           </View>
         </View>
       )}
@@ -125,11 +134,10 @@ const makeStyles = (colors: Palette) => ({
   score: { fontSize: 28, fontWeight: '800', color: colors.text, marginTop: 2 },
   projected: { fontSize: 13, color: colors.textMuted, fontWeight: '600' },
   status: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
+  positions: { fontSize: 11, color: colors.text, fontWeight: '700', marginTop: 1 },
   oddsLabels: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
   oddsText: { fontSize: 12, fontWeight: '800' },
   bar: { flexDirection: 'row', height: 8, borderRadius: 4, overflow: 'hidden' },
-  barFill: { backgroundColor: colors.primary },
-  barRest: { backgroundColor: colors.dangerSoft },
   help: { fontSize: 12, color: colors.textMuted, marginTop: 10, lineHeight: 17 },
   updated: { fontSize: 11, color: colors.textMuted, marginTop: 8, textAlign: 'right' },
 });

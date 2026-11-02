@@ -12,6 +12,8 @@ export type Roster = {
   players: string[];
   starters: string[];
   matchup_id: number;
+  // Players in IR slots
+  reserve?: string[] | null;
 };
 
 // Navigation types for your stack

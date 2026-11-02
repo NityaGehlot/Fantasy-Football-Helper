@@ -34,4 +34,6 @@ export type UserProfile = {
   displayName?: string | null;
   createdAt?: Timestamp | null;
   myTeam?: MyTeam | null;
+  // League open when the user last used the app
+  lastLeagueId?: string | null;
 };

@@ -34,6 +34,8 @@ export type LiveSide = {
   winProbability: number;
   playersYetToPlay: number;
   playersInProgress: number;
+  // Real positions (a FLEX starter shows as RB/WR/TE) of starters whose game hasn't kicked off
+  yetToPlayPositions: string[];
   starters: LivePlayer[];
   // Bench players get the same live projection (not counted in the team total)
   bench: LivePlayer[];
@@ -76,6 +78,12 @@ export function normalCdf(z: number): number {
 export function playerStdDev(projectedTotal: number, fraction: number): number {
   const fullGame = 0.5 * Math.max(0, projectedTotal) + 2.5;
   return fullGame * Math.sqrt(Math.max(0, fraction));
+}
+
+// Whole-number percentages for both sides that always add up to 100.
+export function oddsPercents(p: number): [number, number] {
+  const mine = Math.round(Math.min(1, Math.max(0, p)) * 100);
+  return [mine, 100 - mine];
 }
 
 export function winProbability(
@@ -195,14 +203,17 @@ export function buildLiveSide({
   const remaining = starters.reduce((t, s) => t + s.projectedRemaining, 0);
   const variance = starters.reduce((t, s) => t + playerStdDev(s.projectedTotal, s.fractionRemaining) ** 2, 0);
 
+  const yetToPlay = starters.filter(s => s.id !== "0" && s.game.state === "pre" && s.fractionRemaining > 0);
+
   return {
     rosterId: Number(matchup?.roster_id),
     teamName,
     points: round(points),
     projectedFinal: round(points + remaining),
     stdDev: round(Math.sqrt(variance)),
-    playersYetToPlay: starters.filter(s => s.id !== "0" && s.game.state === "pre" && s.fractionRemaining > 0).length,
+    playersYetToPlay: yetToPlay.length,
     playersInProgress: starters.filter(s => s.game.state === "in").length,
+    yetToPlayPositions: yetToPlay.map(s => s.position || s.slot),
     starters,
     bench,
   };

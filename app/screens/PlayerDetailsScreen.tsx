@@ -18,7 +18,7 @@ import { RootStackParamList } from '../AppNavigator';
 import { useFantasy } from '../context/FantasyContext';
 import { selectDiverseNews } from '../services/newsDiversity';
 import { getAvailableStatSeasons, getNewsFiles, getNewsUpdatedAt, TEAM_NEWS_FILES } from '../services/newsService';
-import { timeAgo } from '../services/leagueNews';
+import { fetchArticleImages, timeAgo } from '../services/leagueNews';
 import InjuryReportCard from '../components/InjuryReportCard';
 
 import { useTheme, useLooseThemedStyles } from '../context/ThemeContext';
@@ -76,6 +76,7 @@ export default function PlayerDetailsScreen({ route }: any) {
   const [weekStatuses, setWeekStatuses] = useState<Record<number, WeekStatus>>({});
   const [playerNews, setPlayerNews] = useState<NewsArticle[]>([]);
   const [teamNews, setTeamNews] = useState<NewsArticle[]>([]);
+  const [newsImages, setNewsImages] = useState<Record<string, string | null>>({});
 
 
   const normalizeName = (value?: string) => String(value || "").trim().toLowerCase();
@@ -484,8 +485,14 @@ export default function PlayerDetailsScreen({ route }: any) {
         }
 
         // Up to 3 articles each, covering different stories (and different teammates).
-        setPlayerNews(selectDiverseNews(onlyPlayerNews, 3) as NewsArticle[]);
-        setTeamNews(selectDiverseNews(onlyTeamNews, 3, { onePerPlayer: true }) as NewsArticle[]);
+        const pickedPlayer = selectDiverseNews(onlyPlayerNews, 3) as NewsArticle[];
+        const pickedTeam = selectDiverseNews(onlyTeamNews, 3, { onePerPlayer: true }) as NewsArticle[];
+        setPlayerNews(pickedPlayer);
+        setTeamNews(pickedTeam);
+        // Each article's picture (or the player's headshot) loads in after the text.
+        fetchArticleImages([...pickedPlayer, ...pickedTeam].map(a => ({ link: a.link, player: a.player })))
+          .then(setNewsImages)
+          .catch(() => undefined);
       } catch (err) {
         console.error('Error loading player/team news:', err);
         setPlayerNews([]);
@@ -515,7 +522,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         label: 'General',
         backgroundColor: th.surfaceMuted,
         borderColor: th.border,
-        textColor: '#475569',
+        textColor: th.textMuted,
       };
     }
 
@@ -523,8 +530,8 @@ export default function PlayerDetailsScreen({ route }: any) {
       return {
         label: 'Positive',
         backgroundColor: th.successSoft,
-        borderColor: '#b9e6c8',
-        textColor: '#1f7a3d',
+        borderColor: th.success,
+        textColor: th.success,
       };
     }
 
@@ -532,8 +539,8 @@ export default function PlayerDetailsScreen({ route }: any) {
       return {
         label: 'Negative',
         backgroundColor: th.dangerSoft,
-        borderColor: '#f5c2c2',
-        textColor: '#b42318',
+        borderColor: th.danger,
+        textColor: th.danger,
       };
     }
 
@@ -541,8 +548,8 @@ export default function PlayerDetailsScreen({ route }: any) {
       return {
         label: 'Monitor',
         backgroundColor: th.warningSoft,
-        borderColor: '#fcd9a5',
-        textColor: '#b45309',
+        borderColor: th.warning,
+        textColor: th.warning,
       };
     }
 
@@ -551,7 +558,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         label: 'Neutral',
         backgroundColor: th.surfaceMuted,
         borderColor: th.border,
-        textColor: '#5f6b7a',
+        textColor: th.textMuted,
       };
     }
 
@@ -560,7 +567,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         label: 'Roster Move',
         backgroundColor: th.primarySoft,
         borderColor: th.border,
-        textColor: '#2f5bb7',
+        textColor: th.primary,
       };
     }
 
@@ -574,7 +581,7 @@ export default function PlayerDetailsScreen({ route }: any) {
       label: titleCase || 'General',
       backgroundColor: th.surfaceMuted,
       borderColor: th.border,
-      textColor: '#475569',
+      textColor: th.textMuted,
     };
   };
 
@@ -607,10 +614,17 @@ export default function PlayerDetailsScreen({ route }: any) {
             onPress={() => openArticle(article.link)}
             activeOpacity={0.85}
           >
-            <Text style={styles.newsTitle}>{article.title || 'Untitled article'}</Text>
-            {!!article.summary && (
-              <Text numberOfLines={2} style={styles.newsSummary}>{article.summary}</Text>
-            )}
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.newsTitle}>{article.title || 'Untitled article'}</Text>
+                {!!article.summary && (
+                  <Text numberOfLines={2} style={styles.newsSummary}>{article.summary}</Text>
+                )}
+              </View>
+              {!!(article.link && newsImages[article.link]) && (
+                <Image source={{ uri: newsImages[article.link!]! }} style={styles.newsThumb} resizeMode="cover" />
+              )}
+            </View>
             <View style={styles.newsMetaRow}>
               <Text style={styles.newsMetaText}>
                 {[article.source, article.published || 'Unknown date'].filter(Boolean).join(' · ')}
@@ -2019,6 +2033,13 @@ const makeStyles = (th: Palette) => ({
     borderColor: th.border,
     backgroundColor: th.surfaceMuted,
     marginBottom: 10,
+  },
+
+  newsThumb: {
+    width: 76,
+    height: 76,
+    borderRadius: 8,
+    backgroundColor: th.surface,
   },
 
   newsTitle: {

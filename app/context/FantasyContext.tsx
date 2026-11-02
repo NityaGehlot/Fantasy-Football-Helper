@@ -29,10 +29,18 @@ import {
   listUserLeagues,
   setFavoriteTeamForLeague,
   getFavoriteTeamForLeague,
+  getLastLeagueForUser,
+  setLastLeagueForUser,
   type FavoriteTeam,
 } from "../services/userService";
+import { pickStartingLeague } from "../services/leagueInput";
 
-const CHAT_STORAGE_KEY = "fantasy_chat_messages_v1";
+// Before chats were split by league, everything was saved under this one key.
+const LEGACY_CHAT_STORAGE_KEY = "fantasy_chat_messages_v1";
+// Each league has its own conversation with the assistant.
+const chatStorageKey = (uid: string, leagueKey: string) => `fantasy_chat_messages_v2:${uid}:${leagueKey}`;
+const NO_LEAGUE = "none";
+const lastLeagueStorageKey = (uid: string) => `ffh_last_league_v1:${uid}`;
 const CHAT_PERSISTENCE_FLAG_KEY = "fantasy_chat_persistence_enabled_v1";
 // Local snapshot of the user's team per league, so roster-aware features work
 // immediately on app open without waiting for Sleeper.
@@ -60,6 +68,10 @@ export type MyFantasyTeam = {
   players: FantasyTeamPlayer[];
   starters: string[];
   starterSlotsByPosition?: Partial<Record<"QB" | "RB" | "WR" | "TE" | "K" | "DEF", number>>;
+  // league.roster_positions (starting slots, then BN/IR), for flex eligibility
+  rosterPositions?: string[];
+  // Players sitting in IR spots (they can't be started)
+  reserve?: string[];
 };
 
 interface League {
@@ -78,7 +90,7 @@ interface FantasyContextType {
   activeLeagueId: string | null;
   addLeague: (leagueId: string) => Promise<void>;
   deleteLeague: (leagueId: string) => Promise<void>;
-  setActiveLeagueId: (id: string) => void;
+  setActiveLeagueId: (id: string | null) => void;
   chatMessages: ChatMessage[];
   isChatTyping: boolean;
   unreadBotMessages: number;
@@ -110,12 +122,13 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   const [matchups, setMatchups] = useState<any[]>([]);
   const [selectedWeek, setSelectedWeek] = useState<number>(17);
   const [leagues, setLeagues] = useState<League[]>([]);
-  const [activeLeagueId, setActiveLeagueId] = useState<string | null>(null);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [isChatTyping, setIsChatTyping] = useState(false);
-  const [seenBotMessageCount, setSeenBotMessageCount] = useState(0);
+  const [activeLeagueId, setActiveLeagueIdState] = useState<string | null>(null);
+  // Conversations keyed by league, so each league has its own chat with the assistant.
+  const [chatByLeague, setChatByLeague] = useState<Record<string, ChatMessage[]>>({});
+  const [typingLeague, setTypingLeague] = useState<string | null>(null);
+  const [seenBotByLeague, setSeenBotByLeague] = useState<Record<string, number>>({});
   const [chatPersistenceEnabled, setChatPersistenceEnabledState] = useState(true);
-  const [hasLoadedChatStorage, setHasLoadedChatStorage] = useState(false);
+  const [loadedChatKeys, setLoadedChatKeys] = useState<Record<string, boolean>>({});
   const [myTeam, setMyTeamState] = useState<MyFantasyTeam | null>(null);
   const [favoriteTeam, setFavoriteTeam] = useState<FavoriteTeam | null>(null);
 
@@ -131,13 +144,27 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   const chatIdCounterRef = useRef(0);
 
   const user = auth.currentUser;
+  const uid = user?.uid ?? "anon";
+  const chatKey = activeLeagueId ?? NO_LEAGUE;
+  const chatMessages = chatByLeague[chatKey] ?? [];
+  const isChatTyping = typingLeague !== null;
 
   const totalBotMessages = useMemo(
     () => chatMessages.filter(msg => msg.role === "bot").length,
     [chatMessages]
   );
 
-  const unreadBotMessages = Math.max(0, totalBotMessages - seenBotMessageCount);
+  const unreadBotMessages = Math.max(0, totalBotMessages - (seenBotByLeague[chatKey] ?? 0));
+
+  // Switch leagues and remember the choice (on this device right away, and in Firestore so a
+  // refresh or another device reopens the same league).
+  const setActiveLeagueId = (id: string | null) => {
+    setActiveLeagueIdState(id);
+    if (!user?.uid) return;
+    const key = lastLeagueStorageKey(user.uid);
+    (id ? AsyncStorage.setItem(key, id) : AsyncStorage.removeItem(key)).catch(() => undefined);
+    setLastLeagueForUser(user.uid, id).catch(err => console.warn("Failed to save last league:", err));
+  };
 
   const nextChatMessageId = () => {
     chatIdCounterRef.current += 1;
@@ -151,28 +178,31 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const updateBotMessage = (messageId: string, text: string) => {
-    setChatMessages(prev =>
-      prev.map(msg => (msg.id === messageId ? { ...msg, text } : msg))
-    );
+  // Replies are written to the league the question was asked in, even if you switch leagues
+  // while the answer is still coming in.
+  const updateBotMessage = (leagueKey: string, messageId: string, text: string) => {
+    setChatByLeague(prev => ({
+      ...prev,
+      [leagueKey]: (prev[leagueKey] ?? []).map(msg => (msg.id === messageId ? { ...msg, text } : msg)),
+    }));
   };
 
   // Reveal a non-streamed reply quickly (whole answer in about a second at most),
   // instead of one character every 15ms, which made long answers take 30+ seconds to show.
-  const revealBotReply = (messageId: string, reply: string) => {
+  const revealBotReply = (leagueKey: string, messageId: string, reply: string) => {
     stopTypingInterval();
     if (!reply) {
-      setIsChatTyping(false);
+      setTypingLeague(null);
       return;
     }
     const step = Math.max(8, Math.ceil(reply.length / 60));
     let idx = 0;
     typingIntervalRef.current = setInterval(() => {
       idx = Math.min(reply.length, idx + step);
-      updateBotMessage(messageId, reply.slice(0, idx));
+      updateBotMessage(leagueKey, messageId, reply.slice(0, idx));
       if (idx >= reply.length) {
         stopTypingInterval();
-        setIsChatTyping(false);
+        setTypingLeague(null);
       }
     }, 16);
   };
@@ -183,13 +213,17 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
 
     const userMessageId = nextChatMessageId();
     const botMessageId = nextChatMessageId();
+    const leagueKey = chatKey;
 
-    setChatMessages(prev => [
+    setChatByLeague(prev => ({
       ...prev,
-      { id: userMessageId, role: "user", text: trimmed },
-      { id: botMessageId, role: "bot", text: "" }
-    ]);
-    setIsChatTyping(true);
+      [leagueKey]: [
+        ...(prev[leagueKey] ?? []),
+        { id: userMessageId, role: "user", text: trimmed },
+        { id: botMessageId, role: "bot", text: "" },
+      ],
+    }));
+    setTypingLeague(leagueKey);
 
     try {
       let streamedUpdates = 0;
@@ -197,41 +231,42 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
         trimmed,
         textSoFar => {
           streamedUpdates += 1;
-          updateBotMessage(botMessageId, textSoFar);
+          updateBotMessage(leagueKey, botMessageId, textSoFar);
         },
         selectedWeek,
         myTeam
       );
       if (streamedUpdates > 0) {
         // Streamed live: text is already on screen.
-        updateBotMessage(botMessageId, reply);
-        setIsChatTyping(false);
+        updateBotMessage(leagueKey, botMessageId, reply);
+        setTypingLeague(null);
       } else {
-        revealBotReply(botMessageId, reply);
+        revealBotReply(leagueKey, botMessageId, reply);
       }
     } catch (err) {
       console.error("Failed to send chat message:", err);
-      updateBotMessage(botMessageId, "⚠️ Failed to reach AI.");
-      setIsChatTyping(false);
+      updateBotMessage(leagueKey, botMessageId, "⚠️ Failed to reach AI.");
+      setTypingLeague(null);
     }
   };
 
   const markChatAsRead = () => {
-    setSeenBotMessageCount(totalBotMessages);
+    setSeenBotByLeague(prev => (prev[chatKey] === totalBotMessages ? prev : { ...prev, [chatKey]: totalBotMessages }));
   };
 
+  // Clears only this league's conversation.
   const clearChatHistory = async () => {
-    stopTypingInterval();
-    setChatMessages([]);
-    setIsChatTyping(false);
-    setSeenBotMessageCount(0);
+    if (typingLeague === chatKey) {
+      stopTypingInterval();
+      setTypingLeague(null);
+    }
+    setChatByLeague(prev => ({ ...prev, [chatKey]: [] }));
+    setSeenBotByLeague(prev => ({ ...prev, [chatKey]: 0 }));
 
-    if (chatPersistenceEnabled) {
-      try {
-        await AsyncStorage.removeItem(CHAT_STORAGE_KEY);
-      } catch (err) {
-        console.error("Failed to clear saved chat history:", err);
-      }
+    try {
+      await AsyncStorage.removeItem(chatStorageKey(uid, chatKey));
+    } catch (err) {
+      console.error("Failed to clear saved chat history:", err);
     }
   };
 
@@ -240,10 +275,11 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
 
     try {
       await AsyncStorage.setItem(CHAT_PERSISTENCE_FLAG_KEY, enabled ? "1" : "0");
+      const keys = Object.keys(chatByLeague);
       if (enabled) {
-        await AsyncStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatMessages));
+        await Promise.all(keys.map(k => AsyncStorage.setItem(chatStorageKey(uid, k), JSON.stringify(chatByLeague[k] ?? []))));
       } else {
-        await AsyncStorage.removeItem(CHAT_STORAGE_KEY);
+        await Promise.all(keys.map(k => AsyncStorage.removeItem(chatStorageKey(uid, k))));
       }
     } catch (err) {
       console.error("Failed to update chat persistence setting:", err);
@@ -258,12 +294,15 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
 
     const loadLeagues = async () => {
       try {
-        const loaded = await listUserLeagues(user.uid);
+        const [loaded, localLast, savedLast] = await Promise.all([
+          listUserLeagues(user.uid),
+          AsyncStorage.getItem(lastLeagueStorageKey(user.uid)).catch(() => null),
+          getLastLeagueForUser(user.uid).catch(() => null),
+        ]);
         setLeagues(loaded as League[]);
-
-        setActiveLeagueId(prev =>
-          loaded.some((l: League) => l.leagueId === prev) ? prev : loaded[0]?.leagueId ?? null
-        );
+        const ids = loaded.map((l: League) => l.leagueId);
+        // Reopen the league you were last on (this device first, then your account).
+        setActiveLeagueIdState(prev => pickStartingLeague(ids, prev, localLast, savedLast));
       } catch (err) {
         console.error("Error loading leagues:", err);
       }
@@ -279,43 +318,57 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   useEffect(() => {
-    const loadChatPersistence = async () => {
+    AsyncStorage.getItem(CHAT_PERSISTENCE_FLAG_KEY)
+      .then(flag => setChatPersistenceEnabledState(flag !== "0"))
+      .catch(() => undefined);
+  }, []);
+
+  // Load the saved conversation for the league you're on (once per league per session).
+  useEffect(() => {
+    const storageKey = chatStorageKey(uid, chatKey);
+    if (loadedChatKeys[storageKey]) return;
+    let cancelled = false;
+
+    const loadChat = async () => {
       try {
-        const savedFlag = await AsyncStorage.getItem(CHAT_PERSISTENCE_FLAG_KEY);
-        const enabled = savedFlag !== "0";
-        setChatPersistenceEnabledState(enabled);
-
-        if (!enabled) {
-          setHasLoadedChatStorage(true);
-          return;
+        const enabled = (await AsyncStorage.getItem(CHAT_PERSISTENCE_FLAG_KEY)) !== "0";
+        if (!enabled) return;
+        let saved = await AsyncStorage.getItem(storageKey);
+        // One-time move of the old single chat into the league that's open now.
+        if (!saved && chatKey !== NO_LEAGUE) {
+          const legacy = await AsyncStorage.getItem(LEGACY_CHAT_STORAGE_KEY);
+          if (legacy) {
+            saved = legacy;
+            await AsyncStorage.setItem(storageKey, legacy);
+            await AsyncStorage.removeItem(LEGACY_CHAT_STORAGE_KEY);
+          }
         }
-
-        const savedMessages = await AsyncStorage.getItem(CHAT_STORAGE_KEY);
-        if (!savedMessages) {
-          setHasLoadedChatStorage(true);
-          return;
-        }
-
-        const parsed = JSON.parse(savedMessages) as ChatMessage[];
-        if (Array.isArray(parsed)) {
-          const safeMessages = parsed.filter(
-            m =>
-              m &&
-              typeof m.id === "string" &&
-              (m.role === "user" || m.role === "bot") &&
-              typeof m.text === "string"
-          );
-          setChatMessages(safeMessages);
-        }
+        const parsed = saved ? (JSON.parse(saved) as ChatMessage[]) : [];
+        const safeMessages = Array.isArray(parsed)
+          ? parsed.filter(
+              m => m && typeof m.id === "string" && (m.role === "user" || m.role === "bot") && typeof m.text === "string"
+            )
+          : [];
+        if (cancelled) return;
+        // Keep anything typed before the saved copy finished loading.
+        setChatByLeague(prev => ({ ...prev, [chatKey]: [...safeMessages, ...(prev[chatKey] ?? [])] }));
+        // Old messages count as read.
+        setSeenBotByLeague(prev => ({
+          ...prev,
+          [chatKey]: (prev[chatKey] ?? 0) + safeMessages.filter(m => m.role === "bot").length,
+        }));
       } catch (err) {
         console.error("Failed to restore chat history:", err);
       } finally {
-        setHasLoadedChatStorage(true);
+        if (!cancelled) setLoadedChatKeys(prev => ({ ...prev, [storageKey]: true }));
       }
     };
 
-    loadChatPersistence();
-  }, []);
+    loadChat();
+    return () => {
+      cancelled = true;
+    };
+  }, [uid, chatKey]);
 
   // Load the saved favorite team name for the active league.
   // FantasyScreen rebuilds the full team from Sleeper once rosters load.
@@ -347,19 +400,18 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     };
   }, [user?.uid, activeLeagueId]);
 
+  // Save each league's conversation after it changes (only once its saved copy has loaded,
+  // so an empty list never overwrites history).
   useEffect(() => {
-    if (!hasLoadedChatStorage || !chatPersistenceEnabled) return;
-
-    const persistChat = async () => {
-      try {
-        await AsyncStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatMessages));
-      } catch (err) {
-        console.error("Failed to persist chat history:", err);
-      }
-    };
-
-    persistChat();
-  }, [chatMessages, chatPersistenceEnabled, hasLoadedChatStorage]);
+    if (!chatPersistenceEnabled) return;
+    Object.entries(chatByLeague).forEach(([leagueKey, messages]) => {
+      const storageKey = chatStorageKey(uid, leagueKey);
+      if (!loadedChatKeys[storageKey]) return;
+      AsyncStorage.setItem(storageKey, JSON.stringify(messages)).catch(err =>
+        console.error("Failed to persist chat history:", err)
+      );
+    });
+  }, [chatByLeague, chatPersistenceEnabled, loadedChatKeys, uid]);
 
   // =====================
   // Trade agent: load the last scan for this team, and rescan automatically when stale
@@ -496,7 +548,9 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
       await removeLeagueForUser(user.uid, leagueId);
       setLeagues(prev => prev.filter(l => l.leagueId !== leagueId));
 
-      setActiveLeagueId(prev => prev === leagueId ? leagues.find(l => l.leagueId !== leagueId)?.leagueId ?? null : prev);
+      if (activeLeagueId === leagueId) {
+        setActiveLeagueId(leagues.find(l => l.leagueId !== leagueId)?.leagueId ?? null);
+      }
     } catch (err) {
       console.error("Error deleting league:", err);
     }

@@ -7,6 +7,7 @@ import {
   extractPlayerNames,
   extractAllPlayers,
   getPlayerWeeks,
+  getPlayerTeam,
   Position,
 } from "./utils/playerExtraction";
 import { getContextBuilder } from "./utils/contextBuilder";
@@ -36,7 +37,11 @@ import {
 import { detectIntent } from "./services/intent";
 import { handleAdvisorQuestion, AdvisorResult } from "./services/advisor";
 import { generateWithLLM, streamWithLLM } from "./services/llm";
-import { getLeagueContext } from "./services/leagueContext";
+import { getLeagueContext, toTradePlayer } from "./services/leagueContext";
+import { buildIrAdvice } from "./services/irAdvice";
+import { buildMatchupContext, formatMatchupBlock } from "./services/matchupContext";
+import { imagesForArticles } from "./services/articleImages";
+import { getRosters } from "./services/sleeperServer";
 import { generateTradeIdeas } from "./services/tradeEngine";
 import { getLiveScoreboard } from "./services/liveScoreboard";
 import { ensureInjuriesLoaded } from "./services/injuryStore";
@@ -505,6 +510,50 @@ export function registerRoutes(router: Router): void {
   });
 
   // ===============================
+  // Cover images for news articles that don't have one
+  // ===============================
+  router.post("/article-images", async (req: Request, res: Response) => {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    try {
+      res.json({ images: await imagesForArticles(items.map((i: any) => ({ link: String(i?.link ?? ""), player: i?.player ?? null }))) });
+    } catch (err: any) {
+      console.error("❌ Article images failed:", err);
+      res.status(500).json({ error: "Failed to load article images" });
+    }
+  });
+
+  // ===============================
+  // IR advice: who to move to an IR slot on Sleeper and who to pick up
+  // ===============================
+  router.post("/ir-advice", async (req: Request, res: Response) => {
+    const { leagueId, rosterId, ownerId } = (req.body ?? {}) as { leagueId?: string; rosterId?: number; ownerId?: string };
+    if (!leagueId) return res.status(400).json({ error: "leagueId is required" });
+    try {
+      const [ctx, rosters] = await Promise.all([getLeagueContext(String(leagueId), rosterId, ownerId), getRosters(String(leagueId))]);
+      if (!ctx.me) return res.status(404).json({ error: "Your team was not found in this league." });
+      const roster = (rosters ?? []).find((r: any) => Number(r.roster_id) === ctx.me!.rosterId) ?? {};
+      // Make sure players sitting in IR slots are included even if Sleeper lists them separately.
+      const known = new Set(ctx.me.players.map(p => p.id));
+      const reserveOnly = (roster.reserve ?? [])
+        .map(String)
+        .filter((id: string) => !known.has(id))
+        .map((id: string) => toTradePlayer(id, ctx.players[id] ?? { player_id: id }, ctx.values.index));
+      res.json(
+        buildIrAdvice({
+          settings: ctx.league?.settings,
+          roster,
+          myPlayers: [...ctx.me.players, ...reserveOnly],
+          freeAgents: ctx.freeAgents,
+          slots: ctx.slots,
+        })
+      );
+    } catch (err: any) {
+      console.error("❌ IR advice failed:", err);
+      res.status(500).json({ error: err?.message || "Failed to build IR advice" });
+    }
+  });
+
+  // ===============================
   // Trade Agent: trade ideas for the user's team
   // ===============================
   router.post("/trade-ideas", async (req: Request, res: Response) => {
@@ -693,7 +742,19 @@ export function registerRoutes(router: Router): void {
           currentWeek,
           opponentDefense
         );
-        analysisBlock += block;
+        // Opponent defense ranks, game-time weather and injuries on both teams.
+        const matchup = await buildMatchupContext({
+          playerName: player.name,
+          position: player.position,
+          team: getPlayerTeam(player.name, player.position, playerStats),
+          season: seasonYear,
+          week: currentWeek,
+          statsRows: playerStats,
+        }).catch(err => {
+          console.warn("⚠️ Matchup context failed:", err?.message ?? err);
+          return null;
+        });
+        analysisBlock += block + formatMatchupBlock(player.position, matchup, currentWeek);
       }
 
       let comparisonBlock = "";

@@ -4,7 +4,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Image, Linking, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { articlesForFilter, getLeagueNews, timeAgo, type LeagueNewsCategory, type LeagueNewsFeed } from '../services/leagueNews';
+import { articlesForFilter, fillMissingImages, getLeagueNews, timeAgo, type LeagueNewsCategory, type LeagueNewsFeed } from '../services/leagueNews';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
 import { radius, shadowFor, type Palette } from '../theme';
 
@@ -34,7 +34,12 @@ export default function LeagueNewsCarousel() {
   useEffect(() => {
     let cancelled = false;
     getLeagueNews()
-      .then(f => !cancelled && setFeed(f))
+      .then(f => {
+        if (cancelled) return;
+        setFeed(f);
+        // Then add pictures to the stories that came without one.
+        fillMissingImages(f).then(withImages => !cancelled && setFeed(withImages)).catch(() => undefined);
+      })
       .catch(() => !cancelled && setFeed({ top: [], pool: [], updatedAt: null, source: 'player-news' }));
     return () => {
       cancelled = true;

@@ -104,6 +104,44 @@ export async function getLeagueNews(): Promise<LeagueNewsFeed> {
   return { top: fromPlayers.slice(0, 20), pool: fromPlayers, updatedAt: newsUpdatedAt, source: 'player-news' };
 }
 
+// Pictures for articles that came without one (player news links through Google News).
+// The backend reads each article's share image, falling back to the player's headshot.
+const imageMemo = new Map<string, string | null>();
+
+export function applyImages(feed: LeagueNewsFeed, images: Record<string, string | null>): LeagueNewsFeed {
+  const fill = (a: LeagueNewsArticle) => (!a.image && a.link && images[a.link] ? { ...a, image: images[a.link] } : a);
+  return { ...feed, top: feed.top.map(fill), pool: feed.pool.map(fill) };
+}
+
+// Images for any list of articles (link -> image URL), using the backend and a session memo.
+export async function fetchArticleImages(items: { link?: string | null; player?: string | null }[]): Promise<Record<string, string | null>> {
+  const unique = [
+    ...new Map(
+      items.filter(a => a.link && !imageMemo.has(a.link)).map(a => [a.link!, { link: a.link!, player: a.player ?? null }])
+    ).values(),
+  ];
+  for (let i = 0; i < unique.length; i += 40) {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/article-images`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: unique.slice(i, i + 40) }),
+      });
+      const data = res.ok ? await res.json() : null;
+      Object.entries((data?.images ?? {}) as Record<string, string | null>).forEach(([link, img]) => imageMemo.set(link, img));
+    } catch {
+      break;
+    }
+  }
+  return Object.fromEntries(imageMemo);
+}
+
+export async function fillMissingImages(feed: LeagueNewsFeed): Promise<LeagueNewsFeed> {
+  const missing = [...feed.top, ...feed.pool].filter(a => !a.image && a.link);
+  const images = await fetchArticleImages(missing.map(a => ({ link: a.link, player: a.players[0] ?? null })));
+  return applyImages(feed, images);
+}
+
 export function timeAgo(iso: string, now = Date.now()): string {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return '';

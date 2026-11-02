@@ -40,6 +40,11 @@ import { useNavigation, useIsFocused } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../AppNavigator";
 import PlayerCard from '../components/PlayerCard';
+import LeaguesModal from '../components/LeaguesModal';
+import LeagueIdHelp from '../components/LeagueIdHelp';
+import { parseLeagueId } from '../services/leagueInput';
+import { fetchIrAdvice, irStatusWord, type IrAdvice } from '../services/irAdvice';
+import { Menu } from 'react-native-paper';
 
 const MAX_FANTASY_WEEK_VISIBLE = 18;
 const OFFSEASON_DEFAULT_WEEK = 17;
@@ -106,6 +111,10 @@ export default function FantasyScreen() {
   const [liveLoading, setLiveLoading] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [liveNonce, setLiveNonce] = useState(0);
+  const [leagueMenuOpen, setLeagueMenuOpen] = useState(false);
+  const [showLeaguesModal, setShowLeaguesModal] = useState(false);
+  const [addError, setAddError] = useState('');
+  const [irAdvice, setIrAdvice] = useState<IrAdvice | null>(null);
   const isFocused = useIsFocused();
   const [injuryIndex, setInjuryIndex] = useState(() => indexInjuries(null));
 
@@ -130,6 +139,8 @@ export default function FantasyScreen() {
   // const LEAGUE_ID = String(activeLeagueId);
   const {
     activeLeagueId,
+    setActiveLeagueId,
+    leagues,
     addLeague,
     selectedWeek,
     setSelectedWeek,
@@ -311,6 +322,8 @@ useEffect(() => {
       rosterId: selectedRoster.roster_id,
       teamName: getTeamName(selectedUser),
       starters: selectedRoster.starters || [],
+      rosterPositions: (league?.roster_positions || []).map((s: string) => String(s).toUpperCase()),
+      reserve: (selectedRoster.reserve || []).map(String),
       starterSlotsByPosition: (league?.roster_positions || []).reduce(
         (acc: Partial<Record<"QB" | "RB" | "WR" | "TE" | "K" | "DEF", number>>, slot: string) => {
           const normalized = String(slot).toUpperCase();
@@ -420,6 +433,21 @@ useEffect(() => {
       if (timer) clearInterval(timer);
     };
   }, [liveEligible, isFocused, selectedSeasonLeagueId, selectedWeek, liveRosterId, espnWeekStatus, liveNonce]);
+
+  // IR advice for your own team in the current season: who to move to IR and who to add.
+  const irRosterId = rosters.find(r => r.owner_id === myTeam?.ownerId)?.roster_id;
+  const irEligible = !!selectedSeasonLeagueId && irRosterId !== undefined && !!liveSeason && liveSeason === Number(nflState?.season);
+  useEffect(() => {
+    setIrAdvice(null);
+    if (!irEligible) return;
+    let cancelled = false;
+    fetchIrAdvice(selectedSeasonLeagueId, Number(irRosterId), myTeam?.ownerId)
+      .then(a => { if (!cancelled) setIrAdvice(a); })
+      .catch(err => console.warn('IR advice failed:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [irEligible, selectedSeasonLeagueId, irRosterId, refreshNonce]);
 
   const handleRefresh = async () => {
     if (!selectedSeasonLeagueId) return;
@@ -732,27 +760,34 @@ if (!activeLeagueId) {
         </View>
         <Text style={styles.emptyTitle}>Add your Sleeper league</Text>
         <Text style={styles.emptyText}>
-          Paste your league ID to see rosters, live scores, win odds and lineup alerts. Find it in Sleeper under
-          League → Settings, or in the web address sleeper.com/leagues/ID.
+          Paste your league ID (or the league's sleeper.com link) to see rosters, live scores, win odds and lineup alerts.
         </Text>
         <TextInput
-          placeholder="Sleeper league ID"
+          placeholder="League ID or sleeper.com link"
           placeholderTextColor={colors.textSubtle}
           value={newLeagueInput}
-          onChangeText={setNewLeagueInput}
+          onChangeText={t => {
+            setNewLeagueInput(t);
+            setAddError('');
+          }}
+          autoCapitalize="none"
+          autoCorrect={false}
           style={styles.emptyInput}
         />
         <Pressable
           style={[styles.primaryBtn, addingLeague && { opacity: 0.7 }]}
           disabled={addingLeague}
           onPress={async () => {
-            if (!newLeagueInput.trim()) return;
+            if (!newLeagueInput.trim()) return setAddError('Paste your league ID or link first.');
+            const id = parseLeagueId(newLeagueInput);
+            if (!id) return setAddError("That doesn't look like a league ID. It's the long number after /leagues/ in the sleeper.com address.");
             setAddingLeague(true);
             try {
-              await addLeague(newLeagueInput.trim());
+              await addLeague(id);
               setNewLeagueInput("");
             } catch (err) {
               console.error("Error adding league:", err);
+              setAddError("Couldn't find that league on Sleeper. Double-check the number.");
             } finally {
               setAddingLeague(false);
             }
@@ -760,6 +795,8 @@ if (!activeLeagueId) {
         >
           <Text style={styles.primaryBtnText}>{addingLeague ? "Adding..." : "Add league"}</Text>
         </Pressable>
+        {!!addError && <Text style={styles.addError}>{addError}</Text>}
+        <LeagueIdHelp />
       </View>
     </View>
   );
@@ -804,11 +841,15 @@ if (!activeLeagueId) {
   });
   const buildSide = (matchup: any) => {
     const sIds: string[] = matchup?.starters || [];
+    const sideRoster = rosters.find(r => r.roster_id === matchup?.roster_id);
+    // Players in IR slots get their own section instead of showing on the bench.
+    const reserveIds: string[] = (sideRoster?.reserve ?? []).map(String);
     const sorted = sortPlayers(
       (matchup?.players || []).map((id: string | number) => ({ ...players[id], player_id: id })),
       sIds
     );
-    const bench = sorted.filter(p => !sIds.includes(p.player_id));
+    const bench = sorted.filter(p => !sIds.includes(p.player_id) && !reserveIds.includes(String(p.player_id)));
+    const ir = reserveIds.map(id => ({ ...players[id], player_id: id }));
     const starters = sorted
       .filter(p => sIds.includes(p.player_id))
       .map(p => {
@@ -828,7 +869,7 @@ if (!activeLeagueId) {
     const owner = users.find(u => u.user_id === roster?.owner_id);
     const liveSide = [liveBoard?.me, liveBoard?.opponent].find(s => s && s.rosterId === matchup?.roster_id);
     const total = liveSide?.points ?? (matchup?.starters_points || []).reduce((a: number, b: number) => a + b, 0);
-    return { matchup, starterIds: sIds, starters, bench, name: owner ? getTeamName(owner) : 'Unknown', total };
+    return { matchup, starterIds: sIds, starters, bench, ir, name: owner ? getTeamName(owner) : 'Unknown', total };
   };
 
   const opponentMatchup = myWeekMatchup
@@ -908,6 +949,12 @@ if (!activeLeagueId) {
       <View style={styles.listCard}>{side.starters.map(p => renderPlayer(side, p, true))}</View>
       <Text style={styles.sectionLabel}>BENCH</Text>
       <View style={styles.listCard}>{side.bench.map(p => renderPlayer(side, p, false))}</View>
+      {side.ir.length > 0 && (
+        <>
+          <Text style={styles.sectionLabel}>INJURED RESERVE</Text>
+          <View style={styles.listCard}>{side.ir.map(p => renderPlayer(side, p, false))}</View>
+        </>
+      )}
     </View>
   );
 
@@ -948,6 +995,12 @@ if (!activeLeagueId) {
         <View style={styles.listCard}>{pairRows(left.starters, right.starters, true)}</View>
         <Text style={styles.sectionLabel}>BENCH</Text>
         <View style={styles.listCard}>{pairRows(left.bench, right.bench, false)}</View>
+        {(left.ir.length > 0 || right.ir.length > 0) && (
+          <>
+            <Text style={styles.sectionLabel}>INJURED RESERVE</Text>
+            <View style={styles.listCard}>{pairRows(left.ir, right.ir, false)}</View>
+          </>
+        )}
       </View>
     );
   };
@@ -988,13 +1041,17 @@ if (!activeLeagueId) {
             (myWeekMatchup?.starters ?? viewedRoster?.starters ?? []).map((id: string) => {
               const p = { ...(players[id] ?? {}), player_id: id };
               const inj = currentInjury(injuryIndex, p);
-              return [id, inj.status ? { ...p, injury_status: inj.status } : p];
+              return [id, inj.status ? { ...p, injury_status: inj.status, injury_body_part: inj.injury || p.injury_body_part } : p];
             })
           ),
           teamsPlaying,
           week: selectedWeek,
+          // Once a game kicks off, injury alerts describe what happened instead of "check before kickoff".
+          gameStates: Object.fromEntries(Object.values(liveById).map(p => [p.id, p.game.state])),
+          pointsById: Object.fromEntries(Object.values(liveById).map(p => [p.id, p.points])),
         })
       : [];
+  const actionableAlerts = lineupAlerts.filter(a => !a.locked);
 
   const viewingName = users.find(u => u.user_id === viewedTeamId);
   const canSetMyTeam = !!viewedTeamId && myTeam?.ownerId !== viewedTeamId;
@@ -1002,9 +1059,46 @@ if (!activeLeagueId) {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.headerRow}>
-        <View style={{ flex: 1 }}>
+        <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={styles.leagueLabel}>LEAGUE</Text>
-          <Text style={styles.title} numberOfLines={1}>{league?.name}</Text>
+          {/* Tap the league name to switch leagues */}
+          <Menu
+            visible={leagueMenuOpen}
+            onDismiss={() => setLeagueMenuOpen(false)}
+            anchor={
+              <TouchableOpacity
+                style={styles.leagueSwitch}
+                onPress={() => setLeagueMenuOpen(true)}
+                accessibilityLabel="Switch league"
+              >
+                <Text style={styles.title} numberOfLines={1}>
+                  {league?.name ?? leagues.find(l => l.leagueId === activeLeagueId)?.name ?? 'League'}
+                </Text>
+                <Ionicons name="chevron-down" size={20} color={colors.text} />
+              </TouchableOpacity>
+            }
+          >
+            {leagues.map(l => (
+              <Menu.Item
+                key={l.leagueId}
+                title={l.name}
+                leadingIcon="trophy-outline"
+                trailingIcon={l.leagueId === activeLeagueId ? 'check' : undefined}
+                onPress={() => {
+                  setLeagueMenuOpen(false);
+                  if (l.leagueId !== activeLeagueId) setActiveLeagueId(l.leagueId);
+                }}
+              />
+            ))}
+            <Menu.Item
+              title="Add or manage leagues"
+              leadingIcon="plus"
+              onPress={() => {
+                setLeagueMenuOpen(false);
+                setShowLeaguesModal(true);
+              }}
+            />
+          </Menu>
         </View>
         <TouchableOpacity style={styles.iconBtn} onPress={handleRefresh} accessibilityLabel="Refresh league data">
           <Ionicons name="refresh" size={18} color={colors.primary} />
@@ -1095,23 +1189,80 @@ if (!activeLeagueId) {
         <View style={[styles.alertBox, lineupAlerts.length === 0 && styles.alertBoxOk]}>
           <View style={styles.alertHeader}>
             <Ionicons
-              name={lineupAlerts.length ? 'warning' : 'checkmark-circle'}
+              name={actionableAlerts.length ? 'warning' : lineupAlerts.length ? 'medkit-outline' : 'checkmark-circle'}
               size={16}
-              color={lineupAlerts.length ? colors.warning : colors.success}
+              color={actionableAlerts.length ? colors.warning : lineupAlerts.length ? colors.danger : colors.success}
             />
             <Text style={styles.alertTitle}>
-              {lineupAlerts.length
+              {actionableAlerts.length
                 ? `${lineupAlerts.length} lineup ${lineupAlerts.length === 1 ? 'issue' : 'issues'} for week ${selectedWeek}`
-                : `Your starters are all set for week ${selectedWeek}`}
+                : lineupAlerts.length
+                  ? `In-game injury update for week ${selectedWeek}`
+                  : `Your starters are all set for week ${selectedWeek}`}
             </Text>
           </View>
           {lineupAlerts.map((alert, i) => (
-            <Text key={`${alert.playerId ?? alert.slot}-${i}`} style={[styles.alertLine, (alert.kind === 'out' || alert.kind === 'empty' || alert.kind === 'bye') && styles.alertLineSevere]}>
+            <Text key={`${alert.playerId ?? alert.slot}-${i}`} style={[styles.alertLine, (alert.kind === 'out' || alert.kind === 'empty' || alert.kind === 'bye' || alert.kind === 'hurt_in_game') && styles.alertLineSevere]}>
               • {alert.message}
             </Text>
           ))}
         </View>
       )}
+
+      {/* IR ADVICE (your team only) */}
+      {isViewingMyTeam && irAdvice && (irAdvice.shouldMove.length > 0 || irAdvice.onIr.length > 0) && (() => {
+        const open = Math.max(0, irAdvice.irSlots - irAdvice.irSlotsUsed);
+        const injuryOf = (id: string) => currentInjury(injuryIndex, { ...(players[id] ?? {}), player_id: id }).injury;
+        return (
+          <View style={styles.irCard}>
+            <View style={styles.alertHeader}>
+              <Ionicons name="medkit" size={16} color={colors.danger} />
+              <Text style={[styles.alertTitle, { flex: 1 }]}>Injured reserve</Text>
+              <Text style={styles.irSlots}>
+                {irAdvice.irSlots > 0 ? `${irAdvice.irSlotsUsed} of ${irAdvice.irSlots} IR spots used` : 'No IR spots in this league'}
+              </Text>
+            </View>
+            {irAdvice.shouldMove.map((p, i) => {
+              const injury = injuryOf(p.id);
+              const canMove = i < open;
+              return (
+                <Text key={p.id} style={styles.alertLine}>
+                  • <Text style={{ fontWeight: '800' }}>{p.name}</Text> ({p.position}{p.team ? `, ${p.team}` : ''}) is {irStatusWord(p.injuryStatus)}
+                  {injury ? ` · ${injury}` : ''}.{' '}
+                  {canMove
+                    ? 'Move him to an IR spot in Sleeper to free a bench spot.'
+                    : irAdvice.irSlots === 0
+                      ? "Your league doesn't have IR spots, so he takes a bench spot until he's back."
+                      : open > 0
+                        ? `Your open IR spot is better used on ${irAdvice.shouldMove[0].name}, so he stays on your bench for now.`
+                        : 'Your IR spots are full; he stays on your bench for now.'}
+                </Text>
+              );
+            })}
+            {irAdvice.shouldMove.length > 0 && open > 0 && (
+              <Text style={styles.hint}>
+                In Sleeper: open your team, tap the position button next to his name, then tap the IR spot.
+              </Text>
+            )}
+            {irAdvice.pickups.length > 0 && (
+              <>
+                <Text style={[styles.alertTitle, { marginTop: 6, fontSize: 13 }]}>Then pick up</Text>
+                {irAdvice.pickups.map(({ add, netGain }) => (
+                  <Text key={add.id} style={styles.alertLine}>
+                    • {add.name} ({add.position}{add.team ? `, ${add.team}` : ''}) · {add.value.toFixed(1)} pts/game
+                    {netGain > 0 ? ` · makes your lineup +${netGain.toFixed(1)} pts/week` : ' · depth for your bench'}
+                  </Text>
+                ))}
+              </>
+            )}
+            {irAdvice.shouldMove.length === 0 && (
+              <Text style={styles.alertLine}>
+                {irAdvice.onIr.map(p => p.name).join(', ')} {irAdvice.onIr.length === 1 ? 'is' : 'are'} in your IR spots. Nobody else needs to move.
+              </Text>
+            )}
+          </View>
+        );
+      })()}
 
       {/* LIVE SCOREBOARD + WIN ODDS */}
       {liveEligible && weekStatus !== 'completed' && (
@@ -1135,6 +1286,8 @@ if (!activeLeagueId) {
           </TouchableOpacity>
         ))}
       </View>
+
+      <LeaguesModal visible={showLeaguesModal} onClose={() => setShowLeaguesModal(false)} />
 
       {/* PLAYER LIST */}
       {viewedRoster && (
@@ -1162,7 +1315,9 @@ const makeStyles = (c: Palette) => ({
 
   headerRow: { flexDirection: 'row' as const, alignItems: 'center' as const, marginBottom: 12, gap: 12 },
   leagueLabel: { fontSize: 11, fontWeight: '800' as const, color: c.textMuted, letterSpacing: 0.8 },
-  title: { fontSize: 24, fontWeight: '800' as const, color: c.text },
+  title: { fontSize: 24, fontWeight: '800' as const, color: c.text, flexShrink: 1 },
+  leagueSwitch: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 4, alignSelf: 'flex-start' as const, maxWidth: '100%' as const },
+  addError: { color: c.danger, fontSize: 12, textAlign: 'center' as const },
   iconBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: c.primarySoft, alignItems: 'center' as const, justifyContent: 'center' as const },
 
   controlsCard: { backgroundColor: c.surface, borderRadius: radius.lg, padding: 14, borderWidth: 1, borderColor: c.border, gap: 6 },
@@ -1182,6 +1337,8 @@ const makeStyles = (c: Palette) => ({
 
   alertBox: { backgroundColor: c.warningSoft, borderRadius: radius.md, padding: 12, marginTop: 12, gap: 4 },
   alertBoxOk: { backgroundColor: c.successSoft },
+  irCard: { backgroundColor: c.surface, borderRadius: radius.md, padding: 12, marginTop: 12, gap: 4, borderWidth: 1, borderColor: c.border, borderLeftWidth: 4, borderLeftColor: c.danger },
+  irSlots: { fontSize: 11, fontWeight: '700' as const, color: c.textMuted },
   alertHeader: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6, marginBottom: 2 },
   alertTitle: { fontWeight: '800' as const, color: c.text, fontSize: 14 },
   alertLine: { fontSize: 13, color: c.text },

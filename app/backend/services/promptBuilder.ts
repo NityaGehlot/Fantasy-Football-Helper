@@ -34,6 +34,13 @@ ACCURACY RULES (most important):
 - If the evidence is close or mixed, say so plainly instead of overstating an edge.
 - "Last 3" means each player's last 3 games actually played (bye weeks are excluded).
 - If something is "Not available", don't guess; just leave it out.${qbRule}
+- Defense ranks: 1 = the defense allows the LEAST (toughest matchup), 32 = allows the MOST (easiest matchup). A bigger rank number is GOOD for the player.
+- Use the right defense number for the position: QBs, WRs and TEs care about "vs the pass" and fantasy points allowed to their position; RBs care about "vs the run" and points allowed to RBs; kickers care about points allowed to Ks.
+- Weather and injury effects are already scored from -3 (big downgrade) to +3 (big boost). Use those numbers and the reasons given; don't invent new ones.
+- The verdict must weigh ALL of it together: recent form, matchup, weather, his own health and injuries around him.
+
+EXPLAIN THE NUMBERS:
+- Every number you mention gets a few plain words saying what it means, e.g. "allows 31.2 pts/game to WRs (28th of 32, one of the easiest matchups)" or "net injury effect +1.5 (his WR teammate is out, so more targets)".
 - Before answering, check that every "higher/lower/better/worse" you wrote matches the numbers.
 
 STYLE:
@@ -81,8 +88,9 @@ ${DIVIDER}
 ▶ WHY
 • Recent form: [last 3 avg fantasy pts vs season avg, plus one passing/rushing number]
 • Efficiency: [TD:INT ratio and completion %]
-• Matchup: [opponent defense score and whether it's an easy or tough matchup; skip if not available]
-• Health: [his status/practice, and any injured WR/TE teammates that matter]
+• Matchup: [opponent's rank vs the pass and fantasy points allowed to QBs, and what that means]
+• Weather: [conditions at kickoff and the effect number, or "indoors"]
+• Injuries: [his own status, then each injury around him with its + or - and why; end with the net effect]
 ${DIVIDER}
 ▶ RISK
 • [one thing that could make this call wrong]
@@ -99,8 +107,9 @@ ${DIVIDER}
 • Recent form (last 3): ${a} [avg pts] vs ${b} [avg pts]
 • Season: ${a} [avg pts, consistency] vs ${b} [avg pts, consistency]
 • Efficiency: [TD:INT ratio for each, from the comparisons]
-• Matchup: [each QB's opponent defense score; lower score = easier matchup; skip if not available]
-• Health: [status/practice for each, plus injured WR/TE teammates if any]
+• Matchup: ${a} [opponent rank vs the pass, pts allowed to QBs] vs ${b} [same]; say which is easier
+• Weather: ${a} [conditions, effect] / ${b} [conditions, effect]
+• Injuries: ${a} [net injury effect and the main reason] / ${b} [net injury effect and the main reason]
 ${DIVIDER}
 ▶ RISK
 • [what would flip this decision, or "Close call" if the numbers are near even]
@@ -120,6 +129,14 @@ export function buildSkillPositionResponseFormat(position: string, players: stri
       : pos === "RB"
       ? "carries, rush yards, receptions, TDs"
       : "targets, receptions, receiving yards, TDs";
+  const matchupHint =
+    pos === "RB"
+      ? "opponent's rank vs the run and fantasy points allowed to RBs, and what that means"
+      : pos === "K"
+      ? "fantasy points the opponent allows to kickers and its rank"
+      : pos === "DEF"
+      ? "the opposing offense, especially an injured QB or linemen"
+      : `opponent's rank vs the pass and fantasy points allowed to ${pos}s, and what that means`;
 
   if (players.length === 1) {
     const p = upper(players[0]);
@@ -132,7 +149,10 @@ ${DIVIDER}
 • Recent form: [last 3 avg fantasy pts vs season avg]
 • Usage: [${statHint}]
 • Consistency: [consistency score and what it means]
-${pos === "K" || pos === "DEF" ? "" : "• Health: [status and practice]\n"}${DIVIDER}
+• Matchup: [${matchupHint}]
+• Weather: [conditions at kickoff and the effect number, or "indoors"]
+• Injuries: [his own status, then each injury around him with its + or - and why; end with the net effect]
+${DIVIDER}
 ▶ RISK
 • [one thing that could make this call wrong]
 `;
@@ -148,7 +168,10 @@ ${DIVIDER}
 • Recent form (last 3): ${a} [avg pts] vs ${b} [avg pts]
 • Usage: [${statHint} for each]
 • Consistency: [consistency score for each]
-${pos === "K" || pos === "DEF" ? "" : `• Health: ${a} [status] / ${b} [status]\n`}${DIVIDER}
+• Matchup: ${a} [${matchupHint}] vs ${b} [same]; say which is easier
+• Weather: ${a} [conditions, effect] / ${b} [conditions, effect]
+• Injuries: ${a} [net injury effect and the main reason] / ${b} [net injury effect and the main reason]
+${DIVIDER}
 ▶ RISK
 • [what would flip this decision, or "Close call" if the numbers are near even]
 `;
@@ -174,7 +197,7 @@ ${DIVIDER}
 ▶ BENCH (${benchCount}): [comma-separated names]
 ${DIVIDER}
 ▶ RANKING
-• 1. [NAME] — [last 3 avg pts], [one key usage stat], [health${normalizedPosition === "QB" ? ", matchup score" : ""}]
+• 1. [NAME] — [last 3 avg pts], [one key usage stat], [matchup rank], [weather effect], [net injury effect]
 (one line per candidate, best to worst)
 ${DIVIDER}
 ▶ WHY

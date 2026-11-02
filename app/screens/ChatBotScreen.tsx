@@ -12,12 +12,15 @@ import { Ionicons } from "@expo/vector-icons";
 import { useFantasy } from "../context/FantasyContext";
 import { useTheme, useThemedStyles } from "../context/ThemeContext";
 import { radius, shadowFor, type Palette } from "../theme";
+import StartSitPicker from "../components/StartSitPicker";
 
 const BLANK = "____";
 
 // One-tap questions covering each kind of advice the assistant can give. Templates with
 // blanks fill the input box instead of sending, so you can type the player names.
-const SUGGESTIONS: { label: string; icon: keyof typeof Ionicons.glyphMap; text: string; template?: boolean }[] = [
+// "Start or sit?" opens a picker of your own players instead of sending text.
+const SUGGESTIONS: { label: string; icon: keyof typeof Ionicons.glyphMap; text: string; template?: boolean; picker?: boolean }[] = [
+  { label: "Start or sit?", icon: "people-outline", text: "", picker: true },
   { label: "Set my lineup", icon: "list", text: "Who should I start this week?" },
   { label: "Compare players", icon: "git-compare-outline", text: `Should I start ${BLANK} or ${BLANK} this week?`, template: true },
   { label: "Waiver pickups", icon: "add-circle-outline", text: "Who are the best waiver pickups for my team?" },
@@ -36,8 +39,12 @@ export default function ChatBotScreen() {
     chatPersistenceEnabled,
     setChatPersistenceEnabled,
     clearChatHistory,
-    myTeam
+    myTeam,
+    leagues,
+    activeLeagueId
   } = useFantasy();
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const leagueName = leagues.find(l => l.leagueId === activeLeagueId)?.name;
 
   const [input, setInput] = useState("");
   const [selection, setSelection] = useState<{ start: number; end: number } | undefined>(undefined);
@@ -71,8 +78,15 @@ export default function ChatBotScreen() {
     await sendChatMessage(trimmed);
   };
 
+  const fillTemplate = (text: string) => {
+    setInput(text);
+    selectNextBlank(text);
+  };
+
   const useSuggestion = (s: (typeof SUGGESTIONS)[number]) => {
-    if (s.template) {
+    if (s.picker) {
+      setPickerOpen(true);
+    } else if (s.template) {
       setInput(s.text);
       selectNextBlank(s.text);
     } else {
@@ -101,7 +115,7 @@ export default function ChatBotScreen() {
             color={myTeam ? colors.success : colors.warning}
           />
           <Text style={styles.contextText} numberOfLines={1}>
-            {myTeam ? `Advising: ${myTeam.teamName}` : "No team set — pick one on the Fantasy tab"}
+            {myTeam ? `Advising: ${myTeam.teamName}${leagueName ? ` · ${leagueName}` : ""}` : "No team set — pick one on the Fantasy tab"}
           </Text>
         </View>
 
@@ -133,7 +147,8 @@ export default function ChatBotScreen() {
             <Text style={styles.welcomeTitle}>Your fantasy assistant</Text>
             <Text style={styles.welcomeText}>
               Ask who to start or bench, who to pick up and drop, who to trade for, or who to draft.
-              Answers use this season's stats and your Sleeper roster.
+              Start/sit answers weigh recent stats, the opponent's defense, weather and injuries. Each league
+              has its own chat.
             </Text>
           </View>
         )}
@@ -177,6 +192,14 @@ export default function ChatBotScreen() {
           </TouchableOpacity>
         ))}
       </ScrollView>
+
+      <StartSitPicker
+        visible={pickerOpen}
+        team={myTeam}
+        onClose={() => setPickerOpen(false)}
+        onAsk={q => send(q)}
+        onTypeOwn={fillTemplate}
+      />
 
       {hasBlank && <Text style={styles.blankHint}>Replace each ____ with a player name (Tab jumps to the next one).</Text>}
 

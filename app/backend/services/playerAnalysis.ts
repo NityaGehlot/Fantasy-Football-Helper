@@ -130,7 +130,7 @@ Total Rec Yds:        ${ctx.receivingYards}
 Total Rec TD:         ${ctx.receivingTD}
 Receptions:           ${ctx.receptions}
 Targets:              ${ctx.targets}
-Target Share:         ${ctx.targetShare}%
+Catch Rate (rec÷tgt): ${ctx.targetShare}%
 Consistency (0-1):    ${ctx.consistencyScore}
 
 --- LAST 3 WEEKS AVG (Weeks: ${ctx.last3Summary.weeksIncluded.join(", ")}) ---
@@ -139,7 +139,7 @@ Avg Rec Yds:          ${ctx.last3Summary.avgReceivingYards}
 Avg Rec TD:           ${ctx.last3Summary.avgReceivingTD}
 Avg Receptions:       ${ctx.last3Summary.avgReceptions}
 Avg Targets:          ${ctx.last3Summary.avgTargets}
-Reception Rate:       ${ctx.last3Summary.receptionRate}%
+Catch Rate, last 3:   ${ctx.last3Summary.receptionRate}%
 
 --- INJURY (Week ${currentWeek} data) ---
 Status:               ${injuryInfo.status}
@@ -177,7 +177,7 @@ Avg Rec Yds:          ${ctx.last3Summary.avgReceivingYards}
 Avg Rec TD:           ${ctx.last3Summary.avgReceivingTD}
 Avg Receptions:       ${ctx.last3Summary.avgReceptions}
 Avg Targets:          ${ctx.last3Summary.avgTargets}
-Reception Rate:       ${ctx.last3Summary.receptionRate}%
+Catch Rate, last 3:   ${ctx.last3Summary.receptionRate}%
 
 --- INJURY (Week ${currentWeek} data) ---
 Status:               ${injuryInfo.status}
@@ -221,7 +221,7 @@ Avg Rec Yds:          ${ctx.last3Summary.avgReceivingYards}
 Avg Rec TD:           ${ctx.last3Summary.avgReceivingTD}
 Avg Receptions:       ${ctx.last3Summary.avgReceptions}
 Avg Targets:          ${ctx.last3Summary.avgTargets}
-Reception Rate:       ${ctx.last3Summary.receptionRate}%
+Catch Rate, last 3:   ${ctx.last3Summary.receptionRate}%
 
 --- INJURY (Week ${currentWeek} data) ---
 Status:               ${injuryInfo.status}

@@ -108,3 +108,20 @@ export async function getUserProfile(uid: string): Promise<UserProfile | null> {
   if (!snap.exists()) return null;
   return snap.data() as UserProfile;
 }
+
+/**
+ * The league the user had open last, so a refresh (or another device) reopens it.
+ * Stored on the profile doc: `users/{uid}.lastLeagueId`
+ */
+export async function setLastLeagueForUser(uid: string, leagueId: string | null) {
+  if (!uid) return;
+  await setDoc(doc(db, "users", uid), { lastLeagueId: leagueId ?? null }, { merge: true });
+}
+
+export async function getLastLeagueForUser(uid: string): Promise<string | null> {
+  if (!uid) return null;
+  const snap = await getDoc(doc(db, "users", uid));
+  if (!snap.exists()) return null;
+  const value = (snap.data() as UserProfile)?.lastLeagueId;
+  return value ? String(value) : null;
+}

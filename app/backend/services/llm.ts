@@ -16,8 +16,8 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "mistral:latest";
 
 export const LLM_OPTIONS = {
   temperature: 0.3,
-  num_ctx: 4096,
-  num_predict: 600,
+  num_ctx: 6144,
+  num_predict: 800,
 };
 
 function requestBody(prompt: string, stream: boolean, temperature?: number) {

@@ -36,11 +36,11 @@ export const lightColors: Palette = {
   primary: '#4f46e5',
   primarySoft: '#eef2ff',
   onPrimary: '#ffffff',
-  success: '#16a34a',
+  success: '#15803d',
   successSoft: '#dcfce7',
   danger: '#dc2626',
   dangerSoft: '#fee2e2',
-  warning: '#d97706',
+  warning: '#b45309',
   warningSoft: '#fef3c7',
   overlay: 'rgba(15, 23, 42, 0.45)',
   shadowColor: 'rgba(17, 24, 39, 0.08)',
@@ -78,6 +78,18 @@ export const shadowFor = (c: Palette) => ({
   elevation: 3,
 });
 export const shadow = shadowFor(lightColors);
+
+// Text color that stays readable on a colored badge: dark text on light colors (yellow TE,
+// teal RB), white text on dark ones.
+export function readableOn(hex: string): string {
+  const m = String(hex).replace('#', '');
+  const full = m.length === 3 ? m.split('').map(c => c + c).join('') : m.slice(0, 6);
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(full.slice(i, i + 2), 16) / 255);
+  if ([r, g, b].some(v => Number.isNaN(v))) return '#ffffff';
+  const lin = (v: number) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+  const luminance = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  return luminance > 0.4 ? '#111827' : '#ffffff';
+}
 
 export const positionColors: Record<string, string> = {
   QB: '#ff6b6b',

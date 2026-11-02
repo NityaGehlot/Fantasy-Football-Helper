@@ -4,7 +4,7 @@ import { useTheme, useThemedStyles } from '../context/ThemeContext';
 import { injuryLabel, injuryShort, isOutStatus } from '../services/injuryFormat';
 import { usePlayerStatus } from '../hooks/usePlayerStatus';
 import { statusForPlayer } from '../services/playerStatus';
-import { getPositionColor, type Palette } from '../theme';
+import { getPositionColor, readableOn, type Palette } from '../theme';
 
 interface Props {
   player: any;
@@ -46,22 +46,23 @@ export default function PlayerCard({ player, stats, statLine = [], points = 0, i
   const injuryStatus = statsStatus && statsStatus !== "ACTIVE" ? statsStatus : String(current?.injuryStatus ?? "").toUpperCase();
   const injuryType =
     stats?.primary_injury || stats?.practice_primary_injury || stats?.secondary_injury || current?.injury || "";
+  // Designation with the type of injury next to it, e.g. "Questionable · Ankle".
+  const injuryText = [injuryLabel(injuryStatus), injuryType].filter(Boolean).join(" · ");
   const isBye = onBye ?? (String(stats?.team_status ?? "").toLowerCase().includes("bye") || !!current?.onBye);
   const isOut = isOutStatus(injuryStatus) || injuryStatus === "INJURED RESERVE" || injuryStatus === "IR-R";
   const isQuestionable = ["QUESTIONABLE", "DOUBTFUL"].includes(injuryStatus);
   const injuryBadge = isOut ? (injuryShort(injuryStatus) || "O") : isQuestionable ? injuryShort(injuryStatus) : "";
-  const injuryText = [injuryLabel(injuryStatus), injuryType].filter(Boolean).join(" · ");
 
   const Pills = (
     <>
       {!!injuryBadge && (
         <View style={[styles.injuryPill, { backgroundColor: isOut ? colors.danger : colors.warning }]}>
-          <Text style={styles.injuryPillText}>{injuryBadge}</Text>
+          <Text style={[styles.injuryPillText, { color: readableOn(isOut ? colors.danger : colors.warning) }]}>{injuryBadge}</Text>
         </View>
       )}
       {isBye && (
         <View style={[styles.injuryPill, { backgroundColor: colors.textSubtle }]}>
-          <Text style={styles.injuryPillText}>BYE</Text>
+          <Text style={[styles.injuryPillText, { color: readableOn(colors.textSubtle) }]}>BYE</Text>
         </View>
       )}
     </>
@@ -75,7 +76,7 @@ export default function PlayerCard({ player, stats, statLine = [], points = 0, i
 
   const Badge = (
     <View style={[compact ? styles.badgeCompact : styles.badge, { backgroundColor: badgeColor }]}>
-      <Text style={compact ? styles.badgeTextCompact : styles.badgeText}>{badgeLabel}</Text>
+      <Text style={[compact ? styles.badgeTextCompact : styles.badgeText, { color: readableOn(badgeColor) }]}>{badgeLabel}</Text>
     </View>
   );
 
@@ -103,16 +104,19 @@ export default function PlayerCard({ player, stats, statLine = [], points = 0, i
       <View style={styles.denseRow}>
         <View style={{ alignItems: 'center', gap: 4 }}>
           <View style={[styles.badgeDense, { backgroundColor: badgeColor }]}>
-            <Text style={styles.badgeTextDense}>{badgeLabel}</Text>
+            <Text style={[styles.badgeTextDense, { color: readableOn(badgeColor) }]}>{badgeLabel}</Text>
           </View>
           <Image source={{ uri: imageUri || '' }} style={styles.imageDense} />
         </View>
         <View style={{ flex: 1, minWidth: 0, marginLeft: 6 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
             <Text style={styles.nameDense} numberOfLines={2}>{player.full_name}</Text>
             {Pills}
           </View>
           <Text style={styles.statLine} numberOfLines={1}>{player.position}{teamLabel ? ` • ${teamLabel}` : ''}</Text>
+          {(isOut || isQuestionable) && !!injuryText && (
+            <Text style={[styles.injuryTextCompact, { color: isOut ? colors.danger : colors.warning }]} numberOfLines={2}>{injuryText}</Text>
+          )}
           {statLine.length > 0 && <Text style={styles.statLine} numberOfLines={2}>{statLine.join(' · ')}</Text>}
           <Text style={styles.pointsDense}>
             {(points || 0).toFixed(2)}
@@ -137,7 +141,7 @@ export default function PlayerCard({ player, stats, statLine = [], points = 0, i
         <Text style={styles.sub}>{player.position}{teamLabel ? ` • ${teamLabel}` : ''}</Text>
 
         <View style={{ marginTop: 4 }}>
-          {(isOut || isQuestionable) && injuryText ? (
+          {(isOut || isQuestionable) && !!injuryText ? (
             <Text style={[styles.injuryText, { color: isOut ? colors.danger : colors.warning }]}>{injuryText}</Text>
           ) : null}
 

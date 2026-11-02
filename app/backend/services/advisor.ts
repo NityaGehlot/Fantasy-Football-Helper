@@ -11,6 +11,7 @@ import { getLeagueContext, getValueContext, LeagueContext, weeklyValue } from ".
 import { getDraftPicks, getNflState } from "./sleeperServer";
 import { getTeamsPlaying } from "./schedule";
 import { isOutStatus } from "./playerValues";
+import { buildMatchupContext, matchupAdjustment } from "./matchupContext";
 import { normalizePlayerName, playerKey } from "../utils/names";
 import { ChatIntent } from "./intent";
 import {
@@ -80,14 +81,37 @@ async function currentWeekTeamsPlaying(season: number): Promise<{ week: number; 
 // ---------- Lineup ----------
 async function handleLineup(message: string, ctx: LeagueContext, me: LeagueTeam): Promise<AdvisorResult> {
   const { week, teams: teamsPlaying } = await currentWeekTeamsPlaying(ctx.values.season);
-  const weekly = me.players.map(p => ({ ...p, value: weeklyValue(p, teamsPlaying) }));
+  // Scale each player's usual points for this week's matchup, weather and injuries around him.
+  const matchups = new Map<string, { multiplier: number; parts: string[] }>();
+  await Promise.all(
+    me.players
+      .filter(p => p.position in SLOT_ELIGIBILITY || ["QB", "RB", "WR", "TE", "K", "DEF"].includes(p.position))
+      .map(async p => {
+        const mctx = await buildMatchupContext({
+          playerName: p.name,
+          position: p.position,
+          team: p.team ?? null,
+          season: ctx.values.season,
+          week,
+          statsRows: ctx.values.rows,
+        }).catch(() => null);
+        matchups.set(p.id, matchupAdjustment(p.position, mctx));
+      })
+  );
+  const weekly = me.players.map(p => {
+    const adj = matchups.get(p.id);
+    return { ...p, value: Math.round(weeklyValue(p, teamsPlaying) * (adj?.multiplier ?? 1) * 100) / 100 };
+  });
   const lineup = optimizeLineup(weekly, ctx.slots);
   const starters = new Set(lineup.flatMap(a => (a.player ? [a.player.id] : [])));
   const bench = weekly.filter(p => !starters.has(p.id) && p.position in SLOT_ELIGIBILITY);
 
   const notes: string[] = [];
   me.players.forEach(p => {
-    if (isOutStatus(p.injuryStatus)) notes.push(`${p.name} is ${p.injuryStatus} — do not start him.`);
+    const status = String(p.injuryStatus ?? "").toUpperCase();
+    if (status === "IR" || status === "INJURED RESERVE")
+      notes.push(`${p.name} is on IR — move him to an IR spot in Sleeper so his roster spot can go to a waiver pickup.`);
+    else if (isOutStatus(p.injuryStatus)) notes.push(`${p.name} is ${p.injuryStatus} — do not start him.`);
     else if (teamsPlaying && p.team && teamsPlaying.size > 0 && !teamsPlaying.has(p.team))
       notes.push(`${p.name} (${p.team}) is on bye in week ${week}.`);
   });
@@ -99,7 +123,11 @@ async function handleLineup(message: string, ctx: LeagueContext, me: LeagueTeam)
     ...(notes.length ? ["", "Heads up:", ...notes.map(n => `• ${n}`)] : []),
   ].join("\n");
 
-  return { prompt: buildLineupPrompt(message, lineup, bench, notes), fallback };
+  const matchupNotes: Record<string, string> = {};
+  matchups.forEach((m, id) => {
+    if (m.parts.length) matchupNotes[id] = `x${m.multiplier.toFixed(2)} this week: ${m.parts.join("; ")}`;
+  });
+  return { prompt: buildLineupPrompt(message, lineup, bench, notes, matchupNotes), fallback };
 }
 
 // ---------- Waivers ----------

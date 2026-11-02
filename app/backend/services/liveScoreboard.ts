@@ -74,7 +74,10 @@ export async function getLiveScoreboard(leagueId: string, rosterId: number, requ
     scheduleKnown: !!games && games.size > 0,
     isLive: all.some(p => p.game.state === "in"),
     isFinal: !!games && games.size > 0 && all.every(p => p.fractionRemaining === 0),
-    me: { ...a, winProbability: b ? winProbability(a, b) : 1 },
-    opponent: b ? { ...b, winProbability: winProbability(b, a) } : null,
+    // One probability for both sides, so the two always add up to exactly 100%.
+    ...(() => {
+      const p = b ? winProbability(a, b) : 1;
+      return { me: { ...a, winProbability: p }, opponent: b ? { ...b, winProbability: 1 - p } : null };
+    })(),
   };
 }

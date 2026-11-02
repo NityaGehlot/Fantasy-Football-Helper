@@ -39,6 +39,10 @@ export type GameState = {
   kickoff: string | null;
   teamScore: number | null;
   opponentScore: number | null;
+  // Venue details for weather: indoors (dome or closed roof), neutral site (e.g. London), host team
+  indoor?: boolean | null;
+  neutralSite?: boolean;
+  homeTeam?: string;
 };
 
 // Turn one ESPN scoreboard event into a GameState for each team in it.
@@ -50,6 +54,12 @@ export function parseScoreboardEvent(event: any): GameState[] {
   const rawState = String(status?.type?.state ?? "pre");
   const state: GameState["state"] = rawState === "in" ? "in" : rawState === "post" ? "post" : "pre";
   const detail = String(status?.type?.shortDetail ?? status?.type?.detail ?? "");
+
+  const venue = competition?.venue ?? {};
+  const indoor = typeof venue?.indoor === "boolean" ? venue.indoor : null;
+  const neutralSite = Boolean(competition?.neutralSite);
+  const home = competitors.find((c: any) => c?.homeAway === "home") ?? competitors[0];
+  const homeTeam = normalizeTeam(home?.team?.abbreviation);
 
   return competitors.map((c: any, i: number) => {
     const other = competitors[1 - i];
@@ -64,6 +74,9 @@ export function parseScoreboardEvent(event: any): GameState[] {
       kickoff: event?.date ?? null,
       teamScore: state === "pre" ? null : Number(c?.score) || 0,
       opponentScore: state === "pre" ? null : Number(other?.score) || 0,
+      indoor,
+      neutralSite,
+      homeTeam,
     };
   });
 }

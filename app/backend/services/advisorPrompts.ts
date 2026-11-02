@@ -66,16 +66,21 @@ export function buildLineupPrompt(
   question: string,
   lineup: LineupAssignment[],
   bench: TradePlayer[],
-  notes: string[]
+  notes: string[],
+  matchupNotes: Record<string, string> = {}
 ): string {
+  const withMatchup = (p: TradePlayer) => (matchupNotes[p.id] ? `\n    ↳ ${matchupNotes[p.id]}` : "");
   const lineupText = lineup
-    .map(a => `• ${a.slot}: ${a.player ? fmt(a.player as TradePlayer) : "EMPTY — no eligible player"}`)
+    .map(a => `• ${a.slot}: ${a.player ? fmt(a.player as TradePlayer) + withMatchup(a.player as TradePlayer) : "EMPTY — no eligible player"}`)
     .join("\n");
-  const data = `RECOMMENDED STARTERS (pre-computed, highest projected points per slot)
+  const benchText = bench.map(p => `• ${fmt(p)}${withMatchup(p)}`).join("\n");
+  const data = `RECOMMENDED STARTERS (pre-computed: points per game for THIS week, already adjusted for the opponent defense, weather and injuries shown under each player)
 ${lineupText}
 
 BENCH
-${bench.length ? rosterBlock(bench) : "• (none)"}
+${bench.length ? benchText : "• (none)"}
+
+HOW TO READ "x1.08": his usual points per game times 1.08 = 8% more this week. Defense ranks: 1 = toughest, 32 = easiest.
 
 NOTES
 ${notes.length ? notes.map(n => `• ${n}`).join("\n") : "• No bye weeks or injury problems among your players."}`;
@@ -84,7 +89,7 @@ ${notes.length ? notes.map(n => `• ${n}`).join("\n") : "• No bye weeks or in
 ${DIVIDER}
 ▶ START THESE
 ${DIVIDER}
-• [slot]: [player] — [one short reason using the pts/g shown]
+• [slot]: [player] — [pts/g shown, plus the matchup/weather/injury reason from his ↳ line in plain words]
 (one bullet per starter, in the order given)
 
 ${DIVIDER}
@@ -95,7 +100,7 @@ ${DIVIDER}
 ${DIVIDER}
 ▶ CLOSE CALLS
 ${DIVIDER}
-• [any bench player within ~1 pt/g of a starter at an eligible slot, or "None"]
+• [any bench player within ~1 pt/g of a starter at an eligible slot, explaining which matchup, weather or injury factor separates them, or "None"]
 `);
 }
 
