@@ -125,3 +125,22 @@ export async function getLastLeagueForUser(uid: string): Promise<string | null> 
   const value = (snap.data() as UserProfile)?.lastLeagueId;
   return value ? String(value) : null;
 }
+
+/**
+ * Favorite (followed) players and NFL teams, for news on the Home screen.
+ * Stored on the profile doc: `users/{uid}.favorites = { players: [ids], teams: ["KC", ...] }`
+ */
+export type Favorites = { players: string[]; teams: string[] };
+
+export async function getFavoritesForUser(uid: string): Promise<Favorites | null> {
+  if (!uid) return null;
+  const snap = await getDoc(doc(db, "users", uid));
+  if (!snap.exists()) return null;
+  const fav = (snap.data() as UserProfile)?.favorites;
+  return fav ? { players: (fav.players ?? []).map(String), teams: (fav.teams ?? []).map(String) } : null;
+}
+
+export async function setFavoritesForUser(uid: string, favorites: Favorites) {
+  if (!uid) return;
+  await setDoc(doc(db, "users", uid), { favorites }, { merge: true });
+}

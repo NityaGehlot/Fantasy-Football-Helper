@@ -2,12 +2,12 @@
 // Cover images for news articles that don't come with one (the player news from nfl-data
 // links through Google News). We follow the link to the real article and read its
 // og:image / twitter:image, the same picture you see when you open the article.
-// If that fails, the player's headshot is used so every card still has an image.
+// If that fails we return nothing (the app shows its own placeholder rather than a headshot,
+// which looked out of place on a news card). nfl-data's news job does the same lookup ahead of
+// time, so most articles already arrive with their picture.
 
 import fetch from "node-fetch";
 import { createTtlCache, HOUR } from "../utils/ttlCache";
-import { getAllPlayers } from "./sleeperServer";
-import { normalizePlayerName } from "../utils/names";
 
 const cache = createTtlCache();
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
@@ -120,35 +120,18 @@ export function headshotFor(player: any): string | null {
   return null;
 }
 
-async function headshotIndex(): Promise<Map<string, any>> {
-  return cache.get("headshots", 24 * HOUR, async () => {
-    const players = await getAllPlayers();
-    const map = new Map<string, any>();
-    for (const [id, p] of Object.entries(players ?? {})) {
-      const name = normalizePlayerName(String((p as any)?.full_name ?? ""));
-      // Prefer active players with a team when two share a name.
-      if (name && (!map.has(name) || (p as any)?.team)) map.set(name, { ...(p as any), player_id: id });
-    }
-    return map;
-  });
-}
-
 export type ImageRequest = { link: string; player?: string | null };
 
-/**
- * Images for many articles at once: the article's own image when we can get it, otherwise the
- * player's headshot. Returns link -> image URL (null only when there's nothing at all).
- */
+/** Images for many articles at once: link -> the article's own cover image, or null. */
 export async function imagesForArticles(items: ImageRequest[], concurrency = 6): Promise<Record<string, string | null>> {
   const out: Record<string, string | null> = {};
   const unique = [...new Map(items.filter(i => i?.link).map(i => [i.link, i])).values()].slice(0, 60);
-  const heads = await headshotIndex().catch(() => new Map<string, any>());
   let next = 0;
   const worker = async () => {
     while (next < unique.length) {
       const item = unique[next++];
       const image = await imageForArticle(item.link).catch(() => null);
-      out[item.link] = image ?? headshotFor(heads.get(normalizePlayerName(String(item.player ?? "")))) ?? null;
+      out[item.link] = image ?? null;
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, unique.length) }, worker));

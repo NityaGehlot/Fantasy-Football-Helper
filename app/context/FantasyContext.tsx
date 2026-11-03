@@ -34,6 +34,12 @@ import {
   type FavoriteTeam,
 } from "../services/userService";
 import { pickStartingLeague } from "../services/leagueInput";
+import { getNFLState } from "../services/sleeperAPI";
+import { gradePending, loadCalls, namesInQuestion, parseVerdict, saveCalls, type AiCall } from "../services/aiRecord";
+
+// Saved chat history is capped per league so storage stays small (about 1-2 KB a message,
+// so 100 messages is roughly 100-200 KB per league; browsers allow about 5 MB per site).
+export const MAX_SAVED_MESSAGES = 100;
 
 // Before chats were split by league, everything was saved under this one key.
 const LEGACY_CHAT_STORAGE_KEY = "fantasy_chat_messages_v1";
@@ -87,6 +93,8 @@ interface FantasyContextType {
   selectedWeek: number;
   setSelectedWeek: React.Dispatch<React.SetStateAction<number>>;
   leagues: League[];
+  // True once the saved leagues have been read from your account
+  leaguesLoaded: boolean;
   activeLeagueId: string | null;
   addLeague: (leagueId: string) => Promise<void>;
   deleteLeague: (leagueId: string) => Promise<void>;
@@ -99,6 +107,8 @@ interface FantasyContextType {
   chatPersistenceEnabled: boolean;
   setChatPersistenceEnabled: (enabled: boolean) => Promise<void>;
   sendChatMessage: (text: string) => Promise<void>;
+  // The AI's start/sit calls and whether they were right
+  aiCalls: AiCall[];
   myTeam: MyFantasyTeam | null;
   favoriteTeam: FavoriteTeam | null;
   setMyTeam: (team: MyFantasyTeam, options?: { persist?: boolean }) => Promise<void>;
@@ -122,6 +132,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   const [matchups, setMatchups] = useState<any[]>([]);
   const [selectedWeek, setSelectedWeek] = useState<number>(17);
   const [leagues, setLeagues] = useState<League[]>([]);
+  const [leaguesLoaded, setLeaguesLoaded] = useState(false);
   const [activeLeagueId, setActiveLeagueIdState] = useState<string | null>(null);
   // Conversations keyed by league, so each league has its own chat with the assistant.
   const [chatByLeague, setChatByLeague] = useState<Record<string, ChatMessage[]>>({});
@@ -129,6 +140,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
   const [seenBotByLeague, setSeenBotByLeague] = useState<Record<string, number>>({});
   const [chatPersistenceEnabled, setChatPersistenceEnabledState] = useState(true);
   const [loadedChatKeys, setLoadedChatKeys] = useState<Record<string, boolean>>({});
+  const [aiCalls, setAiCalls] = useState<AiCall[]>([]);
   const [myTeam, setMyTeamState] = useState<MyFantasyTeam | null>(null);
   const [favoriteTeam, setFavoriteTeam] = useState<FavoriteTeam | null>(null);
 
@@ -236,6 +248,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
         selectedWeek,
         myTeam
       );
+      recordAiCall(trimmed, reply, leagueKey);
       if (streamedUpdates > 0) {
         // Streamed live: text is already on screen.
         updateBotMessage(leagueKey, botMessageId, reply);
@@ -249,6 +262,49 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
       setTypingLeague(null);
     }
   };
+
+  // Save a start/sit call ("start A over B") so it can be graded after the games.
+  const recordAiCall = async (question: string, reply: string, leagueKey: string) => {
+    const names = namesInQuestion(question);
+    if (names.length !== 2) return;
+    const verdict = parseVerdict(reply, names);
+    if (!verdict) return;
+    const state = await getNFLState().catch(() => null);
+    const call: AiCall = {
+      id: `${Date.now()}`,
+      leagueId: leagueKey,
+      season: Number(state?.season) || new Date().getFullYear(),
+      week: Number(state?.week) || selectedWeek,
+      askedAt: new Date().toISOString(),
+      ...verdict,
+    };
+    setAiCalls(prev => {
+      // Asking about the same two players again in a week replaces the earlier call.
+      const next = [...prev.filter(c => !(c.week === call.week && c.season === call.season && [c.pick, c.other].sort().join() === [call.pick, call.other].sort().join())), call];
+      saveCalls(uid, next);
+      return next;
+    });
+  };
+
+  // Load the AI's record and grade calls from weeks that are over.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const calls = await loadCalls(uid);
+      if (cancelled) return;
+      setAiCalls(calls);
+      const state = await getNFLState().catch(() => null);
+      if (!state?.season || !calls.some(c => !c.result)) return;
+      const graded = await gradePending(calls, Number(state.season), Number(state.week) || 1).catch(() => calls);
+      if (!cancelled) {
+        setAiCalls(graded);
+        saveCalls(uid, graded);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [uid]);
 
   const markChatAsRead = () => {
     setSeenBotByLeague(prev => (prev[chatKey] === totalBotMessages ? prev : { ...prev, [chatKey]: totalBotMessages }));
@@ -277,7 +333,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
       await AsyncStorage.setItem(CHAT_PERSISTENCE_FLAG_KEY, enabled ? "1" : "0");
       const keys = Object.keys(chatByLeague);
       if (enabled) {
-        await Promise.all(keys.map(k => AsyncStorage.setItem(chatStorageKey(uid, k), JSON.stringify(chatByLeague[k] ?? []))));
+        await Promise.all(keys.map(k => AsyncStorage.setItem(chatStorageKey(uid, k), JSON.stringify((chatByLeague[k] ?? []).slice(-MAX_SAVED_MESSAGES)))));
       } else {
         await Promise.all(keys.map(k => AsyncStorage.removeItem(chatStorageKey(uid, k))));
       }
@@ -305,6 +361,8 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
         setActiveLeagueIdState(prev => pickStartingLeague(ids, prev, localLast, savedLast));
       } catch (err) {
         console.error("Error loading leagues:", err);
+      } finally {
+        setLeaguesLoaded(true);
       }
     };
 
@@ -407,7 +465,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
     Object.entries(chatByLeague).forEach(([leagueKey, messages]) => {
       const storageKey = chatStorageKey(uid, leagueKey);
       if (!loadedChatKeys[storageKey]) return;
-      AsyncStorage.setItem(storageKey, JSON.stringify(messages)).catch(err =>
+      AsyncStorage.setItem(storageKey, JSON.stringify(messages.slice(-MAX_SAVED_MESSAGES))).catch(err =>
         console.error("Failed to persist chat history:", err)
       );
     });
@@ -596,6 +654,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
         selectedWeek,
         setSelectedWeek,
         leagues,
+        leaguesLoaded,
         activeLeagueId,
         addLeague,
         deleteLeague,
@@ -608,6 +667,7 @@ export const FantasyProvider = ({ children }: { children: ReactNode }) => {
         chatPersistenceEnabled,
         setChatPersistenceEnabled,
         sendChatMessage,
+        aiCalls,
         myTeam,
         favoriteTeam,
         setMyTeam,

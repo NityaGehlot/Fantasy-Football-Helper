@@ -15,6 +15,7 @@ import {
   type TradeIdea, type TradeIdeaPlayer,
 } from '../services/tradeFormat';
 import { radius, shadowFor, getPositionColor, type Palette } from '../theme';
+import TradeGrader from '../components/TradeGrader';
 
 const GUIDE_DISMISSED_KEY = 'ffh_trade_guide_dismissed_v1';
 
@@ -27,6 +28,7 @@ const signed = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(1)}`;
 
 function PlayerChip({ player }: { player: TradeIdeaPlayer }) {
   const styles = useThemedStyles(makeStyles);
+  const { colors } = useTheme();
   const injured = player.injuryStatus && player.injuryStatus !== 'ACTIVE';
   return (
     <View style={styles.chip}>
@@ -39,6 +41,14 @@ function PlayerChip({ player }: { player: TradeIdeaPlayer }) {
           {player.team || 'FA'} · {player.value.toFixed(1)} pts/g
           {injured ? <Text style={styles.injured}>{` · ${player.injuryStatus}`}</Text> : null}
         </Text>
+        {player.playoff && player.playoff.label !== 'unknown' && (
+          <Text
+            style={[styles.chipMeta, { color: player.playoff.label === 'easy' ? colors.success : player.playoff.label === 'tough' ? colors.danger : colors.textMuted }]}
+            numberOfLines={1}
+          >
+            Playoffs: {player.playoff.label} schedule
+          </Text>
+        )}
       </View>
     </View>
   );
@@ -269,6 +279,9 @@ export default function TradeIdeasScreen() {
     myTeam, tradeIdeas, tradeScanAt, isTradeScanning, tradeScanError, refreshTradeIdeas, markTradeIdeasSeen, unreadTradeIdeas,
   } = useFantasy();
   const [showGuide, setShowGuide] = useState(false);
+  const [showGrader, setShowGrader] = useState(false);
+  const navigation = useNavigation<any>();
+  const { sendChatMessage } = useFantasy();
 
   useEffect(() => {
     AsyncStorage.getItem(GUIDE_DISMISSED_KEY).then(v => setShowGuide(v !== '1')).catch(() => setShowGuide(true));
@@ -343,6 +356,24 @@ export default function TradeIdeasScreen() {
         </View>
       )}
 
+      <TouchableOpacity style={styles.graderBtn} onPress={() => setShowGrader(true)}>
+        <Ionicons name="ribbon-outline" size={18} color={colors.primary} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.panelTitle}>Grade a trade offer</Text>
+          <Text style={styles.panelSub}>Got an offer in Sleeper? See its grade and how both lineups change.</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+      </TouchableOpacity>
+      <TradeGrader
+        visible={showGrader}
+        team={myTeam}
+        onClose={() => setShowGrader(false)}
+        onAskAI={q => {
+          sendChatMessage(q);
+          navigation.navigate('MainTabs', { screen: 'ChatBot' });
+        }}
+      />
+
       <Untouchables />
 
       {tradeScanError && (
@@ -364,6 +395,7 @@ export default function TradeIdeasScreen() {
 
 const makeStyles = (c: Palette) => ({
   container: { flex: 1, backgroundColor: c.background },
+  graderBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 10, backgroundColor: c.surface, borderRadius: radius.lg, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: c.border },
   hero: { flexDirection: 'row' as const, gap: 12, backgroundColor: c.surface, borderRadius: radius.lg, padding: 16, marginBottom: 12, ...shadowFor(c) },
   title: { fontSize: 22, fontWeight: '800' as const, color: c.text },
   subtitle: { fontSize: 13, color: c.textMuted, marginTop: 4, lineHeight: 18 },

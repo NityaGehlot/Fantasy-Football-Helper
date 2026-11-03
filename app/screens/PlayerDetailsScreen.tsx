@@ -19,6 +19,8 @@ import { useFantasy } from '../context/FantasyContext';
 import { selectDiverseNews } from '../services/newsDiversity';
 import { getAvailableStatSeasons, getNewsFiles, getNewsUpdatedAt, TEAM_NEWS_FILES } from '../services/newsService';
 import { fetchArticleImages, timeAgo } from '../services/leagueNews';
+import { playedPoints, pointRange } from '../backend/utils/pointRange';
+import { toggleFavoritePlayer, toggleFavoriteTeam, useFavorites } from '../services/favorites';
 import InjuryReportCard from '../components/InjuryReportCard';
 
 import { useTheme, useLooseThemedStyles } from '../context/ThemeContext';
@@ -33,6 +35,9 @@ type NewsArticle = {
   published?: string;
   player?: string;
   impact?: string;
+  // Real article address and cover image (from nfl-data's news job)
+  url?: string;
+  image?: string;
 };
 
 // NFL seasons are labeled by the year they start; Jan-Feb games belong to the previous season
@@ -77,6 +82,7 @@ export default function PlayerDetailsScreen({ route }: any) {
   const [playerNews, setPlayerNews] = useState<NewsArticle[]>([]);
   const [teamNews, setTeamNews] = useState<NewsArticle[]>([]);
   const [newsImages, setNewsImages] = useState<Record<string, string | null>>({});
+  const favorites = useFavorites();
 
 
   const normalizeName = (value?: string) => String(value || "").trim().toLowerCase();
@@ -187,8 +193,14 @@ export default function PlayerDetailsScreen({ route }: any) {
     return total / values.length;
   }, [allWeeksStats]);
 
+  // Floor and ceiling from the weeks he played this season.
+  const range = useMemo(
+    () => pointRange(playedPoints(Object.entries(allWeeksStats).map(([w, s]: [string, any]) => ({ ...s, week: Number(w) })).filter(r => Number(r.week) <= 18))),
+    [allWeeksStats]
+  );
+
   const getWeekCardBackground = (weekStats: any) => {
-    const defaultColor = '#f9f9f9';
+    const defaultColor = th.surfaceMuted;
     const posForWeek = String(weekStats?.position || player?.position_for_FFHelper || player?.position || '').toUpperCase().trim();
     if (isIndividualDefensivePosition(posForWeek)) return defaultColor;
     if (!weekStats || seasonAvgFantasyPoints === null) return defaultColor;
@@ -198,9 +210,9 @@ export default function PlayerDetailsScreen({ route }: any) {
 
     // "Around average" uses a tolerance band to avoid tiny differences flipping colors.
     const tolerance = Math.max(1, seasonAvgFantasyPoints * 0.1);
-    if (Math.abs(weekFantasyPoints - seasonAvgFantasyPoints) <= tolerance) return '#fff9db'; // light yellow
-    if (weekFantasyPoints > seasonAvgFantasyPoints + tolerance) return '#e8f7ee'; // light green
-    return '#fdecec'; // light red
+    if (Math.abs(weekFantasyPoints - seasonAvgFantasyPoints) <= tolerance) return th.warningSoft; // around average
+    if (weekFantasyPoints > seasonAvgFantasyPoints + tolerance) return th.successSoft; // above average
+    return th.dangerSoft; // below average
   };
 
   const getWeekLabel = (weekNumber: number) => {
@@ -490,7 +502,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         setPlayerNews(pickedPlayer);
         setTeamNews(pickedTeam);
         // Each article's picture (or the player's headshot) loads in after the text.
-        fetchArticleImages([...pickedPlayer, ...pickedTeam].map(a => ({ link: a.link, player: a.player })))
+        fetchArticleImages([...pickedPlayer, ...pickedTeam].map(a => ({ link: a.link, player: a.player, image: a.image })))
           .then(setNewsImages)
           .catch(() => undefined);
       } catch (err) {
@@ -611,7 +623,7 @@ export default function PlayerDetailsScreen({ route }: any) {
           <TouchableOpacity
             key={`${article.link || article.title}-${index}`}
             style={styles.newsCard}
-            onPress={() => openArticle(article.link)}
+            onPress={() => openArticle(article.url || article.link)}
             activeOpacity={0.85}
           >
             <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -621,8 +633,8 @@ export default function PlayerDetailsScreen({ route }: any) {
                   <Text numberOfLines={2} style={styles.newsSummary}>{article.summary}</Text>
                 )}
               </View>
-              {!!(article.link && newsImages[article.link]) && (
-                <Image source={{ uri: newsImages[article.link!]! }} style={styles.newsThumb} resizeMode="cover" />
+              {!!(article.image || (article.link && newsImages[article.link])) && (
+                <Image source={{ uri: article.image || newsImages[article.link!]! }} style={styles.newsThumb} resizeMode="cover" />
               )}
             </View>
             <View style={styles.newsMetaRow}>
@@ -1330,6 +1342,31 @@ export default function PlayerDetailsScreen({ route }: any) {
           {basePosition || player.position} • {displayTeam}
         </Text>
 
+        {/* Follow the player (news on Home) and his team */}
+        <View style={styles.followRow}>
+          {!!player?.player_id && (
+            <TouchableOpacity
+              style={[styles.followBtn, favorites.players.includes(String(player.player_id)) && styles.followBtnOn]}
+              onPress={() => toggleFavoritePlayer(String(player.player_id))}
+              accessibilityLabel={favorites.players.includes(String(player.player_id)) ? `Unfollow ${player.full_name}` : `Follow ${player.full_name}`}
+            >
+              <Text style={[styles.followText, favorites.players.includes(String(player.player_id)) && styles.followTextOn]}>
+                {favorites.players.includes(String(player.player_id)) ? '★ Following' : '☆ Follow'}
+              </Text>
+            </TouchableOpacity>
+          )}
+          {!!displayTeam && displayTeam !== 'FA' && (
+            <TouchableOpacity
+              style={[styles.followBtn, favorites.teams.includes(String(displayTeam).toUpperCase()) && styles.followBtnOn]}
+              onPress={() => toggleFavoriteTeam(String(displayTeam))}
+            >
+              <Text style={[styles.followText, favorites.teams.includes(String(displayTeam).toUpperCase()) && styles.followTextOn]}>
+                {favorites.teams.includes(String(displayTeam).toUpperCase()) ? `★ ${displayTeam}` : `☆ Follow ${displayTeam}`}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
         {['QB', 'RB', 'WR', 'TE', 'K', 'DEF'].includes(basePosition) &&
           !myTeam?.players.some(p => String(p.playerId) === String(player?.player_id)) && (
           <TouchableOpacity
@@ -1382,6 +1419,27 @@ export default function PlayerDetailsScreen({ route }: any) {
         )}
 
       </View>
+
+      {/* WEEKLY RANGE: floor / typical / ceiling */}
+      {['QB', 'RB', 'WR', 'TE', 'K'].includes(basePosition) && range.games >= 3 && (
+        <View style={styles.section}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={styles.sectionTitle}>Weekly range</Text>
+            <Text style={[styles.rangeLabel, { color: range.label === 'safe' ? th.success : range.label === 'boom/bust' ? th.warning : th.primary }]}>
+              {range.label.toUpperCase()}
+            </Text>
+          </View>
+          <View style={styles.rangeRow}>
+            {[['Bad week', range.floor], ['Typical', range.median], ['Good week', range.ceiling]].map(([label, value]) => (
+              <View key={String(label)} style={styles.rangeBox}>
+                <Text style={styles.rangeValue}>{Number(value).toFixed(1)}</Text>
+                <Text style={styles.rangeCaption}>{label}</Text>
+              </View>
+            ))}
+          </View>
+          <Text style={styles.statLine}>{range.summary}</Text>
+        </View>
+      )}
 
       {/* INJURY REPORT (current designation + this week's practice report) */}
       {['QB', 'RB', 'WR', 'TE', 'K'].includes(basePosition) && <InjuryReportCard player={player} />}
@@ -2034,6 +2092,17 @@ const makeStyles = (th: Palette) => ({
     backgroundColor: th.surfaceMuted,
     marginBottom: 10,
   },
+
+  rangeLabel: { fontSize: 12, fontWeight: '800', letterSpacing: 0.6 },
+  followRow: { flexDirection: 'row', gap: 8, marginTop: 8, flexWrap: 'wrap', justifyContent: 'center' },
+  followBtn: { borderWidth: 1, borderColor: th.border, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: th.surface },
+  followBtnOn: { backgroundColor: th.warningSoft, borderColor: th.warning },
+  followText: { fontSize: 13, fontWeight: '700', color: th.text },
+  followTextOn: { color: th.warning },
+  rangeRow: { flexDirection: 'row', gap: 8, marginVertical: 8 },
+  rangeBox: { flex: 1, backgroundColor: th.surfaceMuted, borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
+  rangeValue: { fontSize: 20, fontWeight: '800', color: th.text },
+  rangeCaption: { fontSize: 11, color: th.textMuted, marginTop: 2 },
 
   newsThumb: {
     width: 76,

@@ -39,6 +39,12 @@ export const getTrendingAdds = (): Promise<{ player_id: string; count: number }[
 export const getNflState = (): Promise<{ season?: string; week?: number; season_type?: string }> =>
   cache.get("nflState", 15 * MINUTE, () => fetchJson(`${SLEEPER_BASE}/state/nfl`));
 
+// Transactions for one week (trades, waivers, free-agent moves). Short TTL.
+export const getTransactions = (leagueId: string, week: number): Promise<any[]> =>
+  cache.get(`transactions:${leagueId}:${week}`, 2 * MINUTE, () =>
+    fetchJson(`${SLEEPER_BASE}/league/${leagueId}/transactions/${week}`)
+  );
+
 // Live matchup scores. Short TTL so in-game points stay fresh.
 export const getMatchups = (leagueId: string, week: number): Promise<any[]> =>
   cache.get(`matchups:${leagueId}:${week}`, 30 * 1000, () =>

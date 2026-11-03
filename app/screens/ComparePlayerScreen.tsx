@@ -375,6 +375,15 @@ export default function ComparePlayerScreen({ route }: any) {
     })();
   }, [comparedOnce, statScope, selectedWeek, viewMode, playerOne, selectedPlayer, lastComparedPair]);
 
+  // Compare automatically as soon as two comparable players are picked (no button needed).
+  const incompatible = !!playerOne && !!selectedPlayer && !canCompare(playerOne.position, selectedPlayer.position);
+  useEffect(() => {
+    if (!playerOne || !selectedPlayer || incompatible) return;
+    if (String(lastComparedPair.one) === String(playerOne.player_id) && String(lastComparedPair.two) === String(selectedPlayer.player_id)) return;
+    setLastComparedPair({ one: playerOne.player_id, two: selectedPlayer.player_id });
+    setComparedOnce(true);
+  }, [playerOne, selectedPlayer, incompatible]);
+
   // Reset comparedOnce when either player changes to a different player
   useEffect(() => {
     if (!lastComparedPair.one || !lastComparedPair.two) return;
@@ -405,18 +414,20 @@ export default function ComparePlayerScreen({ route }: any) {
     two: number,
     lowerIsBetter = false
   ) {
+    // Theme colors so the numbers stay readable in dark mode too.
+    const better = th.successSoft, worse = th.dangerSoft, even = th.surfaceMuted;
     if (one === two)
-      return ["#ececec", "#ececec"];
+      return [even, even];
 
     if (lowerIsBetter) {
       return one < two
-        ? ["#d7f7d7", "#ffe2e2"]
-        : ["#ffe2e2", "#d7f7d7"];
+        ? [better, worse]
+        : [worse, better];
     }
 
     return one > two
-      ? ["#d7f7d7", "#ffe2e2"]
-      : ["#ffe2e2", "#d7f7d7"];
+      ? [better, worse]
+      : [worse, better];
   }
 
   function formatNumber(value: any) {
@@ -613,43 +624,17 @@ export default function ComparePlayerScreen({ route }: any) {
 
       </View>
 
-      {/* Compare button below player boxes */}
+      {/* Comparing starts automatically once both players are picked */}
       <View style={{ paddingHorizontal: 20, marginTop: 12, alignItems: 'center' }}>
-        <TouchableOpacity
-          style={[styles.toggleButton, { paddingHorizontal: 28, backgroundColor: th.primary }]}
-          onPress={async () => {
-            if (!playerOne || !selectedPlayer) {
-              Alert.alert('Select players', 'Please select two players to compare.');
-              return;
-            }
-            // Ensure positions are comparable
-            if (!canCompare(playerOne.position, selectedPlayer.position)) {
-              Alert.alert('Cannot compare', 'Players must be of the same position group (e.g. QB, RB, WR/TE, DL, LB, DB).');
-              return;
-            }
-
-            setComparing(true);
-            setPlayerOneStats(null);
-            setPlayerTwoStats(null);
-
-              try {
-              const weekOverride = viewMode === 'week' ? selectedWeek : undefined;
-              if (typeof weekOverride === 'number') {
-                await Promise.all([loadStats(playerOne, true, statScope, weekOverride), loadStats(selectedPlayer, false, statScope, weekOverride)]);
-              } else {
-                await Promise.all([loadStats(playerOne, true, statScope), loadStats(selectedPlayer, false, statScope)]);
-              }
-              setComparedOnce(true);
-              setLastComparedPair({ one: playerOne.player_id, two: selectedPlayer.player_id });
-            } catch (err) {
-              console.warn('Compare failed', err);
-            } finally {
-              setComparing(false);
-            }
-          }}
-        >
-          <Text style={{ color: '#fff', fontWeight: '700' }}>Compare</Text>
-        </TouchableOpacity>
+        {incompatible ? (
+          <Text style={{ color: th.danger, fontWeight: '700', textAlign: 'center' }}>
+            These players can't be compared: pick two from the same position group (QB, RB, WR/TE, K, DEF, DL, LB, DB).
+          </Text>
+        ) : comparing ? (
+          <Text style={{ color: th.textMuted, fontWeight: '700' }}>Comparing…</Text>
+        ) : !playerOne || !selectedPlayer ? (
+          <Text style={{ color: th.textMuted, fontWeight: '600' }}>Pick two players and the comparison appears below.</Text>
+        ) : null}
       </View>
 
       {/* Stat scope selector + Week toggle */}
@@ -782,7 +767,7 @@ export default function ComparePlayerScreen({ route }: any) {
                 const oneVal = Number(playerOneStats[key] || 0);
                 const twoVal = Number(playerTwoStats[key] || 0);
                 // Disable comparison coloring only for injury status rows
-                const neutralColors: [string, string] = ["#ececec", "#ececec"];
+                const neutralColors: [string, string] = [th.surfaceMuted, th.surfaceMuted];
                 let [leftColor, rightColor] = (key === 'injury_status')
                   ? neutralColors
                   : compareColor(oneVal, twoVal, !!lowerIsBetter);

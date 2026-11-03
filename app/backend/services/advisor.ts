@@ -12,6 +12,17 @@ import { getDraftPicks, getNflState } from "./sleeperServer";
 import { getTeamsPlaying } from "./schedule";
 import { isOutStatus } from "./playerValues";
 import { buildMatchupContext, matchupAdjustment } from "./matchupContext";
+import { annotatePlayoffs } from "./playoffSchedule";
+
+/** Add fantasy-playoff schedule strength to every rostered player and the best free agents. */
+export async function addPlayoffSchedules(ctx: LeagueContext): Promise<void> {
+  const state = await getNflState().catch(() => null);
+  const week = Number(state?.week) || 1;
+  const topFreeAgents = [...ctx.freeAgents].sort((a, b) => b.value - a.value).slice(0, 200);
+  await annotatePlayoffs(ctx.league, ctx.values.season, week, ctx.values.rows, [...ctx.teams.map(t => t.players), topFreeAgents]).catch(
+    err => console.warn("Playoff schedule unavailable:", err?.message ?? err)
+  );
+}
 import { normalizePlayerName, playerKey } from "../utils/names";
 import { ChatIntent } from "./intent";
 import {
@@ -79,7 +90,11 @@ async function currentWeekTeamsPlaying(season: number): Promise<{ week: number; 
 }
 
 // ---------- Lineup ----------
-async function handleLineup(message: string, ctx: LeagueContext, me: LeagueTeam): Promise<AdvisorResult> {
+/**
+ * This week's expected points for each of your players: usual points per game, zero when he's
+ * out or on bye, scaled by his matchup, weather and the injuries around him.
+ */
+export async function weeklyAdjustedPlayers(ctx: LeagueContext, me: LeagueTeam) {
   const { week, teams: teamsPlaying } = await currentWeekTeamsPlaying(ctx.values.season);
   // Scale each player's usual points for this week's matchup, weather and injuries around him.
   const matchups = new Map<string, { multiplier: number; parts: string[] }>();
@@ -102,6 +117,11 @@ async function handleLineup(message: string, ctx: LeagueContext, me: LeagueTeam)
     const adj = matchups.get(p.id);
     return { ...p, value: Math.round(weeklyValue(p, teamsPlaying) * (adj?.multiplier ?? 1) * 100) / 100 };
   });
+  return { week, teamsPlaying, matchups, weekly };
+}
+
+async function handleLineup(message: string, ctx: LeagueContext, me: LeagueTeam): Promise<AdvisorResult> {
+  const { week, teamsPlaying, matchups, weekly } = await weeklyAdjustedPlayers(ctx, me);
   const lineup = optimizeLineup(weekly, ctx.slots);
   const starters = new Set(lineup.flatMap(a => (a.player ? [a.player.id] : [])));
   const bench = weekly.filter(p => !starters.has(p.id) && p.position in SLOT_ELIGIBILITY);
@@ -271,6 +291,8 @@ export async function handleAdvisorQuestion(
   const ctx = await getLeagueContext(String(team!.leagueId), team!.rosterId, team!.ownerId);
   const me = ctx.me;
   if (!me) return { reply: NEED_TEAM, fallback: "" };
+
+  if (intent === "waiver" || intent === "trade") await addPlayoffSchedules(ctx);
 
   switch (intent) {
     case "waiver":

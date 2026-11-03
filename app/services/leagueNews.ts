@@ -41,8 +41,8 @@ export function leagueNewsFromPlayerNews(items: NewsItem[], limit = 20): LeagueN
       headline: a.title,
       description: a.summary ?? '',
       published: a.published ?? '',
-      image: null,
-      link: a.link ?? null,
+      image: a.image ?? null,
+      link: a.url ?? a.link ?? null,
       category,
       label: LABELS[category],
       players: a.player ? [a.player] : [],
@@ -114,7 +114,11 @@ export function applyImages(feed: LeagueNewsFeed, images: Record<string, string 
 }
 
 // Images for any list of articles (link -> image URL), using the backend and a session memo.
-export async function fetchArticleImages(items: { link?: string | null; player?: string | null }[]): Promise<Record<string, string | null>> {
+// Articles that already carry their cover image (from nfl-data) don't need a lookup.
+export async function fetchArticleImages(
+  items: { link?: string | null; player?: string | null; image?: string | null }[]
+): Promise<Record<string, string | null>> {
+  items.forEach(a => a.link && a.image && imageMemo.set(a.link, a.image));
   const unique = [
     ...new Map(
       items.filter(a => a.link && !imageMemo.has(a.link)).map(a => [a.link!, { link: a.link!, player: a.player ?? null }])

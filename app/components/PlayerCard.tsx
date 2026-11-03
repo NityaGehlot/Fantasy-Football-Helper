@@ -76,7 +76,7 @@ export default function PlayerCard({ player, stats, statLine = [], points = 0, i
 
   const Badge = (
     <View style={[compact ? styles.badgeCompact : styles.badge, { backgroundColor: badgeColor }]}>
-      <Text style={[compact ? styles.badgeTextCompact : styles.badgeText, { color: readableOn(badgeColor) }]}>{badgeLabel}</Text>
+      <Text style={compact ? styles.badgeTextCompact : styles.badgeText}>{badgeLabel}</Text>
     </View>
   );
 
@@ -104,7 +104,7 @@ export default function PlayerCard({ player, stats, statLine = [], points = 0, i
       <View style={styles.denseRow}>
         <View style={{ alignItems: 'center', gap: 4 }}>
           <View style={[styles.badgeDense, { backgroundColor: badgeColor }]}>
-            <Text style={[styles.badgeTextDense, { color: readableOn(badgeColor) }]}>{badgeLabel}</Text>
+            <Text style={styles.badgeTextDense}>{badgeLabel}</Text>
           </View>
           <Image source={{ uri: imageUri || '' }} style={styles.imageDense} />
         </View>

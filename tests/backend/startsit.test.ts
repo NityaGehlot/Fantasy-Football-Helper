@@ -242,7 +242,9 @@ test("scoreboard events carry venue details for weather", () => {
 // ---------- IR advice ----------
 
 test("IR eligibility follows league settings", () => {
-  assert.deepEqual(irEligibleStatuses({}), ["IR", "INJURED RESERVE"]);
+  assert.deepEqual(irEligibleStatuses({}), ["IR", "INJURED RESERVE", "PUP"]);
+  assert.ok(irEligibleStatuses({ reserve_allow_dnr: 1 }).includes("DNR"));
+  assert.ok(irEligibleStatuses({ reserve_allow_na: 1 }).includes("NA"));
   assert.ok(irEligibleStatuses({ reserve_allow_out: 1 }).includes("OUT"));
   assert.ok(irEligibleStatuses({ reserve_allow_doubtful: 1 }).includes("DOUBTFUL"));
 });
@@ -304,4 +306,35 @@ test("Google News links are decoded through Google's lookup", () => {
   assert.equal(parseBatchResponse("garbage"), null);
   assert.equal(headshotFor({ espn_id: 42 }), "https://a.espncdn.com/i/headshots/nfl/players/full/42.png");
   assert.equal(headshotFor(null), null);
+});
+
+test("IR: a healthy player left in an IR spot locks the roster, with a drop to fix it", () => {
+  const p = (id: string, position: string, value: number, injuryStatus = "ACTIVE") => ({ id, name: `P${id}`, position, team: "KC", injuryStatus, value });
+  const myPlayers = [p("1", "QB", 20), p("2", "RB", 15), p("3", "WR", 14), p("4", "WR", 2), p("5", "RB", 12, "QUESTIONABLE")];
+  const advice = buildIrAdvice({
+    settings: { reserve_slots: 1, reserve_allow_out: 1 },
+    roster: { reserve: ["5"] },
+    myPlayers,
+    freeAgents: [p("10", "RB", 11)],
+    slots: ["QB", "RB", "RB", "WR", "WR"],
+  });
+  assert.equal(advice.locked.length, 1);
+  assert.equal(advice.locked[0].player.id, "5");
+  assert.equal(advice.locked[0].drop?.id, "4"); // the 2 pts/g WR is the smallest loss
+  assert.equal(advice.pickups.length, 0); // no adds while locked
+});
+
+test("IR: long-term injuries go first and each move gets the right note", () => {
+  const p = (id: string, injuryStatus: string) => ({ id, name: `P${id}`, position: "RB", team: "KC", injuryStatus, value: 10 });
+  const advice = buildIrAdvice({
+    settings: { reserve_slots: 3, reserve_allow_out: 1, reserve_allow_doubtful: 1 },
+    roster: { reserve: [] },
+    myPlayers: [p("1", "OUT"), p("2", "DOUBTFUL"), p("3", "IR")],
+    freeAgents: [],
+    slots: ["RB"],
+  });
+  assert.deepEqual(advice.shouldMove.map(x => x.id), ["3", "1", "2"]);
+  assert.match(advice.shouldMove[0].note!, /long-term/);
+  assert.match(advice.shouldMove[1].note!, /week-to-week/);
+  assert.match(advice.shouldMove[2].note!, /sometimes play/);
 });

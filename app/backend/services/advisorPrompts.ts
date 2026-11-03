@@ -6,6 +6,7 @@ import type { LineupAssignment } from "./lineup";
 import type { TradeIdea, TradePlayer } from "./tradeEngine";
 import type { DropOption, PickupSuggestion } from "./waiver";
 import type { DraftBoardEntry } from "./draft";
+import { playoffNote } from "./playoffSchedule";
 
 const DIVIDER = "──────────────────────";
 
@@ -24,6 +25,7 @@ CRITICAL RULES:
 FORMATTING RULES:
 - Use "${DIVIDER}" as a divider between every major section.
 - Use "▶" before every section title.
+- {playoffs easy/average/tough ...} after a player = his fantasy-playoff matchups (weeks 15-17). When two options are close, prefer easier playoff schedules for a team that will make the playoffs, and say so.
 - Use "•" for every bullet point.
 `;
 }
@@ -31,7 +33,7 @@ FORMATTING RULES:
 const fmt = (p: TradePlayer) =>
   `${p.name} (${p.position}${p.team ? `, ${p.team}` : ""}) — ${p.value.toFixed(2)} pts/g${
     p.injuryStatus && p.injuryStatus !== "ACTIVE" ? ` [${p.injuryStatus}]` : ""
-  }`;
+  }${p.playoff && p.playoff.label !== "unknown" ? ` {${playoffNote(p.playoff)}}` : ""}`;
 
 function assemble(title: string, data: string, question: string, format: string): string {
   return `

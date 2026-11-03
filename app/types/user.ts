@@ -36,4 +36,8 @@ export type UserProfile = {
   myTeam?: MyTeam | null;
   // League open when the user last used the app
   lastLeagueId?: string | null;
+  // Followed players (Sleeper ids) and NFL teams
+  favorites?: { players?: string[]; teams?: string[] } | null;
+  // Finished the first-run tutorial
+  onboardingDone?: boolean;
 };

@@ -8,6 +8,8 @@ export type TradeIdeaPlayer = {
   team?: string;
   injuryStatus?: string;
   value: number;
+  // Fantasy-playoff (weeks 15-17) schedule strength from the backend
+  playoff?: { label: 'easy' | 'average' | 'tough' | 'unknown'; avgRank: number | null; summary: string };
 };
 
 export type LineupChange = { in: TradeIdeaPlayer | null; out: TradeIdeaPlayer | null };

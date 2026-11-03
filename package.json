@@ -23,6 +23,7 @@
     "dotenv": "^17.2.3",
     "event-source-polyfill": "^1.0.31",
     "expo": "~54.0.33",
+    "expo-notifications": "~0.32.16",
     "expo-status-bar": "~3.0.9",
     "express": "^5.2.1",
     "firebase": "^12.8.0",

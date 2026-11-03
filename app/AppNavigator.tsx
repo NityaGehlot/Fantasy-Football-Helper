@@ -17,6 +17,10 @@ import ComparePlayerScreen from "./screens/ComparePlayerScreen";
 import TradeIdeasScreen from "./screens/TradeIdeasScreen";
 import LeaguesModal from './components/LeaguesModal';
 import NotificationBell from './components/NotificationBell';
+import HelpAssistant from './components/HelpAssistant';
+import Tutorial from './components/Tutorial';
+import { openTutorial } from './services/onboarding';
+import { navigationRef } from './navigationRef';
 import { NotificationProvider } from './context/NotificationContext';
 
 import { FantasyProvider, useFantasy } from './context/FantasyContext';
@@ -26,9 +30,11 @@ import { type Palette } from './theme';
 
 export type TabParamList = {
   Home: undefined;
-  Fantasy: undefined;
+  // lineupCheck: open the lineup check sheet (any changing value)
+  Fantasy: { lineupCheck?: number } | undefined;
   Trades: undefined;
-  ChatBot: undefined;
+  // ask: question to send to the AI once the league in leagueId is open
+  ChatBot: { ask?: string; leagueId?: string; nonce?: number } | undefined;
   Madden: undefined; // tab currently disabled below
 };
 
@@ -111,6 +117,14 @@ function AccountMenu() {
           />
         ))}
         <Divider />
+        <Menu.Item
+          leadingIcon="map-marker-path"
+          onPress={() => {
+            closeMenu();
+            openTutorial();
+          }}
+          title="App tour"
+        />
         <Menu.Item leadingIcon="logout" onPress={() => signOut(auth)} title="Log Out" />
       </Menu>
 
@@ -133,6 +147,7 @@ function TabNavigator() {
         headerShown: true,
         headerRight: () => (
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <HelpAssistant />
             <NotificationBell />
             <AccountMenu />
           </View>
@@ -205,7 +220,7 @@ export default function AppNavigator() {
   };
 
   return (
-    <NavigationContainer theme={navTheme}>
+    <NavigationContainer theme={navTheme} ref={navigationRef}>
       <FantasyProvider>
         <NotificationProvider>
         <Stack.Navigator
@@ -222,6 +237,7 @@ export default function AppNavigator() {
           <Stack.Screen name="DefenseRoster" component={DefenseRosterScreen} options={{ title: "Defense Roster" }} />
           <Stack.Screen name="ComparePlayer" component={ComparePlayerScreen} options={{ title: "Compare Players" }} />
         </Stack.Navigator>
+        <Tutorial />
         </NotificationProvider>
       </FantasyProvider>
     </NavigationContainer>

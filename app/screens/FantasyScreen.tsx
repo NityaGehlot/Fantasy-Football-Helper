@@ -36,12 +36,13 @@ import { useFantasy, type MyFantasyTeam } from "../context/FantasyContext";
 
 import { Picker } from '@react-native-picker/picker';
 import { User, Roster } from '../types';
-import { useNavigation, useIsFocused } from "@react-navigation/native";
+import { useNavigation, useIsFocused, useRoute } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../AppNavigator";
 import PlayerCard from '../components/PlayerCard';
 import LeaguesModal from '../components/LeaguesModal';
 import LeagueIdHelp from '../components/LeagueIdHelp';
+import LineupCheckSheet from '../components/LineupCheckSheet';
 import { parseLeagueId } from '../services/leagueInput';
 import { fetchIrAdvice, irStatusWord, type IrAdvice } from '../services/irAdvice';
 import { Menu } from 'react-native-paper';
@@ -115,6 +116,12 @@ export default function FantasyScreen() {
   const [showLeaguesModal, setShowLeaguesModal] = useState(false);
   const [addError, setAddError] = useState('');
   const [irAdvice, setIrAdvice] = useState<IrAdvice | null>(null);
+  const [showLineupCheck, setShowLineupCheck] = useState(false);
+  const route = useRoute<any>();
+  // Opened from a lineup-check notification
+  useEffect(() => {
+    if (route.params?.lineupCheck) setShowLineupCheck(true);
+  }, [route.params?.lineupCheck]);
   const isFocused = useIsFocused();
   const [injuryIndex, setInjuryIndex] = useState(() => indexInjuries(null));
 
@@ -1209,8 +1216,26 @@ if (!activeLeagueId) {
         </View>
       )}
 
+      {/* LINEUP CHECK (your team, current season) */}
+      {isViewingMyTeam && isCurrentSeason && weekStatus !== 'completed' && myTeam && (
+        <TouchableOpacity style={styles.checkBtn} onPress={() => setShowLineupCheck(true)}>
+          <Ionicons name="clipboard-outline" size={16} color={colors.primary} />
+          <Text style={styles.checkBtnText}>Lineup check: compare with the best lineup for this week</Text>
+          <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+        </TouchableOpacity>
+      )}
+      {myTeam && activeLeagueId && (
+        <LineupCheckSheet
+          visible={showLineupCheck}
+          team={{ ...myTeam, rosterId: rosters.find(r => r.owner_id === myTeam.ownerId)?.roster_id ?? myTeam.rosterId }}
+          leagueId={activeLeagueId}
+          onClose={() => setShowLineupCheck(false)}
+          onAskAI={q => navigation.navigate('MainTabs', { screen: 'ChatBot', params: { ask: q, leagueId: activeLeagueId, nonce: Date.now() } } as any)}
+        />
+      )}
+
       {/* IR ADVICE (your team only) */}
-      {isViewingMyTeam && irAdvice && (irAdvice.shouldMove.length > 0 || irAdvice.onIr.length > 0) && (() => {
+      {isViewingMyTeam && irAdvice && (irAdvice.shouldMove.length > 0 || irAdvice.onIr.length > 0 || (irAdvice.locked?.length ?? 0) > 0) && (() => {
         const open = Math.max(0, irAdvice.irSlots - irAdvice.irSlotsUsed);
         const injuryOf = (id: string) => currentInjury(injuryIndex, { ...(players[id] ?? {}), player_id: id }).injury;
         return (
@@ -1222,6 +1247,23 @@ if (!activeLeagueId) {
                 {irAdvice.irSlots > 0 ? `${irAdvice.irSlotsUsed} of ${irAdvice.irSlots} IR spots used` : 'No IR spots in this league'}
               </Text>
             </View>
+            {(irAdvice.locked ?? []).map(l => (
+              <View key={l.player.id} style={styles.lockBox}>
+                <Text style={styles.lockTitle}>
+                  <Ionicons name="lock-closed" size={13} color={colors.danger} /> Your Sleeper roster is locked
+                </Text>
+                <Text style={styles.alertLine}>
+                  <Text style={{ fontWeight: '800' }}>{l.player.name}</Text> is in an IR spot but is now{' '}
+                  {l.player.injuryStatus && l.player.injuryStatus !== 'ACTIVE' ? irStatusWord(l.player.injuryStatus) : 'healthy'}, so he isn't IR-eligible.
+                  Sleeper blocks adds, waiver claims and roster moves until he leaves the IR spot.
+                </Text>
+                <Text style={styles.alertLine}>
+                  Fix: {l.drop ? <>drop <Text style={{ fontWeight: '800' }}>{l.drop.name}</Text> ({l.drop.position}, {l.drop.value.toFixed(1)} pts/game, the smallest hit to your lineup), then </> : 'make room on your bench, then '}
+                  move {l.player.name} from IR to your bench.
+                  {l.netGain !== null && l.netGain > 0 ? ` Your lineup gets +${l.netGain.toFixed(1)} pts/week with him back.` : ''}
+                </Text>
+              </View>
+            ))}
             {irAdvice.shouldMove.map((p, i) => {
               const injury = injuryOf(p.id);
               const canMove = i < open;
@@ -1236,6 +1278,7 @@ if (!activeLeagueId) {
                       : open > 0
                         ? `Your open IR spot is better used on ${irAdvice.shouldMove[0].name}, so he stays on your bench for now.`
                         : 'Your IR spots are full; he stays on your bench for now.'}
+                  {canMove && p.note ? <Text style={styles.irNote}>{` ${p.note}`}</Text> : null}
                 </Text>
               );
             })}
@@ -1255,7 +1298,7 @@ if (!activeLeagueId) {
                 ))}
               </>
             )}
-            {irAdvice.shouldMove.length === 0 && (
+            {irAdvice.shouldMove.length === 0 && !(irAdvice.locked?.length) && (
               <Text style={styles.alertLine}>
                 {irAdvice.onIr.map(p => p.name).join(', ')} {irAdvice.onIr.length === 1 ? 'is' : 'are'} in your IR spots. Nobody else needs to move.
               </Text>
@@ -1339,6 +1382,11 @@ const makeStyles = (c: Palette) => ({
   alertBoxOk: { backgroundColor: c.successSoft },
   irCard: { backgroundColor: c.surface, borderRadius: radius.md, padding: 12, marginTop: 12, gap: 4, borderWidth: 1, borderColor: c.border, borderLeftWidth: 4, borderLeftColor: c.danger },
   irSlots: { fontSize: 11, fontWeight: '700' as const, color: c.textMuted },
+  irNote: { color: c.textMuted, fontSize: 12 },
+  checkBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 8, backgroundColor: c.primarySoft, borderRadius: radius.md, padding: 12, marginTop: 12 },
+  checkBtnText: { flex: 1, color: c.primary, fontWeight: '700' as const, fontSize: 13 },
+  lockBox: { backgroundColor: c.dangerSoft, borderRadius: radius.sm, padding: 10, gap: 4, marginVertical: 4 },
+  lockTitle: { fontWeight: '800' as const, color: c.danger, fontSize: 13 },
   alertHeader: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6, marginBottom: 2 },
   alertTitle: { fontWeight: '800' as const, color: c.text, fontSize: 14 },
   alertLine: { fontSize: 13, color: c.text },

@@ -1,5 +1,5 @@
-import React, { useRef, useState } from "react";
-import { useFocusEffect } from "@react-navigation/native";
+import React, { useEffect, useRef, useState } from "react";
+import { useFocusEffect, useNavigation, useRoute } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import { useFantasy } from "../context/FantasyContext";
 import { useTheme, useThemedStyles } from "../context/ThemeContext";
 import { radius, shadowFor, type Palette } from "../theme";
 import StartSitPicker from "../components/StartSitPicker";
+import AiRecord from "../components/AiRecord";
 
 const BLANK = "____";
 
@@ -44,6 +45,20 @@ export default function ChatBotScreen() {
     activeLeagueId
   } = useFantasy();
   const [pickerOpen, setPickerOpen] = useState(false);
+  const route = useRoute<any>();
+  const navigation = useNavigation<any>();
+  const askedRef = useRef<number | null>(null);
+
+  // A question sent here from a notification ("Ask AI what to do"): send it once the right
+  // league (and its team) is open, so the answer uses that team.
+  useEffect(() => {
+    const { ask, leagueId, nonce } = route.params ?? {};
+    if (!ask || askedRef.current === nonce || isChatTyping) return;
+    if (leagueId && leagueId !== activeLeagueId) return;
+    askedRef.current = nonce ?? Date.now();
+    sendChatMessage(String(ask));
+    navigation.setParams({ ask: undefined, leagueId: undefined, nonce: undefined });
+  }, [route.params, activeLeagueId, myTeam?.ownerId, isChatTyping]);
   const leagueName = leagues.find(l => l.leagueId === activeLeagueId)?.name;
 
   const [input, setInput] = useState("");
@@ -122,7 +137,7 @@ export default function ChatBotScreen() {
         <TouchableOpacity
           style={styles.optionBtn}
           onPress={() => setChatPersistenceEnabled(!chatPersistenceEnabled)}
-          accessibilityLabel={chatPersistenceEnabled ? "Turn chat history off" : "Turn chat history on"}
+          accessibilityLabel={chatPersistenceEnabled ? "Turn chat history off (saves the last 100 messages per league on this device)" : "Turn chat history on"}
         >
           <Ionicons name={chatPersistenceEnabled ? "bookmark" : "bookmark-outline"} size={14} color={colors.text} />
           <Text style={styles.optionBtnText}>{chatPersistenceEnabled ? "Saving" : "Not saving"}</Text>
@@ -131,6 +146,10 @@ export default function ChatBotScreen() {
         <TouchableOpacity style={styles.optionBtn} onPress={clearChatHistory} disabled={isChatTyping} accessibilityLabel="Clear chat">
           <Ionicons name="trash-outline" size={14} color={colors.text} />
         </TouchableOpacity>
+      </View>
+
+      <View style={{ flexDirection: "row", marginBottom: 6 }}>
+        <AiRecord />
       </View>
 
       <ScrollView

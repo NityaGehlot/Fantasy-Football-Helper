@@ -4,7 +4,12 @@
 
 import { LineupPlayer, SlotName, lineupValue, optimizeLineup } from "./lineup";
 
-export type TradePlayer = LineupPlayer & { team?: string; injuryStatus?: string };
+export type TradePlayer = LineupPlayer & {
+  team?: string;
+  injuryStatus?: string;
+  // Fantasy-playoff schedule strength, when known (see playoffSchedule.ts)
+  playoff?: { label: "easy" | "average" | "tough" | "unknown"; avgRank: number | null; summary: string };
+};
 
 export type LeagueTeam = {
   rosterId: number;

@@ -35,13 +35,18 @@ import {
   latestWeekWithData,
 } from "./services/statsStore";
 import { detectIntent } from "./services/intent";
-import { handleAdvisorQuestion, AdvisorResult } from "./services/advisor";
+import { handleAdvisorQuestion, AdvisorResult, addPlayoffSchedules } from "./services/advisor";
+import { playoffTradeNote } from "./services/playoffSchedule";
 import { generateWithLLM, streamWithLLM } from "./services/llm";
 import { getLeagueContext, toTradePlayer } from "./services/leagueContext";
 import { buildIrAdvice } from "./services/irAdvice";
 import { buildMatchupContext, formatMatchupBlock } from "./services/matchupContext";
+import { playedPoints, pointRange } from "./utils/pointRange";
 import { imagesForArticles } from "./services/articleImages";
-import { getRosters } from "./services/sleeperServer";
+import { getNflState, getRosters, getTransactions } from "./services/sleeperServer";
+import { gradeTrade, pendingTradesFor } from "./services/tradeGrade";
+import { getLineupCheck } from "./services/lineupCheck";
+import { normalizePlayerName } from "./utils/names";
 import { generateTradeIdeas } from "./services/tradeEngine";
 import { getLiveScoreboard } from "./services/liveScoreboard";
 import { ensureInjuriesLoaded } from "./services/injuryStore";
@@ -523,6 +528,128 @@ export function registerRoutes(router: Router): void {
   });
 
   // ===============================
+  // Trade grader: every team's roster (to pick players) plus any pending offers from Sleeper
+  // ===============================
+  router.post("/league-teams", async (req: Request, res: Response) => {
+    const { leagueId, rosterId, ownerId } = (req.body ?? {}) as { leagueId?: string; rosterId?: number; ownerId?: string };
+    if (!leagueId) return res.status(400).json({ error: "leagueId is required" });
+    try {
+      const ctx = await getLeagueContext(String(leagueId), rosterId, ownerId);
+      if (!ctx.me) return res.status(404).json({ error: "Your team was not found in this league." });
+      await addPlayoffSchedules(ctx);
+      const state = await getNflState().catch(() => null);
+      const week = Number(state?.week) || 1;
+      const transactions = (
+        await Promise.all([week, week - 1].filter(w => w >= 1).map(w => getTransactions(String(leagueId), w).catch(() => [])))
+      ).flat();
+      const teamOf = (rid: number) => ctx.teams.find(t => t.rosterId === rid);
+      const offers = pendingTradesFor(transactions, ctx.me.rosterId, ctx.me.ownerId).flatMap(t => {
+        const partner = teamOf(t.partnerRosterId);
+        if (!partner) return [];
+        const give = ctx.me!.players.filter(p => t.give.includes(p.id));
+        const get = partner.players.filter(p => t.get.includes(p.id));
+        return [{ ...t, partnerName: partner.teamName, result: gradeTrade(ctx.me!, partner, give, get, ctx.slots) }];
+      });
+      res.json({
+        myRosterId: ctx.me.rosterId,
+        teams: ctx.teams.map(t => ({ rosterId: t.rosterId, teamName: t.teamName, players: t.players })),
+        offers,
+      });
+    } catch (err: any) {
+      console.error("❌ League teams failed:", err);
+      res.status(500).json({ error: err?.message || "Failed to load league teams" });
+    }
+  });
+
+  router.post("/grade-trade", async (req: Request, res: Response) => {
+    const { leagueId, rosterId, ownerId, partnerRosterId, give, get } = (req.body ?? {}) as {
+      leagueId?: string; rosterId?: number; ownerId?: string; partnerRosterId?: number; give?: string[]; get?: string[];
+    };
+    if (!leagueId || partnerRosterId === undefined) return res.status(400).json({ error: "leagueId and partnerRosterId are required" });
+    try {
+      const ctx = await getLeagueContext(String(leagueId), rosterId, ownerId);
+      if (!ctx.me) return res.status(404).json({ error: "Your team was not found in this league." });
+      const partner = ctx.teams.find(t => t.rosterId === Number(partnerRosterId));
+      if (!partner) return res.status(404).json({ error: "That team wasn't found in this league." });
+      await addPlayoffSchedules(ctx);
+      const giveIds = (give ?? []).map(String);
+      const getIds = (get ?? []).map(String);
+      const givePlayers = ctx.me.players.filter(p => giveIds.includes(p.id));
+      const getPlayers = partner.players.filter(p => getIds.includes(p.id));
+      if (givePlayers.length === 0 && getPlayers.length === 0) return res.status(400).json({ error: "Pick at least one player." });
+      res.json(gradeTrade(ctx.me, partner, givePlayers, getPlayers, ctx.slots));
+    } catch (err: any) {
+      console.error("❌ Grade trade failed:", err);
+      res.status(500).json({ error: err?.message || "Failed to grade trade" });
+    }
+  });
+
+  // ===============================
+  // Lineup check: your set lineup vs the best lineup this week, and kickoff times
+  // ===============================
+  router.post("/lineup-check", async (req: Request, res: Response) => {
+    const { leagueId, rosterId, ownerId } = (req.body ?? {}) as { leagueId?: string; rosterId?: number; ownerId?: string };
+    if (!leagueId) return res.status(400).json({ error: "leagueId is required" });
+    try {
+      res.json(await getLineupCheck(String(leagueId), rosterId, ownerId));
+    } catch (err: any) {
+      console.error("❌ Lineup check failed:", err);
+      res.status(500).json({ error: err?.message || "Failed to check lineup" });
+    }
+  });
+
+  // ===============================
+  // Help assistant: answers "how do I…" questions about the app from the guide topics the app
+  // sends (the app picks the relevant ones), so answers stay accurate to how the app works.
+  // ===============================
+  router.post("/app-help", async (req: Request, res: Response) => {
+    const { question, topics } = (req.body ?? {}) as { question?: string; topics?: { title?: string; answer?: string }[] };
+    if (!question?.trim()) return res.status(400).json({ error: "question is required" });
+    const guide = (Array.isArray(topics) ? topics : [])
+      .slice(0, 4)
+      .map(t => `## ${String(t.title ?? "").slice(0, 120)}\n${String(t.answer ?? "").slice(0, 1200)}`)
+      .join("\n\n");
+    const prompt = `You are the help assistant inside the Fantasy Football Helper app (a companion app for Sleeper fantasy football leagues).
+Answer the user's question about how to use the app in 2-5 short sentences, using ONLY the guide below. Give exact taps/screens.
+If the guide doesn't cover it, say you're not sure and suggest the closest feature. Don't give fantasy advice here.
+
+GUIDE
+${guide || "(no matching topics)"}
+
+QUESTION
+${question.trim().slice(0, 500)}
+
+ANSWER:`;
+    try {
+      const reply = await generateWithLLM(prompt);
+      res.json({ reply: reply?.trim() || null });
+    } catch {
+      res.json({ reply: null }); // the app shows the guide text instead
+    }
+  });
+
+  // ===============================
+  // Actual fantasy points for named players in a finished week (grades the AI's start/sit calls)
+  // ===============================
+  router.post("/player-week-points", async (req: Request, res: Response) => {
+    const { season, week, names } = (req.body ?? {}) as { season?: number; week?: number; names?: string[] };
+    if (!season || !week || !Array.isArray(names)) return res.status(400).json({ error: "season, week and names are required" });
+    try {
+      const rows = await getWeekRows(Number(week), Number(season));
+      const points: Record<string, number | null> = {};
+      for (const name of names.slice(0, 40)) {
+        const key = normalizePlayerName(name);
+        const row = rows.find(r => normalizePlayerName(r.player_name) === key);
+        // A player who didn't play scored 0; a missing row means the week isn't published yet.
+        points[name] = row ? Number(row.fantasy_points_ppr) || 0 : rows.length ? 0 : null;
+      }
+      res.json({ points });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to load points" });
+    }
+  });
+
+  // ===============================
   // IR advice: who to move to an IR slot on Sleeper and who to pick up
   // ===============================
   router.post("/ir-advice", async (req: Request, res: Response) => {
@@ -572,11 +699,15 @@ export function registerRoutes(router: Router): void {
       if (!ctx.me) {
         return res.status(404).json({ error: "Your team was not found in this league." });
       }
+      await addPlayoffSchedules(ctx);
       const others = ctx.teams.filter(t => t.rosterId !== ctx.me!.rosterId);
       const ideas = generateTradeIdeas(ctx.me, others, ctx.slots, {
         maxIdeas: 6,
         perPartner: 2,
         untouchable: Array.isArray(untouchable) ? untouchable.map(String) : [],
+      }).map(idea => {
+        const note = playoffTradeNote(idea.give, idea.get);
+        return note ? { ...idea, reasons: [...idea.reasons, note] } : idea;
       });
       res.json({
         generatedAt: new Date().toISOString(),
@@ -754,7 +885,12 @@ export function registerRoutes(router: Router): void {
           console.warn("⚠️ Matchup context failed:", err?.message ?? err);
           return null;
         });
-        analysisBlock += block + formatMatchupBlock(player.position, matchup, currentWeek);
+        // Floor and ceiling from his game log (safe vs boom/bust).
+        const range = pointRange(playedPoints(weeks));
+        analysisBlock +=
+          block +
+          `Weekly range:         ${range.summary}\n` +
+          formatMatchupBlock(player.position, matchup, currentWeek);
       }
 
       let comparisonBlock = "";

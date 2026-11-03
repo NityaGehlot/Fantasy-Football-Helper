@@ -3,7 +3,7 @@
 
 import { getApiBaseUrl } from './apiBaseUrl';
 
-export type IrPlayer = { id: string; name: string; position: string; team?: string; injuryStatus?: string; value: number; inIrSlot?: boolean };
+export type IrPlayer = { id: string; name: string; position: string; team?: string; injuryStatus?: string; value: number; inIrSlot?: boolean; note?: string };
 
 export type IrAdvice = {
   irSlots: number;
@@ -11,6 +11,8 @@ export type IrAdvice = {
   onIr: IrPlayer[];
   shouldMove: IrPlayer[];
   pickups: { add: IrPlayer; netGain: number }[];
+  // Players in IR spots who aren't eligible anymore: Sleeper locks the roster until fixed
+  locked?: { player: IrPlayer; drop: IrPlayer | null; netGain: number | null }[];
   eligibleStatuses: string[];
 };
 

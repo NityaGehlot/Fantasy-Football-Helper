@@ -8,6 +8,8 @@ import { RootStackParamList } from '../AppNavigator';
 import PlayerCard from '../components/PlayerCard';
 import SearchBarAndFilter from '../components/SearchBarAndFilter';
 import LeagueNewsCarousel from '../components/LeagueNewsCarousel';
+import FavoritesNews from '../components/FavoritesNews';
+import DropAlerts from '../components/DropAlerts';
 import { useFantasy } from '../context/FantasyContext';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
 import { getPositionColor, radius, shadowFor, type Palette } from '../theme';
@@ -71,7 +73,19 @@ export default function HomeScreen() {
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 28 }} keyboardShouldPersistTaps="handled">
       <SearchBarAndFilter players={players} onSelect={openPlayer} />
 
+      {/* One of your players is among today's most dropped */}
+      <DropAlerts
+        players={players}
+        onAsk={q => {
+          if (isChatTyping) return;
+          sendChatMessage(q);
+          navigation.navigate('MainTabs', { screen: 'ChatBot' });
+        }}
+      />
+
       <LeagueNewsCarousel />
+
+      <FavoritesNews players={players} />
 
       <TouchableOpacity style={styles.compareCard} onPress={() => navigation.navigate('ComparePlayer', {})}>
         <View style={styles.compareIcon}>
@@ -168,7 +182,8 @@ const makeStyles = (c: Palette) => ({
   empty: { color: c.textMuted, padding: 20, textAlign: 'center' as const },
   trendRow: { flexDirection: 'row' as const, alignItems: 'center' as const, paddingVertical: 10, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: c.border, gap: 8 },
   rank: { width: 20, textAlign: 'center' as const, fontSize: 13, fontWeight: '800' as const, color: c.textSubtle },
-  trendInfo: { alignItems: 'flex-end' as const, gap: 6, flexShrink: 0 },
+  // Fixed-width column, left-aligned, so the adds count and the "Who to drop?" button line up.
+  trendInfo: { width: 96, alignItems: 'flex-start' as const, gap: 6, flexShrink: 0 },
   trendCountRow: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 2 },
   trendCount: { fontSize: 15, fontWeight: '800' as const },
   dropAskBtn: { backgroundColor: c.primarySoft, borderRadius: radius.pill, paddingHorizontal: 9, paddingVertical: 4 },

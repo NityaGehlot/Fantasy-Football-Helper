@@ -1,22 +1,40 @@
 // app/backend/services/irAdvice.ts
-// IR advice: which of your players can go in an IR slot on Sleeper, and who to pick up with
-// the roster spot that frees.
+// IR advice that follows how Sleeper's injured reserve actually works:
 //
-// Sleeper's league settings decide who is IR-eligible: players designated IR always are,
-// and the commissioner can also allow Out, Doubtful, Suspended and Not Active (NA) players.
+// • Who can go in an IR spot: players on the real NFL injured reserve (IR) or PUP list always;
+//   Out, Doubtful, Suspended, NA (not active) and DNR (did not report) only when the
+//   commissioner turns those on in league settings (reserve_allow_* fields).
+// • A player in an IR spot can't be in your starting lineup and doesn't count toward your
+//   roster size, so moving him there opens a roster spot for a pickup.
+// • If a player in an IR spot is no longer eligible (he got healthy, or went from Out to
+//   Questionable), Sleeper LOCKS your roster: no adds, waiver claims or roster moves until he
+//   leaves the IR spot. With a full roster that means dropping someone first.
+// • Out and Doubtful are week-to-week: these players often come back within a week or two,
+//   which re-triggers the lock above, so they're worth moving only when you need the spot.
 
 import { lineupValue, SlotName } from "./lineup";
 import type { TradePlayer } from "./tradeEngine";
+import { rankDropCandidates } from "./waiver";
 
 export type IrCandidate = TradePlayer & {
   // True when he's already in one of your IR slots
   inIrSlot: boolean;
+  // Plain-English advice for this player
+  note?: string;
 };
 
 export type IrPickup = {
   add: TradePlayer;
   // Starting-lineup points per week gained by adding him to the open roster spot
   netGain: number;
+};
+
+export type IrLock = {
+  player: IrCandidate;
+  // Best player to drop so he can come off IR (lowest hit to your lineup)
+  drop: TradePlayer | null;
+  // Lineup points per week after activating him and dropping `drop`
+  netGain: number | null;
 };
 
 export type IrAdvice = {
@@ -27,21 +45,35 @@ export type IrAdvice = {
   // IR-eligible players still taking up an active roster spot
   shouldMove: IrCandidate[];
   pickups: IrPickup[];
+  // Players in IR spots who aren't eligible anymore: Sleeper has locked your roster
+  locked: IrLock[];
   eligibleStatuses: string[];
 };
 
 const round = (n: number) => Math.round(n * 100) / 100;
 
+const LONG_TERM = new Set(["IR", "INJURED RESERVE", "PUP", "SUS", "SUSPENDED", "NA", "NOT_ACTIVE", "DNR"]);
+
 /** Injury designations that may go on IR in this league. */
 export function irEligibleStatuses(settings: Record<string, any> | undefined | null): string[] {
   const s = settings ?? {};
-  const allowed = ["IR", "INJURED RESERVE"];
+  const allowed = ["IR", "INJURED RESERVE", "PUP"];
   if (Number(s.reserve_allow_out)) allowed.push("OUT");
   if (Number(s.reserve_allow_doubtful)) allowed.push("DOUBTFUL");
   if (Number(s.reserve_allow_sus)) allowed.push("SUS", "SUSPENDED");
   if (Number(s.reserve_allow_na)) allowed.push("NA", "NOT_ACTIVE");
+  if (Number(s.reserve_allow_dnr)) allowed.push("DNR");
   if (Number(s.reserve_allow_cov)) allowed.push("COV");
   return allowed;
+}
+
+/** Advice for moving one eligible player to IR, by how long he's likely out. */
+export function moveNote(status: string): string {
+  const s = String(status).toUpperCase();
+  if (LONG_TERM.has(s)) return "He's out long-term, so his IR spot is safe to use.";
+  if (s === "DOUBTFUL")
+    return "Doubtful players sometimes play. In an IR spot he can't be started, and if he's upgraded to Questionable your roster locks until he comes off IR.";
+  return "Out is week-to-week. When he's healthy again Sleeper locks your roster until he leaves the IR spot, so keep a bench spot in mind.";
 }
 
 export function buildIrAdvice({
@@ -62,29 +94,50 @@ export function buildIrAdvice({
   const irSlots = Number(settings?.reserve_slots) || 0;
   const reserve = new Set((roster.reserve ?? []).map(String));
   const eligibleStatuses = irEligibleStatuses(settings);
-  const eligible = (p: TradePlayer) => eligibleStatuses.includes(String(p.injuryStatus).toUpperCase());
+  const statusOf = (p: TradePlayer) => String(p.injuryStatus ?? "").toUpperCase();
+  const eligible = (p: TradePlayer) => eligibleStatuses.includes(statusOf(p));
 
   const onIr = myPlayers.filter(p => reserve.has(p.id)).map(p => ({ ...p, inIrSlot: true }));
-  const openSlots = Math.max(0, irSlots - onIr.length);
-  const shouldMove = myPlayers
-    .filter(p => !reserve.has(p.id) && eligible(p))
-    // Move the player who is out the longest first (IR before Out before Doubtful).
-    .sort((a, b) => eligibleStatuses.indexOf(String(a.injuryStatus).toUpperCase()) - eligibleStatuses.indexOf(String(b.injuryStatus).toUpperCase()) || b.value - a.value)
-    .map(p => ({ ...p, inIrSlot: false }));
+  const active = myPlayers.filter(p => !reserve.has(p.id));
 
-  // Each player moved to IR frees one active roster spot for a free agent.
-  const moving = shouldMove.slice(0, openSlots);
+  // Sleeper locks the roster while an ineligible player sits in an IR spot.
+  const locked: IrLock[] = onIr
+    .filter(p => !eligible(p))
+    .map(p => {
+      const best = rankDropCandidates(active, p, slots)[0];
+      return {
+        player: { ...p, note: "No longer IR-eligible, so Sleeper has locked your roster until he comes off IR." },
+        drop: best?.drop ?? null,
+        netGain: best ? best.netGain : null,
+      };
+    });
+
+  const openSlots = Math.max(0, irSlots - onIr.length);
+  const shouldMove = active
+    .filter(eligible)
+    // Long-term injuries first (they won't trigger a lock soon), then the most valuable.
+    .sort(
+      (a, b) =>
+        Number(LONG_TERM.has(statusOf(b))) - Number(LONG_TERM.has(statusOf(a))) ||
+        eligibleStatuses.indexOf(statusOf(a)) - eligibleStatuses.indexOf(statusOf(b)) ||
+        b.value - a.value
+    )
+    .map(p => ({ ...p, inIrSlot: false, note: moveNote(statusOf(p)) }));
+
+  // Each player moved to IR frees one active roster spot for a free agent. No pickups while
+  // the roster is locked, because Sleeper won't allow adds until that's fixed.
+  const moving = locked.length ? [] : shouldMove.slice(0, openSlots);
   let pickups: IrPickup[] = [];
   if (moving.length > 0) {
     const movingIds = new Set(moving.map(p => p.id));
-    const active = myPlayers.filter(p => !reserve.has(p.id) && !movingIds.has(p.id));
-    const base = lineupValue(active, slots);
+    const remaining = active.filter(p => !movingIds.has(p.id));
+    const base = lineupValue(remaining, slots);
     const neededPositions = new Set(moving.map(p => p.position));
     const ranked = freeAgents
       .filter(p => p.value > 0 && !eligible(p))
       .sort((a, b) => b.value - a.value)
       .slice(0, 60)
-      .map(add => ({ add, netGain: round(lineupValue([...active, add], slots) - base) }))
+      .map(add => ({ add, netGain: round(lineupValue([...remaining, add], slots) - base) }))
       .sort((a, b) => b.netGain - a.netGain || b.add.value - a.add.value);
     // Replacements at the injured player's position come first (up to two), then the single
     // best add anywhere (e.g. an empty kicker spot), so the list answers "who replaces him?".
@@ -93,5 +146,5 @@ export function buildIrAdvice({
     pickups = [...samePosition, ...rest].slice(0, pickupLimit);
   }
 
-  return { irSlots, irSlotsUsed: onIr.length, onIr, shouldMove, pickups, eligibleStatuses };
+  return { irSlots, irSlotsUsed: onIr.length, onIr, shouldMove, pickups, locked, eligibleStatuses };
 }

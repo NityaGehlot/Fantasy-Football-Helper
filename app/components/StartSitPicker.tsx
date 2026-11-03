@@ -9,7 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { FantasyTeamPlayer, MyFantasyTeam } from '../context/FantasyContext';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
 import { describeSlots, startSitQuestion, swapOptions } from '../services/startSit';
-import { getPositionColor, readableOn, radius, shadowFor, type Palette } from '../theme';
+import { getPositionColor, radius, shadowFor, type Palette } from '../theme';
 
 const ORDER = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
 
@@ -54,7 +54,7 @@ export default function StartSitPicker({
   const Row = ({ p, onPress, disabled, note }: { p: FantasyTeamPlayer; onPress?: () => void; disabled?: boolean; note?: string }) => (
     <Pressable style={[styles.row, disabled && { opacity: 0.55 }]} onPress={onPress} disabled={disabled}>
       <View style={[styles.pos, { backgroundColor: getPositionColor(p.position) }]}>
-        <Text style={[styles.posText, { color: readableOn(getPositionColor(p.position)) }]}>{p.position}</Text>
+        <Text style={styles.posText}>{p.position}</Text>
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={styles.name} numberOfLines={1}>{p.fullName}</Text>

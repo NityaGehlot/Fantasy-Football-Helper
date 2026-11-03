@@ -16,6 +16,7 @@ export type LivePlayer = {
   game: { state: 'pre' | 'in' | 'post' | 'bye'; detail: string; opponent: string | null };
   statLine: string;
   projectedFinal: number;
+  touchdowns?: number;
 };
 
 export type LiveSide = {

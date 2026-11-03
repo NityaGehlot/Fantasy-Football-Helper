@@ -23,6 +23,8 @@ export type LivePlayer = {
   statLine: string;
   // Points so far + projected points still to come in this game
   projectedFinal: number;
+  // Touchdowns so far this week (for "big play" notifications)
+  touchdowns: number;
 };
 
 export type LiveSide = {
@@ -96,6 +98,12 @@ export function winProbability(
   if (spread < 0.01) return diff > 0 ? 1 : 0; // everyone has played
   // Keep live odds off the absolute extremes until it's actually over.
   return Math.min(0.995, Math.max(0.005, normalCdf(diff / spread)));
+}
+
+const TD_KEYS = ["pass_td", "rush_td", "rec_td", "def_td", "def_st_td", "fum_rec_td", "int_ret_td", "kr_td", "pr_td"];
+export function countTouchdowns(s: any): number {
+  if (!s) return 0;
+  return TD_KEYS.reduce((t, k) => t + (Number(s[k]) || 0), 0);
 }
 
 // Short live stat line, e.g. "18/27, 241 YD, 2 TD" or "6 REC, 84 YD, 1 TD".
@@ -190,6 +198,7 @@ export function buildLiveSide({
       game: knownSchedule ? gameDetail(game) : { state: "pre", detail: "", opponent: null },
       statLine: formatStatLine(position, stats[id]),
       projectedFinal: round(points + projectedTotal * fraction),
+      touchdowns: countTouchdowns(stats[id]),
     };
   };
 

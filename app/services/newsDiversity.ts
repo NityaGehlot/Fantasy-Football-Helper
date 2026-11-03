@@ -11,6 +11,9 @@ export type NewsItem = {
   impact?: string;
   summary?: string;
   source?: string;
+  // Real article address and its cover image (filled in by nfl-data's news job)
+  url?: string;
+  image?: string;
 };
 
 const STOPWORDS = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with', 'vs', 'at', 'is', 'his', 'he', 'as', 'after', 'from', 'by', 'be', 'will', 'week', 'nfl', 's']);

@@ -38,6 +38,7 @@ ACCURACY RULES (most important):
 - Use the right defense number for the position: QBs, WRs and TEs care about "vs the pass" and fantasy points allowed to their position; RBs care about "vs the run" and points allowed to RBs; kickers care about points allowed to Ks.
 - Weather and injury effects are already scored from -3 (big downgrade) to +3 (big boost). Use those numbers and the reasons given; don't invent new ones.
 - The verdict must weigh ALL of it together: recent form, matchup, weather, his own health and injuries around him.
+- Weekly range (floor–ceiling): in a close call, the "safe" player is better when you're favored to win, the "boom/bust" player when you need a big week to catch up. Mention the ranges.
 
 EXPLAIN THE NUMBERS:
 - Every number you mention gets a few plain words saying what it means, e.g. "allows 31.2 pts/game to WRs (28th of 32, one of the easiest matchups)" or "net injury effect +1.5 (his WR teammate is out, so more targets)".
