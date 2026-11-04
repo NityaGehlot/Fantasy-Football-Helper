@@ -8,7 +8,10 @@ export type CounterOffer = { summary: string; idea: TradeIdea };
 
 export type TradeGrade = {
   grade: 'A' | 'B' | 'C' | 'D' | 'F';
-  verdict: 'accept' | 'consider' | 'counter' | 'decline';
+  // received offers: accept / consider / counter / decline; trades you build: send / edit
+  verdict: 'accept' | 'consider' | 'counter' | 'decline' | 'send' | 'edit';
+  // 'send' = a trade you built; otherwise an offer you got
+  mode?: 'send' | 'receive';
   headline: string;
   idea: TradeIdea;
   notes: string[];
@@ -71,7 +74,7 @@ export function counterMessage(partner: string, counter: CounterOffer): string {
 export const fetchTradeFor = (leagueId: string, rosterId: number, ownerId: string | undefined, playerId: string) =>
   post<{ owner: string | null; mine?: boolean; ideas: TradeIdea[] }>('/trade-for', { leagueId, rosterId, ownerId, playerId });
 
-export const gradeTradeOffer = (args: { leagueId: string; rosterId: number; ownerId?: string; partnerRosterId: number; give: string[]; get: string[] }) =>
+export const gradeTradeOffer = (args: { leagueId: string; rosterId: number; ownerId?: string; partnerRosterId: number; give: string[]; get: string[]; mode?: 'send' | 'receive' }) =>
   post<TradeGrade>('/grade-trade', args);
 
 export const GRADE_COLORS: Record<TradeGrade['grade'], 'success' | 'primary' | 'warning' | 'danger'> = {
@@ -85,3 +88,18 @@ export const GRADE_COLORS: Record<TradeGrade['grade'], 'success' | 'primary' | '
 /** Question for the AI assistant about this offer. */
 export const askAboutOffer = (partner: string, give: string[], get: string[]) =>
   `${partner} offered me ${get.join(' and ') || 'nothing'} for ${give.join(' and ') || 'nothing'}. Should I accept this trade?`;
+
+/** Message to propose a trade you built (or an edited version of it). */
+export function proposalMessage(partner: string, idea: TradeIdea): string {
+  const give = idea.give.map(p => p.name).join(' and ') || 'nothing';
+  const get = idea.get.map(p => p.name).join(' and ') || 'nothing';
+  const why =
+    idea.theirGain > 0.3
+      ? ` By my numbers it makes your starting lineup about ${idea.theirGain.toFixed(1)} points a week better.`
+      : '';
+  return `Hey ${partner}, would you do my ${give} for your ${get}?${why} Let me know!`;
+}
+
+/** Question for the AI about a trade you built. */
+export const askAboutProposal = (partner: string, give: string[], get: string[]) =>
+  `I'm thinking of sending ${partner} a trade: I give ${give.join(' and ') || 'nothing'} and get ${get.join(' and ') || 'nothing'}. Should I send it as is, or change it so they accept?`;

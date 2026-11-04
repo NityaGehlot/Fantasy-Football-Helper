@@ -7,7 +7,7 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from 'rea
 import { Ionicons } from '@expo/vector-icons';
 import type { MyFantasyTeam } from '../context/FantasyContext';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
-import { fetchLineupCheck, SLEEPER_SWAP_STEPS, type LineupCheck } from '../services/lineupCheck';
+import { fetchLineupCheck, keyReason, shownPoints, SLEEPER_SWAP_STEPS, type LineupCheck } from '../services/lineupCheck';
 import { radius, shadowFor, type Palette } from '../theme';
 
 export default function LineupCheckSheet({
@@ -62,18 +62,19 @@ export default function LineupCheckSheet({
             <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ gap: 10 }}>
               <View style={styles.totals}>
                 <View style={styles.total}>
-                  <Text style={styles.totalValue}>{check.currentPoints.toFixed(2)}</Text>
+                  <Text style={styles.totalValue}>{(check.currentProjected ?? check.currentPoints).toFixed(2)}</Text>
                   <Text style={styles.totalLabel}>Your lineup now</Text>
                 </View>
                 <Ionicons name="arrow-forward" size={18} color={colors.textMuted} />
                 <View style={styles.total}>
-                  <Text style={[styles.totalValue, { color: gain > 0 ? colors.success : colors.text }]}>{check.bestPoints.toFixed(2)}</Text>
+                  <Text style={[styles.totalValue, { color: gain > 0 ? colors.success : colors.text }]}>{(check.bestProjected ?? check.bestPoints).toFixed(2)}</Text>
                   <Text style={styles.totalLabel}>Best lineup</Text>
                 </View>
               </View>
               <Text style={styles.note}>
-                Expected points this week, adjusted for each player's matchup, weather, injuries and inactive players.
-                Players whose game already started are locked and left alone.
+                Sleeper's projections. Who starts also weighs the defense each player faces (less for the best
+                players at their position), injuries on both teams, weather and inactive players. Players whose game
+                already started are locked and left alone.
               </Text>
 
               {check.swaps.length === 0 ? (
@@ -83,23 +84,25 @@ export default function LineupCheckSheet({
                 </View>
               ) : (
                 <>
-                  <Text style={styles.section}>MAKE THESE SWAPS (+{gain.toFixed(2)} PTS)</Text>
+                  <Text style={styles.section}>MAKE THESE SWAPS (+{gain.toFixed(2)} AFTER MATCHUPS)</Text>
                   {check.swaps.map((s, i) => (
                     <View key={i} style={styles.swap}>
                       <Text style={styles.slot}>{s.slot}</Text>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.start}>
-                          <Ionicons name="arrow-up" size={13} color={colors.success} /> {s.from ? `Move ${s.start.name} here from ${s.from}` : `Start ${s.start.name}`} ({s.start.position}, {s.start.value.toFixed(2)})
+                          <Ionicons name="arrow-up" size={13} color={colors.success} /> {s.from ? `Move ${s.start.name} here from ${s.from}` : `Start ${s.start.name}`} ({s.start.position}, {shownPoints(s.start)})
                         </Text>
                         {s.bench ? (
                           <Text style={styles.bench}>
                             <Ionicons name={s.movesTo ? 'swap-vertical' : 'arrow-down'} size={13} color={s.movesTo ? colors.primary : colors.danger} />{' '}
-                            {s.movesTo ? `${s.bench.name} moves to ${s.movesTo}` : `Bench ${s.bench.name}`} ({s.bench.position}, {s.bench.value.toFixed(2)})
+                            {s.movesTo ? `${s.bench.name} moves to ${s.movesTo}` : `Bench ${s.bench.name}`} ({s.bench.position}, {shownPoints(s.bench)})
                             {s.bench.injuryStatus && s.bench.injuryStatus !== 'ACTIVE' ? ` · ${s.bench.injuryStatus}` : ''}
                           </Text>
                         ) : (
                           <Text style={[styles.bench, { color: colors.danger }]}>Fills your empty {s.slot} spot (it scores 0 right now)</Text>
                         )}
+                        {!!keyReason(s.start) && <Text style={styles.reason}>{keyReason(s.start)}</Text>}
+                        {!!s.bench && !!keyReason(s.bench) && <Text style={styles.reason}>{s.bench.name}: {keyReason(s.bench)}</Text>}
                       </View>
                       {/* Moves between slots are part of a chain; only real gains get a number. */}
                       {s.movesTo || s.from ? (
@@ -112,6 +115,18 @@ export default function LineupCheckSheet({
                   <Text style={styles.section}>HOW TO DO IT IN SLEEPER</Text>
                   {SLEEPER_SWAP_STEPS.map((step, i) => (
                     <Text key={i} style={styles.step}>{i + 1}. {step}</Text>
+                  ))}
+                </>
+              )}
+
+              {(check.closeCalls ?? []).length > 0 && (
+                <>
+                  <Text style={styles.section}>CLOSE CALLS</Text>
+                  {check.closeCalls!.map(c => (
+                    <Text key={`${c.slot}-${c.bench.id}`} style={styles.step}>
+                      {c.slot}: {c.starter.name} ({shownPoints(c.starter)}) over {c.bench.name} ({shownPoints(c.bench)}), {c.diff.toFixed(2)} apart
+                      {keyReason(c.bench) ? ` · ${keyReason(c.bench)}` : ''}
+                    </Text>
                   ))}
                 </>
               )}
@@ -156,6 +171,7 @@ const makeStyles = (c: Palette) => ({
   slot: { width: 46, fontWeight: '800' as const, color: c.textMuted, fontSize: 12 },
   start: { fontSize: 14, fontWeight: '700' as const, color: c.text },
   bench: { fontSize: 13, color: c.textMuted, marginTop: 2 },
+  reason: { fontSize: 12, color: c.textMuted, marginTop: 3, fontStyle: 'italic' as const, lineHeight: 16 },
   gain: { fontWeight: '800' as const, color: c.success },
   step: { fontSize: 13, color: c.text, lineHeight: 18 },
   problem: { fontSize: 13, color: c.danger, lineHeight: 18 },

@@ -1,6 +1,7 @@
 // app/components/TradeGrader.tsx
-// "Grade a trade offer": pick the other team and the players on each side (or tap a pending
-// offer found in Sleeper), and see the grade with how both starting lineups change.
+// "Build or grade a trade": pick a team and the players on each side, then either rate a trade
+// you'd send (send it, or how to edit it so they say yes) or grade an offer you got in Sleeper
+// (accept / counter / decline), with how both starting lineups change.
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from 'react-native';
@@ -38,6 +39,8 @@ export default function TradeGrader({
   const [get, setGet] = useState<string[]>([]);
   const [grading, setGrading] = useState(false);
   const [result, setResult] = useState<TradeGrade | null>(null);
+  // 'send': a trade you're building to propose; 'receive': an offer someone sent you
+  const [mode, setMode] = useState<'send' | 'receive'>('send');
 
   useEffect(() => {
     if (!visible) return;
@@ -72,7 +75,7 @@ export default function TradeGrader({
     setGrading(true);
     setError('');
     try {
-      setResult(await gradeTradeOffer({ leagueId: team.leagueId, rosterId: team.rosterId, ownerId: team.ownerId, partnerRosterId: partnerId, give, get }));
+      setResult(await gradeTradeOffer({ leagueId: team.leagueId, rosterId: team.rosterId, ownerId: team.ownerId, partnerRosterId: partnerId, give, get, mode }));
     } catch (e: any) {
       setError(e?.message || 'Could not grade this trade');
     } finally {
@@ -87,7 +90,7 @@ export default function TradeGrader({
         <Text style={styles.posText}>{p.position}</Text>
       </View>
       <Text style={styles.playerName} numberOfLines={1}>{p.name}</Text>
-      <Text style={styles.playerValue}>{p.value.toFixed(1)}</Text>
+      <Text style={styles.playerValue}>{p.value.toFixed(2)}</Text>
     </Pressable>
   );
 
@@ -96,7 +99,7 @@ export default function TradeGrader({
       <View style={styles.backdrop}>
         <View style={styles.sheet}>
           <View style={styles.header}>
-            <Text style={styles.title}>Grade a trade offer</Text>
+            <Text style={styles.title}>Build or grade a trade</Text>
             <Pressable onPress={close} hitSlop={8} accessibilityLabel="Close">
               <Ionicons name="close" size={22} color={colors.textMuted} />
             </Pressable>
@@ -106,7 +109,21 @@ export default function TradeGrader({
             <ActivityIndicator style={{ padding: 30 }} />
           ) : (
             <ScrollView style={{ maxHeight: 560 }} contentContainerStyle={{ gap: 10 }}>
-              {offers.length > 0 && (
+              <View style={styles.modeRow}>
+                {([['send', "I'm sending it"], ['receive', 'I got this offer']] as const).map(([m, label]) => (
+                  <Pressable key={m} style={[styles.modeBtn, mode === m && styles.modeBtnOn]} onPress={() => { setMode(m); setResult(null); }}>
+                    <Text style={[styles.modeText, mode === m && { color: colors.onPrimary }]}>{label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={styles.sub}>
+                {mode === 'send'
+                  ? "Build the trade you're thinking of proposing. You'll see whether it helps you, whether they'd likely accept, and edits that get a yes."
+                  : 'Enter an offer someone sent you in Sleeper to see whether to accept, counter or decline.'}{' '}
+                Numbers are projected points per game.
+              </Text>
+
+              {mode === 'receive' && offers.length > 0 && (
                 <>
                   <Text style={styles.section}>PENDING OFFERS IN SLEEPER</Text>
                   {offers.map(o => (
@@ -120,8 +137,7 @@ export default function TradeGrader({
                 </>
               )}
 
-              <Text style={styles.section}>ENTER AN OFFER</Text>
-              <Text style={styles.sub}>Pick the team, what you'd give and what you'd get. Numbers are projected points per game.</Text>
+
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
                 {others.map(t => (
                   <Pressable
@@ -161,7 +177,11 @@ export default function TradeGrader({
               disabled={grading || (give.length === 0 && get.length === 0)}
               onPress={grade}
             >
-              {grading ? <ActivityIndicator color={colors.onPrimary} /> : <Text style={styles.gradeBtnText}>Grade this trade</Text>}
+              {grading ? (
+                <ActivityIndicator color={colors.onPrimary} />
+              ) : (
+                <Text style={styles.gradeBtnText}>{mode === 'send' ? 'Rate my trade' : 'Grade this offer'}</Text>
+              )}
             </Pressable>
           )}
         </View>
@@ -189,4 +209,8 @@ const makeStyles = (c: Palette) => ({
   error: { color: c.danger, fontSize: 13 },
   gradeBtn: { backgroundColor: c.primary, borderRadius: radius.md, paddingVertical: 12, alignItems: 'center' as const, marginTop: 10 },
   gradeBtnText: { color: c.onPrimary, fontWeight: '800' as const, fontSize: 15 },
+  modeRow: { flexDirection: 'row' as const, backgroundColor: c.surfaceMuted, borderRadius: radius.pill, padding: 3, marginTop: 4 },
+  modeBtn: { flex: 1, paddingVertical: 8, borderRadius: radius.pill, alignItems: 'center' as const },
+  modeBtnOn: { backgroundColor: c.primary },
+  modeText: { fontSize: 13, fontWeight: '800' as const, color: c.text },
 });

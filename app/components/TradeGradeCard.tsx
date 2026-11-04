@@ -6,7 +6,7 @@ import React, { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
-import { askAboutOffer, counterMessage, GRADE_COLORS, type TradeGrade } from '../services/tradeGrader';
+import { askAboutOffer, counterMessage, GRADE_COLORS, type TradeGrade, askAboutProposal, proposalMessage } from '../services/tradeGrader';
 import { radius, type Palette } from '../theme';
 
 export default function TradeGradeCard({
@@ -54,7 +54,13 @@ export default function TradeGradeCard({
 
       {(r.counters?.length ?? 0) > 0 && (
         <View style={{ gap: 6, marginTop: 4 }}>
-          <Text style={styles.section}>COUNTER-OFFERS THAT WORK BETTER FOR YOU</Text>
+          <Text style={styles.section}>
+            {r.mode === 'send'
+              ? r.idea.myGain >= 0.5
+                ? 'EDITS SO THEY SAY YES (STILL GOOD FOR YOU)'
+                : 'BETTER VERSIONS TO SEND'
+              : 'COUNTER-OFFERS THAT WORK BETTER FOR YOU'}
+          </Text>
           {r.counters!.map((c, i) => (
             <Pressable key={i} style={styles.counter} onPress={() => setOpenCounter(openCounter === i ? null : i)}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -68,9 +74,13 @@ export default function TradeGradeCard({
               {openCounter === i && (
                 <View style={styles.message}>
                   <Text style={styles.messageLabel}>Message to send {partnerName} (tap and hold to copy):</Text>
-                  <Text style={styles.messageText} selectable>{counterMessage(partnerName, c)}</Text>
+                  <Text style={styles.messageText} selectable>
+                    {r.mode === 'send' ? proposalMessage(partnerName, c.idea) : counterMessage(partnerName, c)}
+                  </Text>
                   <Text style={styles.counterMeta}>
-                    In Sleeper, open the offer and tap "Counter", then pick these players.
+                    {r.mode === 'send'
+                      ? 'In Sleeper, open their team, tap "Propose trade", then pick these players.'
+                      : 'In Sleeper, open the offer and tap "Counter", then pick these players.'}
                   </Text>
                 </View>
               )}
@@ -78,13 +88,32 @@ export default function TradeGradeCard({
           ))}
         </View>
       )}
-      {r.verdict !== 'accept' && (r.counters?.length ?? 0) === 0 && (
-        <Text style={styles.counterMeta}>No counter-offer with their players helps your lineup by at least a point a week.</Text>
+      {r.verdict === 'send' && (
+        <View style={styles.message}>
+          <Text style={styles.messageLabel}>Message to send {partnerName} (tap and hold to copy):</Text>
+          <Text style={styles.messageText} selectable>{proposalMessage(partnerName, r.idea)}</Text>
+        </View>
+      )}
+      {!['accept', 'send'].includes(r.verdict) && (r.counters?.length ?? 0) === 0 && (
+        <Text style={styles.counterMeta}>
+          {r.mode === 'send'
+            ? 'No small edit makes this work for both teams. Try different players.'
+            : 'No counter-offer with their players helps your lineup by at least a point a week.'}
+        </Text>
       )}
 
-      <Pressable style={styles.askBtn} onPress={() => onAskAI(askAboutOffer(partnerName, names(r.idea.give), names(r.idea.get)))}>
+      <Pressable
+        style={styles.askBtn}
+        onPress={() =>
+          onAskAI(
+            r.mode === 'send'
+              ? askAboutProposal(partnerName, names(r.idea.give), names(r.idea.get))
+              : askAboutOffer(partnerName, names(r.idea.give), names(r.idea.get))
+          )
+        }
+      >
         <Ionicons name="sparkles" size={14} color={colors.primary} />
-        <Text style={styles.askText}>Ask the AI to explain this trade</Text>
+        <Text style={styles.askText}>{r.mode === 'send' ? 'Ask the AI: send it or change it?' : 'Ask the AI to explain this trade'}</Text>
       </Pressable>
     </View>
   );

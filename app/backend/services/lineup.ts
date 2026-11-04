@@ -27,6 +27,27 @@ export function parseRosterSlots(rosterPositions: unknown): SlotName[] {
   return slots.length > 0 ? slots : DEFAULT_SLOTS;
 }
 
+const NOT_STARTING = new Set(["BN", "IR", "TAXI"]);
+
+/**
+ * Pair Sleeper's starters array with the starting slots it belongs to. Sleeper's `starters`
+ * follows every starting spot in roster_positions (BN / IR / TAXI excluded), including spots this
+ * app doesn't model (IDP slots like DL / LB / DB / IDP_FLEX). Those pairs are dropped here, so a
+ * league with them never shifts a player into the wrong slot (e.g. a QB into an RB spot).
+ */
+export function alignStarters(rosterPositions: unknown, starters: unknown[]): { slots: SlotName[]; ids: string[] } {
+  if (!Array.isArray(rosterPositions)) return { slots: DEFAULT_SLOTS, ids: (starters ?? []).map(String).slice(0, DEFAULT_SLOTS.length) };
+  const starting = rosterPositions.map(p => String(p).toUpperCase()).filter(p => !NOT_STARTING.has(p));
+  const slots: SlotName[] = [];
+  const ids: string[] = [];
+  starting.forEach((slot, i) => {
+    if (!(slot in SLOT_ELIGIBILITY)) return;
+    slots.push(slot as SlotName);
+    ids.push(String(starters?.[i] ?? "0"));
+  });
+  return slots.length ? { slots, ids } : { slots: DEFAULT_SLOTS, ids: [] };
+}
+
 export type LineupPlayer = { id: string; name: string; position: string; value: number };
 export type LineupAssignment = { slot: SlotName; player: LineupPlayer | null };
 

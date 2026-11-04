@@ -15,7 +15,10 @@ export type CounterOffer = {
 
 export type TradeGrade = {
   grade: "A" | "B" | "C" | "D" | "F";
-  verdict: "accept" | "consider" | "counter" | "decline";
+  // received offers: accept / consider / counter / decline; trades you build: send / edit
+  verdict: "accept" | "consider" | "counter" | "decline" | "send" | "edit";
+  // "send" = a trade you built and would send; "receive" (default) = an offer you got
+  mode?: "send" | "receive";
   headline: string;
   idea: TradeIdea;
   notes: string[];
@@ -66,6 +69,81 @@ export function gradeTrade(me: LeagueTeam, partner: LeagueTeam, give: TradePlaye
     headline = `Decline: your lineup would lose about ${Math.abs(idea.myGain).toFixed(1)} points a week.`;
   }
   return { grade, verdict, headline, idea, notes, counters: verdict === "accept" ? [] : counterOffers(me, partner, give, get, slots, idea) };
+}
+
+/**
+ * A trade you built and are thinking of sending. It's worth sending when it helps your lineup
+ * AND doesn't cost theirs (otherwise they'll probably say no). If it's good for you but bad for
+ * them, the suggested edits sweeten it just enough; if it hurts you, they ask for more.
+ */
+export function gradeProposal(me: LeagueTeam, partner: LeagueTeam, give: TradePlayer[], get: TradePlayer[], slots: SlotName[]): TradeGrade {
+  const base = gradeTrade(me, partner, give, get, slots);
+  const idea = base.idea;
+  const goodForMe = idea.myGain >= 0.5;
+  const okForThem = idea.theirGain >= -0.5 && idea.fairness >= 0.65;
+  const their = `${idea.theirGain >= 0 ? "+" : ""}${idea.theirGain.toFixed(1)}`;
+  let verdict: TradeGrade["verdict"];
+  let headline: string;
+  let edits: CounterOffer[] = [];
+  if (goodForMe && okForThem) {
+    verdict = "send";
+    headline = `Send it: your lineup gets ${idea.myGain.toFixed(1)} pts/week better and theirs changes ${their}, so they have a reason to accept.`;
+  } else if (goodForMe) {
+    verdict = "edit";
+    headline = `Good for you (+${idea.myGain.toFixed(1)} pts/week), but their lineup would change ${their} pts/week, so they'll likely say no. Try one of these edits.`;
+    edits = sweetenedOffers(me, partner, give, get, slots);
+  } else if (okForThem) {
+    verdict = "edit";
+    headline = `Don't send it as is: it costs your lineup ${Math.abs(idea.myGain).toFixed(1)} pts/week. Ask for a bit more.`;
+    edits = base.counters;
+  } else {
+    verdict = "edit";
+    headline = `Don't send it: your lineup changes ${idea.myGain >= 0 ? "+" : ""}${idea.myGain.toFixed(1)} and theirs ${their} pts/week. Neither side clearly wins; try one of these instead.`;
+    edits = base.counters;
+  }
+  return { ...base, mode: "send", verdict, headline, counters: edits };
+}
+
+/**
+ * Small changes that make a trade acceptable for them while it still helps you: add one of
+ * your spare players, ask for a lesser player at the same position, or drop one of the players
+ * you asked for.
+ */
+export function sweetenedOffers(
+  me: LeagueTeam,
+  partner: LeagueTeam,
+  give: TradePlayer[],
+  get: TradePlayer[],
+  slots: SlotName[],
+  limit = 3
+): CounterOffer[] {
+  const giveIds = new Set(give.map(p => p.id));
+  const getIds = new Set(get.map(p => p.id));
+  const options: { summary: string; idea: TradeIdea }[] = [];
+  const consider = (g: TradePlayer[], r: TradePlayer[], summary: string) => {
+    if (!r.length) return;
+    const idea = evaluateTrade(me, partner, g, r, slots);
+    if (idea.myGain >= 0.3 && idea.theirGain >= -0.3) options.push({ summary, idea });
+  };
+  // Add one of your players (bench depth first: the lowest value that still helps them).
+  me.players
+    .filter(p => !giveIds.has(p.id) && TRADEABLE.has(p.position) && p.value > 0)
+    .sort((a, b) => a.value - b.value)
+    .slice(0, 10)
+    .forEach(p => consider([...give, p], get, `Add ${p.name} to what you give`));
+  // Ask for a lesser player at the same position instead of one of them.
+  for (const want of get) {
+    partner.players
+      .filter(p => !getIds.has(p.id) && p.position === want.position && p.value < want.value && p.value > 0)
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 3)
+      .forEach(p => consider(give, get.map(x => (x.id === want.id ? p : x)), `Ask for ${p.name} instead of ${want.name}`));
+  }
+  // Ask for one player fewer.
+  if (get.length > 1) for (const drop of get) consider(give, get.filter(x => x.id !== drop.id), `Don't ask for ${drop.name}`);
+  return options
+    .sort((a, b) => b.idea.myGain + Math.min(0, b.idea.theirGain) - (a.idea.myGain + Math.min(0, a.idea.theirGain)))
+    .slice(0, limit);
 }
 
 const TRADEABLE = new Set(["QB", "RB", "WR", "TE"]);

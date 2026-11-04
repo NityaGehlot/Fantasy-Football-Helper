@@ -7,7 +7,7 @@ import { DEFAULT_SLOTS, SLOT_ELIGIBILITY } from "./lineup";
 import { getLineupCheck } from "./lineupCheck";
 import { evaluateTrade, generateTradeIdeas, LeagueTeam, TradePlayer } from "./tradeEngine";
 import { rankDropCandidates, suggestPickups } from "./waiver";
-import { tradeForPlayer } from "./tradeGrade";
+import { gradeProposal, tradeForPlayer } from "./tradeGrade";
 import { openRosterSpots, type OpenSpots } from "./irAdvice";
 import { buildDraftBoard } from "./draft";
 import { getLeagueContext, getValueContext, LeagueContext, weeklyValue } from "./leagueContext";
@@ -116,7 +116,7 @@ async function currentWeekTeamsPlaying(season: number): Promise<{ week: number; 
 export async function weeklyAdjustedPlayers(ctx: LeagueContext, me: LeagueTeam) {
   const { week, teams: teamsPlaying } = await currentWeekTeamsPlaying(ctx.values.season);
   // Scale each player's usual points for this week's matchup, weather and injuries around him.
-  const matchups = new Map<string, { multiplier: number; parts: string[] }>();
+  const matchups = new Map<string, ReturnType<typeof matchupAdjustment>>();
   await Promise.all(
     me.players
       .filter(p => p.position in SLOT_ELIGIBILITY || ["QB", "RB", "WR", "TE", "K", "DEF"].includes(p.position))
@@ -152,7 +152,7 @@ async function handleLineup(message: string, ctx: LeagueContext, me: LeagueTeam,
   const listing = lineupListing(check);
   return {
     prefix: `${listing}\n\n`,
-    prompt: buildLineupPrompt(message, check.lineup, check.bench, notes, check.matchupNotes, check.injuryNotes),
+    prompt: buildLineupPrompt(message, check.lineup, check.bench, notes, check.matchupNotes, check.injuryNotes, check.closeCalls),
     fallback: [
       ...(notes.length ? ["Heads up:", ...notes.map(n => `• ${n}`)] : []),
       ...(check.injuryNotes.length ? ["", "Injuries:", ...check.injuryNotes.map(n => `• ${n}`)] : []),
@@ -161,21 +161,42 @@ async function handleLineup(message: string, ctx: LeagueContext, me: LeagueTeam,
 }
 
 /** The best lineup in Sleeper's slot order, with the changes from the lineup set in Sleeper. */
-export function lineupListing(check: { week: number; lineup: { label: string; player: { name: string; value: number } | null; changed: boolean; locked: boolean }[]; swaps: { slot: string; start: { name: string }; bench: { name: string } | null; movesTo?: string; from?: string; gain: number }[] }): string {
+type ListedPlayer = { name: string; value: number; projection?: number; reasons?: string[] };
+type ListingInput = {
+  week: number;
+  lineup: { label: string; player: ListedPlayer | null; changed: boolean; locked: boolean }[];
+  swaps: { slot: string; start: ListedPlayer; bench: ListedPlayer | null; movesTo?: string; from?: string; gain: number }[];
+  closeCalls?: { slot: string; starter: ListedPlayer; bench: ListedPlayer; diff: number }[];
+};
+
+const shown = (p: ListedPlayer) => (p.projection ?? p.value).toFixed(2);
+// The reason that matters most after the projection itself (defense / injuries / weather).
+const keyReason = (p: ListedPlayer) => (p.reasons ?? []).find(r => !r.startsWith("Projected"));
+
+/** The best lineup in Sleeper's slot order, the changes to make, and the close calls. */
+export function lineupListing(check: ListingInput): string {
   const lines = check.lineup.map(l => {
-    const who = l.player ? `${l.player.name} — ${l.player.value.toFixed(2)} pts` : "EMPTY (nobody on your roster can play here)";
-    const tag = l.locked ? " (game started, locked)" : l.changed && l.player ? " ← change" : "";
-    return `• ${l.label}: ${who}${tag}`;
+    if (!l.player) return `• ${l.label}: EMPTY (nobody on your roster can play here)`;
+    const tag = l.locked ? " (game started, locked)" : l.changed ? " ← change" : "";
+    const why = keyReason(l.player);
+    return `• ${l.label}: ${l.player.name} — ${shown(l.player)} pts${tag}${why ? `\n    ${why}` : ""}`;
   });
   const changes = check.swaps
     .filter(s => !s.from)
-    .map(s => `• Start ${s.start.name}${s.bench ? ` instead of ${s.bench.name}${s.movesTo ? ` (${s.bench.name} moves to ${s.movesTo})` : ""}` : ` in your empty ${s.slot} spot`} (+${s.gain.toFixed(2)})`);
+    .map(
+      s =>
+        `• Start ${s.start.name}${s.bench ? ` instead of ${s.bench.name}${s.movesTo ? ` (${s.bench.name} moves to ${s.movesTo})` : ""}` : ` in your empty ${s.slot} spot`} (+${s.gain.toFixed(2)} after matchup and injuries)`
+    );
+  const close = (check.closeCalls ?? []).map(
+    c => `• ${c.slot}: ${c.starter.name} (${shown(c.starter)}) over ${c.bench.name} (${shown(c.bench)}), ${c.diff.toFixed(2)} apart${keyReason(c.bench) ? ` · ${c.bench.name}: ${keyReason(c.bench)}` : ""}`
+  );
   return [
-    `Best lineup for week ${check.week} (same order as Sleeper):`,
+    `Best lineup for week ${check.week} (same order as Sleeper; points are Sleeper's projections):`,
     ...lines,
     "",
     changes.length ? "Changes to make in Sleeper:" : "No changes needed: this is already your lineup in Sleeper.",
     ...changes,
+    ...(close.length ? ["", "Close calls (only between players who can play that spot):", ...close] : []),
   ].join("\n");
 }
 
@@ -270,6 +291,14 @@ function handleTrade(message: string, ctx: LeagueContext, me: LeagueTeam): Advis
   if (give.length > 0 && get.length > 0) {
     const partner = others.find(t => get.every(g => t.players.some(p => p.id === g.id)));
     if (partner) {
+      // "Should I send this?" (a trade the user built) vs "should I accept this?" (an offer).
+      if (/\b(send|sending|propose|proposing|offer him|offer them|pitch)\b/i.test(message) && !/offered me|sent me|got an offer/i.test(message)) {
+        const p = gradeProposal(me, partner, give, get, ctx.slots);
+        return {
+          prompt: buildTradeEvaluationPrompt(message, p.idea, { headline: p.headline, edits: p.counters }),
+          fallback: [p.headline, ...p.counters.map(c => `• ${c.summary}`)].join("\n"),
+        };
+      }
       const idea = evaluateTrade(me, partner, give, get, ctx.slots);
       return { prompt: buildTradeEvaluationPrompt(message, idea), fallback: describeTradeIdea(idea) };
     }

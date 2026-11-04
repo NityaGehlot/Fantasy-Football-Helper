@@ -876,8 +876,24 @@ if (!activeLeagueId) {
       (matchup?.players || []).map((id: string | number) => ({ ...players[id], player_id: id })),
       sIds
     );
-    const bench = sorted.filter(p => !sIds.includes(p.player_id) && !reserveIds.includes(String(p.player_id)));
+    const benchPlayers = sorted.filter(p => !sIds.includes(p.player_id) && !reserveIds.includes(String(p.player_id)));
     const ir = reserveIds.map(id => ({ ...players[id], player_id: id }));
+    // Empty bench spots: the league's BN spots minus the players on the bench. Uses Sleeper's
+    // roster (current players; IR and taxi spots don't count) for the current week, the week's
+    // matchup otherwise.
+    const benchSpots = (league?.roster_positions ?? []).filter((x: string) => String(x).toUpperCase() === 'BN').length;
+    const taxiIds = new Set<string>((sideRoster?.taxi ?? []).map(String));
+    // (weekStatus is computed further down, so use the same facts directly: a current-season
+    // league and Sleeper's current week.)
+    const currentWeek = irEligible && Number(selectedWeek) === Number(nflState?.week) && Array.isArray(sideRoster?.players);
+    const benchCount = currentWeek
+      ? (sideRoster!.players as any[]).map(String).filter(id => !sIds.map(String).includes(id) && !reserveIds.includes(id) && !taxiIds.has(id)).length
+      : benchPlayers.length;
+    const openBench = Math.max(0, benchSpots - benchCount);
+    const bench = [
+      ...benchPlayers,
+      ...Array.from({ length: openBench }, (_, i) => ({ player_id: `bench-empty-${i}`, emptyBench: true })),
+    ];
     const starters = sorted
       .filter(p => sIds.includes(p.player_id))
       .map(p => {
@@ -905,7 +921,7 @@ if (!activeLeagueId) {
     const owner = users.find(u => u.user_id === roster?.owner_id);
     const liveSide = [liveBoard?.me, liveBoard?.opponent].find(s => s && s.rosterId === matchup?.roster_id);
     const total = liveSide?.points ?? (matchup?.starters_points || []).reduce((a: number, b: number) => a + b, 0);
-    return { matchup, starterIds: sIds, starters, bench, ir, name: owner ? getTeamName(owner) : 'Unknown', total };
+    return { matchup, starterIds: sIds, starters, bench, ir, openBench, name: owner ? getTeamName(owner) : 'Unknown', total };
   };
 
   const opponentMatchup = myWeekMatchup
@@ -924,6 +940,7 @@ if (!activeLeagueId) {
   };
   const renderPlayer = (side: ReturnType<typeof buildSide>, player: any, isStarter: boolean, dense = false) => {
     if (player.empty) return renderEmptySlot(side, player.assignedSlot, player.player_id, dense);
+    if (player.emptyBench) return renderEmptyBench(side, player.player_id, dense);
     let stats = getPlayerNFLStats(player.player_id, selectedWeek);
     const live = weekStatus !== 'completed' ? liveById[String(player.player_id)] : undefined;
     // Weeks that aren't over have no stats file yet: show today's injury designation instead.
@@ -992,6 +1009,47 @@ if (!activeLeagueId) {
           </Text>
         </View>
       </TouchableOpacity>
+    );
+  };
+
+  // An empty bench spot: free points left on the table. Your team gets the best pickups (from the
+  // backend's open-spot advice) and a button to ask the AI.
+  const renderEmptyBench = (side: ReturnType<typeof buildSide>, key: string, dense: boolean) => {
+    const mine = isViewingMyTeam && side === mySide;
+    const index = Number(key.split('-').pop()) || 0;
+    const pick = mine ? irAdvice?.openSpots?.pickups?.[index] : undefined;
+    const needs = irAdvice?.openSpots?.needs ?? [];
+    const askAI = () =>
+      navigation.navigate('MainTabs', {
+        screen: 'ChatBot',
+        params: {
+          ask: `I have ${side.openBench} empty bench spot${side.openBench === 1 ? '' : 's'}${needs.length ? ` and I'm short at ${needs.join(', ')}` : ''}. Who should I pick up?`,
+          leagueId: activeLeagueId,
+          nonce: Date.now(),
+        },
+      } as any);
+    return (
+      <View key={key} style={[styles.playerRow, styles.emptyRow, styles.emptyBenchRow, dense && { paddingHorizontal: 8 }]}>
+        <View style={[styles.emptyBadge, { borderColor: colors.primary }]}>
+          <Text style={[styles.emptyBadgeText, { color: colors.primary }]}>BN</Text>
+        </View>
+        <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+          <Text style={[styles.emptySlotTitle, { color: colors.primary }]} numberOfLines={1}>Empty bench spot</Text>
+          <Text style={styles.emptySlotSub} numberOfLines={dense ? 3 : 2}>
+            {!mine
+              ? 'An open roster spot.'
+              : pick
+                ? `Pick up ${pick.add.name} (${pick.add.position}): ${pick.reason}`
+                : 'Add a free agent in Sleeper: an empty spot is wasted depth.'}
+          </Text>
+          {mine && (
+            <TouchableOpacity style={styles.openAsk} onPress={askAI} accessibilityLabel="Ask the AI who to pick up">
+              <Ionicons name="sparkles" size={12} color={colors.primary} />
+              <Text style={styles.openAskText}>Ask AI who to pick up</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
     );
   };
 
@@ -1497,6 +1555,7 @@ const makeStyles = (c: Palette) => ({
   irCard: { backgroundColor: c.surface, borderRadius: radius.md, padding: 12, marginTop: 12, gap: 4, borderWidth: 1, borderColor: c.border, borderLeftWidth: 4, borderLeftColor: c.danger },
   irSlots: { fontSize: 11, fontWeight: '700' as const, color: c.textMuted },
   irNote: { color: c.textMuted, fontSize: 12 },
+  emptyBenchRow: { backgroundColor: c.primarySoft },
   openCard: { backgroundColor: c.surface, borderRadius: radius.md, padding: 12, marginTop: 12, gap: 4, borderWidth: 1, borderColor: c.border, borderLeftWidth: 4, borderLeftColor: c.primary },
   openAsk: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 5, alignSelf: 'flex-start' as const, marginTop: 8, backgroundColor: c.primarySoft, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 6 },
   openAskText: { color: c.primary, fontWeight: '700' as const, fontSize: 12 },

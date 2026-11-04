@@ -14,6 +14,8 @@ export type Roster = {
   matchup_id: number;
   // Players in IR slots
   reserve?: string[] | null;
+  // Players on the taxi squad (dynasty leagues); they don't use a bench spot
+  taxi?: string[] | null;
 };
 
 // Navigation types for your stack

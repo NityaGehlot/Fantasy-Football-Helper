@@ -157,19 +157,33 @@ export function relevantDefenseRank(position: string, ctx: MatchupContext | null
  * Matchup: up to ±10% (32nd-ranked = easiest defense = +10%). Weather: 5% per point.
  * Injuries around him: 6% per point. Capped to 70%-130% of his usual output.
  */
-export function matchupAdjustment(position: string, ctx: MatchupContext | null): { multiplier: number; parts: string[] } {
-  if (!ctx) return { multiplier: 1, parts: [] };
+export type MatchupParts = {
+  // Each as a fraction of his normal output (+0.06 = 6% more this week)
+  defense: number;
+  weather: number;
+  injury: number;
+  defenseRank: number | null;
+  defenseTeams: number;
+};
+
+export function matchupAdjustment(
+  position: string,
+  ctx: MatchupContext | null
+): { multiplier: number; parts: string[]; components: MatchupParts; injuryNotes: string[] } {
+  const components: MatchupParts = { defense: 0, weather: 0, injury: 0, defenseRank: null, defenseTeams: 32 };
+  if (!ctx) return { multiplier: 1, parts: [], components, injuryNotes: [] };
   const parts: string[] = [];
-  let m = 1;
   const rank = relevantDefenseRank(position, ctx);
   const teams = Object.keys(ctx.defense?.teams ?? {}).length || 32;
+  components.defenseTeams = teams;
   if (rank !== null) {
     const pct = ((rank - (teams + 1) / 2) / ((teams - 1) / 2)) * 0.1;
-    m += pct;
+    components.defense = pct;
+    components.defenseRank = rank;
     parts.push(`${ctx.opponent} is ${ordinalOf(rank)} of ${teams} in points allowed to ${String(position).toUpperCase()}s (${pct >= 0 ? "+" : ""}${Math.round(pct * 100)}%)`);
   }
   if (ctx.weatherScore) {
-    m += 0.05 * ctx.weatherScore;
+    components.weather = 0.05 * ctx.weatherScore;
     parts.push(`weather ${ctx.weatherScore > 0 ? "+" : ""}${ctx.weatherScore} (${ctx.weatherNotes[0] ?? "conditions"})`);
   }
   // His own Out/IR status is handled separately (he scores 0), so only use the rest here.
@@ -177,9 +191,20 @@ export function matchupAdjustment(position: string, ctx: MatchupContext | null):
   const others = Math.max(-3, Math.min(3, ctx.injuries.filter(n => n.source !== "self").reduce((t, n) => t + n.weight, 0)));
   const injury = Math.round((own + others) * 10) / 10;
   if (injury) {
-    m += 0.06 * injury;
+    components.injury = 0.06 * injury;
     const main = [...ctx.injuries].sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight))[0];
     parts.push(`injuries ${injury > 0 ? "+" : ""}${injury} (${main?.source === "self" ? "his own injury" : `${main?.name} ${main?.status}`})`);
   }
-  return { multiplier: Math.round(Math.max(0.7, Math.min(1.3, m)) * 100) / 100, parts };
+  // Reasons in plain words for every injury that moves his outlook (his own, teammates', opponents').
+  const injuryNotes = ctx.injuries
+    .filter(n => n.weight && !(n.source === "self" && n.weight <= -3))
+    .sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight))
+    .map(n =>
+      n.source === "self"
+        ? `His own injury: ${n.reason}`
+        : `${n.source === "teammate" ? "Teammate" : "Opponent"} ${n.name} (${n.position}) is ${n.status.toLowerCase()}: ${n.reason} (${n.weight > 0 ? "+" : ""}${Math.round(n.weight * 6)}%)`
+    );
+  parts.push(...injuryNotes.filter(n => !n.startsWith("His own")));
+  const m = 1 + components.defense + components.weather + components.injury;
+  return { multiplier: Math.round(Math.max(0.7, Math.min(1.3, m)) * 100) / 100, parts, components, injuryNotes };
 }

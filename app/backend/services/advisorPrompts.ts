@@ -65,25 +65,35 @@ export function rosterBlock(players: TradePlayer[]): string {
 }
 
 // ---------- Full lineup ----------
-type LineupSlotLike = { label: string; player: { id: string; name: string; position: string; team?: string; value: number } | null; changed: boolean; locked: boolean };
+type LineupPlayerLike = { id: string; name: string; position: string; team?: string; value: number; projection?: number; reasons?: string[] };
+type LineupSlotLike = { label: string; player: LineupPlayerLike | null; changed: boolean; locked: boolean };
 
 export function buildLineupPrompt(
   question: string,
   lineup: LineupSlotLike[],
-  bench: { id: string; name: string; position: string; team?: string; value: number }[],
+  bench: LineupPlayerLike[],
   notes: string[],
   matchupNotes: Record<string, string> = {},
-  injuryNotes: string[] = []
+  injuryNotes: string[] = [],
+  closeCalls: { slot: string; starter: LineupPlayerLike; bench: LineupPlayerLike; diff: number }[] = []
 ): string {
-  const why = (id: string) => (matchupNotes[id] ? `\n    ↳ ${matchupNotes[id]}` : "");
+  // Each player's reasons (projection, defense weighed by his rank, injuries around him, weather).
+  const why = (p: LineupPlayerLike) => {
+    const reasons = (p.reasons ?? []).length ? p.reasons! : matchupNotes[p.id] ? [matchupNotes[p.id]] : [];
+    return reasons.map(r => `\n    ↳ ${r}`).join("");
+  };
+  const pts = (p: LineupPlayerLike) => `${(p.projection ?? p.value).toFixed(2)} projected pts (decision score ${p.value.toFixed(2)})`;
   const lineupText = lineup
     .map(l =>
       l.player
-        ? `• ${l.label}: ${l.player.name} (${l.player.position}${l.player.team ? `, ${l.player.team}` : ""}) — ${l.player.value.toFixed(2)} projected pts${l.locked ? " [game started]" : l.changed ? " [CHANGE from current Sleeper lineup]" : ""}${why(l.player.id)}`
+        ? `• ${l.label}: ${l.player.name} (${l.player.position}${l.player.team ? `, ${l.player.team}` : ""}) — ${pts(l.player)}${l.locked ? " [game started]" : l.changed ? " [CHANGE from current Sleeper lineup]" : ""}${why(l.player)}`
         : `• ${l.label}: EMPTY — nobody on the roster can play here`
     )
     .join("\n");
-  const benchText = bench.map(p => `• ${p.name} (${p.position}${p.team ? `, ${p.team}` : ""}) — ${p.value.toFixed(2)} projected pts${why(p.id)}`).join("\n");
+  const benchText = bench.map(p => `• ${p.name} (${p.position}${p.team ? `, ${p.team}` : ""}) — ${pts(p)}${why(p)}`).join("\n");
+  const closeText = closeCalls.length
+    ? closeCalls.map(c => `• ${c.slot}: ${c.starter.name} over ${c.bench.name} (${c.diff.toFixed(2)} apart)`).join("\n")
+    : "• None";
   const labels = lineup.map(l => l.label);
   const data = `BEST LINEUP — ${lineup.length} starting slots, in Sleeper's order (pre-computed from Sleeper's projections for THIS week; the user already sees this list)
 ${lineupText}
@@ -97,14 +107,18 @@ ${injuryNotes.length ? injuryNotes.map(n => `• ${n}`).join("\n") : "• No inj
 NOTES
 ${notes.length ? notes.map(n => `• ${n}`).join("\n") : "• No bye weeks or empty slots."}
 
-HOW TO READ "x1.08": his usual output times 1.08 = 8% more this week. Defense ranks: 1 = toughest, 32 = easiest.`;
+CLOSE CALLS (pre-computed: the ONLY swaps worth mentioning; each bench player can legally play that slot)
+${closeText}
+
+HOW THE DECISION WAS MADE: Sleeper's projection is the main factor. It is then adjusted for the defense he faces (a tough defense matters little for an elite player at his position, more for a low-ranked one; a weak defense is a plus for anyone), injuries on his team and the opponent's (e.g. a backup QB hurts his receivers; the lead RB out means more carries for the next RB; a starting WR out means more targets for the others), weather, and his own injury. Defense ranks: 1 = toughest, 32 = easiest.
+RULES: Never suggest moving a player into a slot his position can't play (a QB can't play RB/WR/TE/FLEX; only SUPERFLEX takes a QB). A questionable starter is normally fine to start: just say to check his status before kickoff.`;
 
   return assemble("YOUR LINEUP", data, question, `
 ${DIVIDER}
 ▶ WHY THESE STARTERS
 ${DIVIDER}
 Write exactly ${lineup.length} bullets, one per slot, in this order: ${labels.join(", ")}.
-• [slot label]: [player] — [one short reason: projection plus the matchup/weather/injury reason from his ↳ line in plain words]
+• [slot label]: [player] — [projection, then the most important ↳ reason in plain words: the defense (and whether his rank makes it matter), injuries around him, weather]
 
 ${DIVIDER}
 ▶ INJURIES TO WATCH
@@ -114,7 +128,7 @@ ${DIVIDER}
 ${DIVIDER}
 ▶ CLOSE CALLS
 ${DIVIDER}
-• [any bench player within ~1 pt of a starter he could replace, and what separates them, or "None"]
+• [only the pairs under CLOSE CALLS, and what separates them; if it says None, write "None"]
 `);
 }
 
@@ -273,18 +287,29 @@ ${DIVIDER}
 `);
 }
 
-export function buildTradeEvaluationPrompt(question: string, idea: TradeIdea): string {
-  const verdict =
-    idea.myGain > 0.5
+export function buildTradeEvaluationPrompt(
+  question: string,
+  idea: TradeIdea,
+  // A trade the user built and would send: whether to send it, and edits that get a yes
+  proposal?: { headline: string; edits: { summary: string; idea: TradeIdea }[] }
+): string {
+  const verdict = proposal
+    ? proposal.headline
+    : idea.myGain > 0.5
       ? "ACCEPT / PROPOSE: it improves your starting lineup."
       : idea.myGain >= -0.5
-      ? "NEUTRAL: your starting lineup barely changes. Only do it for depth or bye-week reasons."
-      : "DECLINE: it makes your starting lineup worse.";
+        ? "NEUTRAL: your starting lineup barely changes. Only do it for depth or bye-week reasons."
+        : "DECLINE: it makes your starting lineup worse.";
+  const edits = proposal?.edits.length
+    ? `\n\nSUGGESTED EDITS (pre-computed; each still helps the user and doesn't cost the other team)\n${proposal.edits
+        .map(e => `• ${e.summary}: you +${e.idea.myGain.toFixed(1)} pts/week, them ${e.idea.theirGain >= 0 ? "+" : ""}${e.idea.theirGain.toFixed(1)}`)
+        .join("\n")}`
+    : "";
 
   return assemble("TRADE EVALUATION (pre-computed)", `${describeTradeIdea(idea)}
 
 PRE-COMPUTED VERDICT
-• ${verdict}`, question, `
+• ${verdict}${edits}`, question, `
 ${DIVIDER}
 ▶ VERDICT
 ${DIVIDER}
@@ -296,7 +321,12 @@ ${DIVIDER}
 • [what you give up vs. what you get, using the pts/g shown]
 • [effect on your starting lineup]
 • [whether the other team is likely to accept, based on their lineup change]
-`);
+${proposal ? `
+${DIVIDER}
+▶ SEND IT OR EDIT IT
+${DIVIDER}
+• [say clearly: send as is, or which SUGGESTED EDIT to make and why]
+` : ""}`);
 }
 
 // ---------- Draft ----------

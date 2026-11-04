@@ -29,6 +29,7 @@ import InjuryReportCard from '../components/InjuryReportCard';
 import { useTheme, useLooseThemedStyles } from '../context/ThemeContext';
 import { positionColors, type Palette } from '../theme';
 import { getPlayerRanks, ordinal, type PlayerRank } from '../services/playerRanks';
+import { gamesSummary } from '../services/gamesPlayed';
 
 type NewsArticle = {
   title: string;
@@ -812,7 +813,9 @@ export default function PlayerDetailsScreen({ route }: any) {
       const passing: string[] = [];
 
       if (stats.completions > 0 || stats.attempts > 0)
-        passing.push(`${stats.completions}/${stats.attempts} CMP`);
+        passing.push(
+          `${stats.completions}/${stats.attempts} CMP${Number(stats.attempts) > 0 ? ` · ${((Number(stats.completions) / Number(stats.attempts)) * 100).toFixed(1)}%` : ''}`
+        );
 
       if (stats.passing_yards > 0)
         passing.push(`${stats.passing_yards} YD`);
@@ -1005,32 +1008,13 @@ export default function PlayerDetailsScreen({ route }: any) {
       return false;
     };
 
-    const countGames = () => weeks.reduce((acc: number, wk: any) => {
-      const wkNum = wk.num;
-      const wkData = wk.data || {};
-      if (isWeekBye(wkNum, wkData)) return acc; // exclude bye weeks
-      // count as game if main row indicates game_played OR team DEF row exists
-      const teamStatus = String(wkData?.team_status ?? wkData?._team_def?.team_status ?? '').toLowerCase().trim();
-      if (Boolean(wkData.game_played) || teamStatus === 'played') return acc + 1;
-      if (wkData._team_def) return acc + 1;
-      // fallback: if any meaningful stat present for player
-      if (hasMeaningfulStats(wkData)) return acc + 1;
-      return acc;
-    }, 0);
-
-    // If viewing only postseason, compute games played during postseason weeks (19-22)
-    const postseasonGamesPlayed = () => {
-      return weeks.filter((wk: any) => {
-        const wkNum = wk.num;
-        if (wkNum < 19 || wkNum > 22) return false;
-        const wkData = wk.data || {};
-        const teamStatus = String(wkData?.team_status ?? wkData?._team_def?.team_status ?? '').toLowerCase().trim();
-        if (Boolean(wkData.game_played) || teamStatus === 'played') return true;
-        if (wkData._team_def) return true;
-        if (hasMeaningfulStats(wkData)) return true;
-        return false;
-      }).length;
-    };
+    // Games he actually played: his team playing isn't enough. A week he was out or inactive with
+    // an injury (no snaps, no stats) is a missed game, and per-game averages divide by games played.
+    const teamDefense = pos === 'DEF';
+    const playableWeeks = weeks.filter((wk: any) => !isWeekBye(wk.num, wk.data || {}));
+    const countGames = () => gamesSummary(playableWeeks, { teamDefense }).played;
+    const postseasonGamesPlayed = () => gamesSummary(playableWeeks.filter((wk: any) => wk.num >= 19 && wk.num <= 22), { teamDefense }).played;
+    const gamesMissed = seasonScope === 'post' ? 0 : gamesSummary(playableWeeks, { teamDefense }).missed;
 
     // gamesPlayed respects the selected seasonScope
     const gamesPlayed = seasonScope === 'post' ? postseasonGamesPlayed() : countGames();
@@ -1047,6 +1031,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         rushing_tds: sum('rushing_tds'),
         fantasy_points_ppr: fantasyPointsSum(),
         games: gamesPlayed,
+        games_missed: gamesMissed,
         bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
         eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
       };
@@ -1062,6 +1047,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         receiving_tds: sum('receiving_tds'),
         fantasy_points_ppr: fantasyPointsSum(),
         games: gamesPlayed,
+        games_missed: gamesMissed,
         bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
         eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
       };
@@ -1077,6 +1063,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         rushing_tds: sum('rushing_tds'),
         fantasy_points_ppr: fantasyPointsSum(),
         games: gamesPlayed,
+        games_missed: gamesMissed,
         bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
         eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
       };
@@ -1089,6 +1076,7 @@ export default function PlayerDetailsScreen({ route }: any) {
         pat_att: sum('pat_att'),
         fantasy_points_ppr: fantasyPointsSum(),
         games: gamesPlayed,
+        games_missed: gamesMissed,
         bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase().includes('bye')).length,
         eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((wk: any) => String((wk.data?.team_status ?? wk.data?._team_def?.team_status) || '').toLowerCase() === 'eliminated').length,
       };
@@ -1104,11 +1092,8 @@ export default function PlayerDetailsScreen({ route }: any) {
         def_safeties: sum('def_safeties'),
         points_allowed: sum('points_allowed'),
         fantasy_points_ppr: fantasyPointsSum(),
-        games: seasonScope === 'post' ? postseasonGamesPlayed() : weeks.filter((w: any) => {
-          const wkData = w.data || {};
-          const teamStatus = String(wkData?.team_status ?? wkData?._team_def?.team_status ?? '').toLowerCase().trim();
-          return Boolean(wkData?.game_played) || teamStatus === 'played' || Boolean(wkData?._team_def);
-        }).length,
+        games: gamesPlayed,
+        games_missed: gamesMissed,
         bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase().includes('bye')).length,
         eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase() === 'eliminated').length,
       };
@@ -1127,7 +1112,8 @@ export default function PlayerDetailsScreen({ route }: any) {
         def_tds: sum('def_tds'),
         def_qb_hits: sum('def_qb_hits'),
         fantasy_points_ppr: fantasyPointsSum(),
-        games: seasonScope === 'post' ? postseasonGamesPlayed() : weeks.filter((w: any) => Boolean(w.data?.game_played)).length,
+        games: gamesPlayed,
+        games_missed: gamesMissed,
         bye_weeks: seasonScope === 'post' ? 0 : weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase().includes('bye')).length,
         eliminated_weeks: seasonScope === 'post' ? 0 : weeks.filter((w: any) => String(w.data?.team_status || '').toLowerCase() === 'eliminated').length,
       };
@@ -1162,10 +1148,13 @@ export default function PlayerDetailsScreen({ route }: any) {
       return `${toDisplayNumber(l / games)}/${toDisplayNumber(r / games)}`;
     };
 
-    const rows: { label: string; value: string }[] = [];
+    // `pct` adds a percentage line and bar inside the same box (completion %).
+    const rows: { label: string; value: string; pct?: number; pctLabel?: string }[] = [];
 
     if (s) {
       rows.push({ label: 'Games', value: String(s.games) });
+      // Weeks his team played without him (injury / inactive): not counted as games or in averages.
+      if (Number(s.games_missed) > 0) rows.push({ label: 'Missed', value: String(s.games_missed) });
       if (Number(s.eliminated_weeks) > 0) rows.push({ label: 'Eliminated Weeks', value: String(s.eliminated_weeks) });
       if (!isIndividualDefensiveSeasonView) {
         rows.push({
@@ -1177,7 +1166,13 @@ export default function PlayerDetailsScreen({ route }: any) {
       }
 
       if (pos === 'QB') {
-        rows.push({ label: seasonViewMode === 'totals' ? 'Completions' : 'Comp/Att (Avg)', value: formatPair(s.completions, s.attempts) });
+        const att = Number(s.attempts) || 0;
+        rows.push({
+          label: seasonViewMode === 'totals' ? 'Completions' : 'Comp/Att (Avg)',
+          value: formatPair(s.completions, s.attempts),
+          pct: att > 0 ? Math.round(((Number(s.completions) || 0) / att) * 1000) / 10 : undefined,
+          pctLabel: 'completed',
+        });
         rows.push({ label: 'Pass Yards', value: formatStat(s.passing_yards) });
         rows.push({ label: 'Pass TDs', value: formatStat(s.passing_tds) });
         rows.push({ label: 'INTs', value: formatStat(s.passing_interceptions) });
@@ -1300,6 +1295,16 @@ export default function PlayerDetailsScreen({ route }: any) {
               <View key={row.label} style={styles.seasonCell}>
                 <Text style={styles.seasonValue}>{row.value}</Text>
                 <Text style={styles.seasonLabel}>{row.label}</Text>
+                {row.pct !== undefined && (
+                  <View style={styles.pctWrap}>
+                    <View style={styles.pctTrack}>
+                      <View style={[styles.pctFill, { width: `${Math.min(100, Math.max(0, row.pct))}%` }]} />
+                    </View>
+                    <Text style={styles.pctText}>
+                      {row.pct.toFixed(1)}% {row.pctLabel}
+                    </Text>
+                  </View>
+                )}
               </View>
             ))
           ) : (
@@ -2197,6 +2202,29 @@ const makeStyles = (th: Palette) => ({
     fontSize: 11,
     color: th.textMuted,
     marginTop: 2,
+    textAlign: 'center',
+  },
+  pctWrap: {
+    alignSelf: 'stretch',
+    marginTop: 6,
+    paddingHorizontal: 6,
+    gap: 3,
+  },
+  pctTrack: {
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: th.border,
+    overflow: 'hidden',
+  },
+  pctFill: {
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: th.primary,
+  },
+  pctText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: th.primary,
     textAlign: 'center',
   },
 

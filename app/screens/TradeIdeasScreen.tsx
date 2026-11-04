@@ -370,10 +370,12 @@ export default function TradeIdeasScreen() {
       )}
 
       <TouchableOpacity style={styles.graderBtn} onPress={() => setShowGrader(true)}>
-        <Ionicons name="ribbon-outline" size={18} color={colors.primary} />
+        <Ionicons name="construct-outline" size={18} color={colors.primary} />
         <View style={{ flex: 1 }}>
-          <Text style={styles.panelTitle}>Grade a trade offer</Text>
-          <Text style={styles.panelSub}>Got an offer in Sleeper? See its grade and how both lineups change.</Text>
+          <Text style={styles.panelTitle}>Build or grade a trade</Text>
+          <Text style={styles.panelSub}>
+            Build a trade and the AI tells you whether to send it or how to change it. Got an offer? Grade it here too.
+          </Text>
         </View>
         <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
       </TouchableOpacity>

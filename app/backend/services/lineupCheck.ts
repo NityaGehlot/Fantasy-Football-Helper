@@ -3,7 +3,8 @@
 // compares the lineup you have set in Sleeper with the best lineup for this week, and lists
 // the swaps to make. Players whose game already started are locked and left alone.
 
-import { optimizeLineup, SlotName, SLOT_ELIGIBILITY } from "./lineup";
+import { alignStarters, optimizeLineup, SlotName, SLOT_ELIGIBILITY } from "./lineup";
+import { decide } from "./lineupFactors";
 import { getLeagueContext } from "./leagueContext";
 import { getGameStates } from "./schedule";
 import { getMatchups, getProjections, getRosters } from "./sleeperServer";
@@ -11,7 +12,21 @@ import { projectionFor } from "./liveMatchup";
 import { ensureInjuriesLoaded, injuryNote, lookupInjury } from "./injuryStore";
 import { weeklyAdjustedPlayers } from "./advisor";
 
-export type CheckPlayer = { id: string; name: string; position: string; team?: string; value: number; injuryStatus?: string };
+// value: what decides who starts (Sleeper's projection adjusted for matchup and injuries);
+// projection: Sleeper's projection itself (the number shown, like in Sleeper).
+export type CheckPlayer = {
+  id: string;
+  name: string;
+  position: string;
+  team?: string;
+  value: number;
+  injuryStatus?: string;
+  projection?: number;
+  reasons?: string[];
+  tier?: string;
+};
+
+export type CloseCall = { slot: string; starter: CheckPlayer; bench: CheckPlayer; diff: number };
 export type LineupSwap = {
   slot: string;
   start: CheckPlayer;
@@ -41,6 +56,11 @@ export type LineupCheck = {
   injuryNotes: string[];
   // Your other healthy players, best first
   bench: CheckPlayer[];
+  // Bench players within a point of a starter whose slot they can actually play
+  closeCalls: CloseCall[];
+  // Sleeper projections (what you'd see in Sleeper) for the lineup now and the best lineup
+  currentProjected: number;
+  bestProjected: number;
   // Why a player's points were scaled this week (matchup, weather, injuries around him), by id
   matchupNotes: Record<string, string>;
 };
@@ -191,16 +211,23 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
   // only a fallback for players Sleeper doesn't project. Players in IR spots can't be started.
   const receptionPoints = Number(ctx.league?.scoring_settings?.rec ?? 1);
   const reserve = new Set(((rosters ?? []).find((r: any) => Number(r.roster_id) === ctx.me!.rosterId)?.reserve ?? []).map(String));
-  const weekly = adjusted
+  // Who starts is decided by that projection adjusted for the defense (weighed by how good the
+  // player is), weather and injuries around him (see lineupFactors.ts).
+  const weekly: CheckPlayer[] = adjusted
     .filter(p => !reserve.has(p.id))
     .map(p => {
-      if (p.value === 0) return p;
-      const projected = projectionFor(projections[p.id], receptionPoints);
-      return { ...p, value: Math.round((projected ?? p.value) * 100) / 100 };
+      const adj = matchupAdj.get(p.id);
+      if (p.value === 0) return { ...p, value: 0, projection: 0, reasons: [] };
+      const sleeper = projectionFor(projections[p.id], receptionPoints);
+      // Our own estimate already includes the matchup; take it back out before re-applying.
+      const projection = Math.round((sleeper ?? p.value / (adj?.multiplier || 1)) * 100) / 100;
+      const d = decide(projection, p.position, adj?.components, (p as any).rank, adj?.injuryNotes ?? []);
+      return { ...p, value: d.score, projection, reasons: d.reasons, tier: d.tier };
     });
   const mine = (matchups ?? []).find((m: any) => Number(m.roster_id) === ctx.me!.rosterId);
-  // Keep "0" entries: they are empty starting slots in Sleeper.
-  const starterIds: string[] = (mine?.starters ?? []).map(String);
+  // Sleeper's starters follow every starting spot in roster_positions; pair them up so a slot type
+  // this app doesn't model can't shift players into the wrong spots. "0" = an empty slot.
+  const { slots, ids: starterIds } = alignStarters(ctx.league?.roster_positions, mine?.starters ?? []);
 
   const locked = new Set<string>();
   const kickoffs = new Set<string>();
@@ -210,7 +237,10 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
     else if (g?.kickoff && Date.parse(g.kickoff) > Date.now()) kickoffs.add(g.kickoff);
   }
 
-  const { swaps, currentPoints, bestPoints, emptySlots, lineup } = compareLineups(weekly, starterIds, ctx.slots, locked);
+  const { swaps, currentPoints, bestPoints, emptySlots, lineup } = compareLineups(weekly, starterIds, slots, locked);
+  const byId = new Map(weekly.map(p => [p.id, p]));
+  const currentProjected = round(starterIds.reduce((t, id) => t + (byId.get(id)?.projection ?? 0), 0));
+  const bestProjected = round(lineup.reduce((t, l) => t + (l.player?.projection ?? 0), 0));
   const problems: string[] = [];
   // Empty slots nobody on the roster can fill.
   const unfilled = [...emptySlots];
@@ -245,5 +275,40 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
   matchupAdj.forEach((m, id) => {
     if (m.parts.length) matchupNotes[id] = `x${m.multiplier.toFixed(2)} this week: ${m.parts.join("; ")}`;
   });
-  return { week, kickoffs: [...kickoffs].sort(), currentPoints, bestPoints, swaps, problems, emptySlots, lineup, injuryNotes, bench, matchupNotes };
+  const closeCalls = findCloseCalls(lineup, bench);
+  return {
+    week,
+    kickoffs: [...kickoffs].sort(),
+    currentPoints,
+    bestPoints,
+    currentProjected,
+    bestProjected,
+    swaps,
+    problems,
+    emptySlots,
+    lineup,
+    injuryNotes,
+    bench,
+    closeCalls,
+    matchupNotes,
+  };
+}
+
+/** Bench players within a point of a starter, only where the bench player can play that slot. */
+export function findCloseCalls(lineup: LineupSlot[], bench: CheckPlayer[], margin = 1, limit = 3): CloseCall[] {
+  const out: CloseCall[] = [];
+  for (const l of lineup) {
+    if (!l.player || l.locked) continue;
+    const eligible = SLOT_ELIGIBILITY[l.slot as SlotName] ?? [];
+    for (const b of bench) {
+      if (!eligible.includes(b.position) || b.value <= 0) continue;
+      const diff = round(l.player.value - b.value);
+      if (diff >= 0 && diff <= margin) out.push({ slot: l.label, starter: l.player, bench: b, diff });
+    }
+  }
+  const seen = new Set<string>();
+  return out
+    .sort((a, b) => a.diff - b.diff)
+    .filter(c => (seen.has(c.bench.id) ? false : (seen.add(c.bench.id), true)))
+    .slice(0, limit);
 }

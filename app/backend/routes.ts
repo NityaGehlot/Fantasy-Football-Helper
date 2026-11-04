@@ -43,8 +43,8 @@ import { buildIrAdvice } from "./services/irAdvice";
 import { buildMatchupContext, formatMatchupBlock } from "./services/matchupContext";
 import { playedPoints, pointRange } from "./utils/pointRange";
 import { imagesForArticles } from "./services/articleImages";
-import { getAllPlayers, getLeague, getLeagueUsers, getNflState, getRosters, getTransactions } from "./services/sleeperServer";
-import { gradeTrade, pendingTradesFor, tradeForPlayer } from "./services/tradeGrade";
+import { getAllPlayers, getLeague, getLeagueUsers, getNflState, getRosters, getTransactions, lastSource } from "./services/sleeperServer";
+import { gradeProposal, gradeTrade, pendingTradesFor, tradeForPlayer } from "./services/tradeGrade";
 import { getLineupCheck } from "./services/lineupCheck";
 import { getPlayerRanks } from "./services/playerRanks";
 import { describeMoves } from "./services/leagueMoves";
@@ -636,7 +636,8 @@ export function registerRoutes(router: Router): void {
       const state = await getNflState().catch(() => null);
       const season = Number(req.query.season) || Number(league?.season) || Number(state?.season) || new Date().getFullYear();
       const ranks = await getPlayerRanks(season, league?.scoring_settings ?? null);
-      res.json({ season, scoring: league?.scoring_settings ? "league" : "ppr", ranks });
+      // source: which Sleeper endpoint answered ("none" = Sleeper returned nothing; see backend log)
+      res.json({ season, scoring: league?.scoring_settings ? "league" : "ppr", ranks, source: lastSource.seasonStats ?? null });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || "Ranks unavailable" });
     }
@@ -661,8 +662,10 @@ export function registerRoutes(router: Router): void {
   });
 
   router.post("/grade-trade", async (req: Request, res: Response) => {
-    const { leagueId, rosterId, ownerId, partnerRosterId, give, get } = (req.body ?? {}) as {
+    const { leagueId, rosterId, ownerId, partnerRosterId, give, get, mode } = (req.body ?? {}) as {
       leagueId?: string; rosterId?: number; ownerId?: string; partnerRosterId?: number; give?: string[]; get?: string[];
+      // "send": a trade you built (should you send it, or edit it?); otherwise an offer you got
+      mode?: "send" | "receive";
     };
     if (!leagueId || partnerRosterId === undefined) return res.status(400).json({ error: "leagueId and partnerRosterId are required" });
     try {
@@ -676,7 +679,11 @@ export function registerRoutes(router: Router): void {
       const givePlayers = ctx.me.players.filter(p => giveIds.includes(p.id));
       const getPlayers = partner.players.filter(p => getIds.includes(p.id));
       if (givePlayers.length === 0 && getPlayers.length === 0) return res.status(400).json({ error: "Pick at least one player." });
-      res.json(gradeTrade(ctx.me, partner, givePlayers, getPlayers, ctx.slots));
+      res.json(
+        mode === "send"
+          ? gradeProposal(ctx.me, partner, givePlayers, getPlayers, ctx.slots)
+          : gradeTrade(ctx.me, partner, givePlayers, getPlayers, ctx.slots)
+      );
     } catch (err: any) {
       console.error("❌ Grade trade failed:", err);
       res.status(500).json({ error: err?.message || "Failed to grade trade" });

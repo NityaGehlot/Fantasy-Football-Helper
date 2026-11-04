@@ -24,7 +24,10 @@ export async function getPlayerRanks(leagueId?: string | null, season?: number):
         if (season) qs.set('season', String(season));
         const res = await fetch(`${getApiBaseUrl()}/player-ranks?${qs}`);
         if (!res.ok) throw new Error('Ranks unavailable');
-        return (await res.json()) as RankFile;
+        const file = (await res.json()) as RankFile;
+        // Nothing came back from Sleeper: don't keep that for an hour, try again next time.
+        if (!file?.ranks || Object.keys(file.ranks).length === 0) throw new Error('No ranks yet');
+        return file;
       },
       { persist: true }
     );

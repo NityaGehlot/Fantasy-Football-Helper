@@ -83,7 +83,7 @@ export const GUIDE: GuideTopic[] = [
     title: 'Trade agent and grading offers',
     keywords: ['trade', 'offer', 'grade', 'untouchable', 'propose', 'fair'],
     answer:
-      'The Trades tab scans your league every 6 hours for trades that improve your lineup without hurting the other team\'s. Lock players with "Untouchable players". "Grade a trade offer" lets you pick the players in any offer and see a grade, how both lineups change and the playoff schedules. "Propose in Sleeper" gives the steps and a message to send.',
+      'The Trades tab scans your league every 6 hours for trades that improve your lineup without hurting the other team\'s. Lock players with "Untouchable players". "Build or grade a trade" lets you hand-build a trade with any team: it tells you whether to send it (it helps you and they have a reason to accept) or how to edit it so they say yes. Switch to "I got this offer" to grade an offer from Sleeper (accept, counter or decline). Sleeper doesn\'t share pending offers with other apps, so enter offers you received there. "Propose in Sleeper" gives the steps and a message to send.',
     screen: 'Trades',
     goLabel: 'Open Trades',
   },

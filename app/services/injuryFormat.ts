@@ -9,6 +9,11 @@ export type InjuryHistoryEntry = {
   practice_source?: string;
   game_status?: string;
   status?: string;
+  // Backfilled weeks (official final report): the injury and who it is
+  injury?: string;
+  name?: string;
+  team?: string;
+  position?: string;
 };
 
 export type InjuryNews = {
@@ -150,6 +155,28 @@ export function practiceCode(text?: string): string {
   return '';
 }
 
+/**
+ * A player's entries in a week's history file. Live weeks are keyed by Sleeper id; backfilled
+ * weeks by gsis id with the name and team stored, so those are matched by gsis id or name + team.
+ */
+export function historyEntriesFor(history: InjuryHistoryFile | null | undefined, player: any): InjuryHistoryEntry[] | null {
+  if (!history) return null;
+  const byId = history[String(player?.player_id ?? '')] ?? (player?.gsis_id ? history[String(player.gsis_id)] : undefined);
+  if (byId?.length) return byId;
+  const name = norm(player?.full_name ?? '');
+  if (!name) return null;
+  const team = String(player?.team ?? '').toUpperCase();
+  let nameOnly: InjuryHistoryEntry[] | null = null;
+  for (const entries of Object.values(history)) {
+    const e = entries?.[0];
+    if (!e?.name || norm(e.name) !== name) continue;
+    if (!team || String(e.team ?? '').toUpperCase() === team) return entries;
+    nameOnly = nameOnly ?? entries;
+  }
+  // Same name on another team: he may have changed teams since that season.
+  return nameOnly;
+}
+
 export type WeekInjury = {
   // current: the live report (this week); past: what was reported that week; none: nothing saved
   mode: 'current' | 'past';
@@ -189,14 +216,14 @@ export function injuryForWeek({
     const { status, injury, record } = currentInjury(indexInjuries(file), player);
     return { mode: 'current', status, injury, record, rows: practiceTable(record?.history) };
   }
-  const entries = history?.[String(player?.player_id ?? '')];
+  const entries = historyEntriesFor(history, player);
   if (entries?.length) {
-    const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date));
+    const sorted = [...entries].sort((a, b) => String(a.date ?? '').localeCompare(String(b.date ?? '')));
     const last = sorted[sorted.length - 1];
     return {
       mode: 'past',
       status: String(last.game_status || last.status || '').toUpperCase(),
-      injury: '',
+      injury: String(last.injury ?? ''),
       record: null,
       rows: practiceTable(sorted),
       source: `Saved injury report for week ${week}`,

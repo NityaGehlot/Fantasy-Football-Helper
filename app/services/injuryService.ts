@@ -24,17 +24,22 @@ export async function getInjuryIndex() {
   return indexInjuries(await getInjuryFile());
 }
 
-const HISTORY_URL = (season: number, week: number) =>
-  `https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/injuries/history/${season}_week${String(week).padStart(2, '0')}.json`;
+const HISTORY_BASE = 'https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/injuries/history';
+const wk = (week: number) => String(week).padStart(2, '0');
 
-/** Day-by-day injury report saved for a past week (null when that week wasn't saved). */
+/**
+ * The injury report saved for a past week (null when that week wasn't saved). Files live in
+ * history/{season}/week{NN}.json (every week since 2011); older files used history/{season}_week{NN}.json.
+ */
 export async function getInjuryHistory(season: number, week: number): Promise<InjuryHistoryFile | null> {
   try {
     return await cache.get(`history:${season}:${week}`, 6 * 60 * MINUTE, async () => {
-      const res = await fetch(HISTORY_URL(season, week));
-      if (res.status === 404) return null;
-      if (!res.ok) throw new Error('Injury history unavailable');
-      return (await res.json()) as InjuryHistoryFile;
+      for (const url of [`${HISTORY_BASE}/${season}/week${wk(week)}.json`, `${HISTORY_BASE}/${season}_week${wk(week)}.json`]) {
+        const res = await fetch(url);
+        if (res.ok) return (await res.json()) as InjuryHistoryFile;
+        if (res.status !== 404) throw new Error('Injury history unavailable');
+      }
+      return null;
     }, { persist: true });
   } catch {
     return null;
