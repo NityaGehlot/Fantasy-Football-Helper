@@ -13,6 +13,7 @@
 //   which re-triggers the lock above, so they're worth moving only when you need the spot.
 
 import { lineupValue, SlotName } from "./lineup";
+import { POSITIONS, positionCounts, positionTargets, type Pos } from "./positionBalance";
 import type { TradePlayer } from "./tradeEngine";
 import { rankDropCandidates } from "./waiver";
 
@@ -48,7 +49,86 @@ export type IrAdvice = {
   // Players in IR spots who aren't eligible anymore: Sleeper has locked your roster
   locked: IrLock[];
   eligibleStatuses: string[];
+  // Empty roster spots (bench included) and who to pick up for them
+  openSpots: OpenSpots;
 };
+
+export type OpenSpots = {
+  // Players allowed on the active roster (starters + bench; IR and taxi spots don't count)
+  size: number;
+  used: number;
+  open: number;
+  // Positions you have fewer of than a balanced roster needs
+  needs: Pos[];
+  pickups: (IrPickup & { reason: string })[];
+};
+
+/**
+ * Open roster spots: Sleeper's roster size is every spot in roster_positions except IR and
+ * taxi, and players in IR or taxi spots don't count against it. Pickups fill what the team
+ * needs most: a position you're short at first, then whoever helps the starting lineup most.
+ */
+export function openRosterSpots({
+  rosterPositions,
+  activePlayers,
+  freeAgents,
+  slots,
+  limit = 3,
+}: {
+  rosterPositions: unknown;
+  activePlayers: TradePlayer[];
+  freeAgents: TradePlayer[];
+  slots: SlotName[];
+  limit?: number;
+}): OpenSpots {
+  const positions = Array.isArray(rosterPositions) ? rosterPositions.map(p => String(p).toUpperCase()) : [];
+  const size = positions.filter(p => p !== "IR" && p !== "TAXI").length;
+  const used = activePlayers.length;
+  const open = size > 0 ? Math.max(0, size - used) : 0;
+  const targets = positionTargets(slots);
+  const counts = positionCounts(activePlayers);
+  const needs = POSITIONS.filter(p => counts[p] < targets[p].min).sort(
+    (a, b) => targets[b].min - counts[b] - (targets[a].min - counts[a])
+  );
+  if (open === 0) return { size, used, open, needs, pickups: [] };
+
+  const base = lineupValue(activePlayers, slots);
+  const healthy = freeAgents.filter(p => p.value > 0 && !["IR", "OUT", "PUP", "SUS", "SUSPENDED", "NA"].includes(String(p.injuryStatus ?? "").toUpperCase()));
+  const scored = healthy
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 80)
+    .map(add => ({ add, netGain: round(lineupValue([...activePlayers, add], slots) - base) }));
+  const reasonFor = (add: TradePlayer, netGain: number) => {
+    const pos = add.position as Pos;
+    const have = counts[pos] ?? 0;
+    if (needs.includes(pos))
+      return have === 0
+        ? `You have no ${pos === "DEF" ? "defense" : pos} on your roster.`
+        : `You only have ${have} ${pos}${have === 1 ? "" : "s"}; a balanced roster carries at least ${targets[pos].min}.`;
+    if (netGain > 0) return `Would start for you: +${netGain.toFixed(2)} pts a week.`;
+    return `Best available ${pos} for bench depth (${add.value.toFixed(2)} pts/g).`;
+  };
+  const picks: (IrPickup & { reason: string })[] = [];
+  // One for each position you're short at, then the best lineup upgrades / depth.
+  for (const pos of needs) {
+    const best = scored.filter(s => s.add.position === pos).sort((a, b) => b.netGain - a.netGain || b.add.value - a.add.value)[0];
+    if (best) picks.push({ ...best, reason: reasonFor(best.add, best.netGain) });
+  }
+  const rest = scored
+    .filter(s => !picks.some(p => p.add.id === s.add.id))
+    .sort((a, b) => b.netGain - a.netGain || b.add.value - a.add.value);
+  // Once a need is covered, don't suggest more at that position; kickers and defenses only when
+  // you're short (extra ones are wasted bench spots).
+  const covered = (pos: string) => (counts[pos as Pos] ?? 0) + picks.filter(p => p.add.position === pos).length >= (targets[pos as Pos]?.min ?? 0);
+  for (const s of rest) {
+    if (picks.length >= Math.max(limit, needs.length)) break;
+    const pos = s.add.position;
+    if (["K", "DEF"].includes(pos) && covered(pos)) continue;
+    if (needs.includes(pos as Pos) && covered(pos) && picks.some(p => p.add.position === pos)) continue;
+    picks.push({ ...s, reason: reasonFor(s.add, s.netGain) });
+  }
+  return { size, used, open, needs, pickups: picks };
+}
 
 const round = (n: number) => Math.round(n * 100) / 100;
 
@@ -83,9 +163,11 @@ export function buildIrAdvice({
   freeAgents,
   slots,
   pickupLimit = 3,
+  rosterPositions,
 }: {
   settings: Record<string, any> | undefined | null;
-  roster: { players?: string[]; reserve?: string[] | null };
+  roster: { players?: string[]; reserve?: string[] | null; taxi?: string[] | null };
+  rosterPositions?: unknown;
   myPlayers: TradePlayer[];
   freeAgents: TradePlayer[];
   slots: SlotName[];
@@ -146,5 +228,13 @@ export function buildIrAdvice({
     pickups = [...samePosition, ...rest].slice(0, pickupLimit);
   }
 
-  return { irSlots, irSlotsUsed: onIr.length, onIr, shouldMove, pickups, locked, eligibleStatuses };
+  const taxi = new Set((roster.taxi ?? []).map(String));
+  const openSpots = openRosterSpots({
+    rosterPositions,
+    activePlayers: active.filter(p => !taxi.has(p.id)),
+    // Adds aren't allowed while the roster is locked.
+    freeAgents: locked.length ? [] : freeAgents,
+    slots,
+  });
+  return { irSlots, irSlotsUsed: onIr.length, onIr, shouldMove, pickups, locked, eligibleStatuses, openSpots };
 }

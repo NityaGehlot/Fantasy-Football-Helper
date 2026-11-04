@@ -48,6 +48,7 @@ import { fetchLineupCheck, type LineupCheck } from '../services/lineupCheck';
 const FLEX_NAMES: Record<string, string> = { SUPER_FLEX: 'SUPER FLEX', REC_FLEX: 'W/T FLEX', WRRB_FLEX: 'W/R FLEX' };
 import { parseLeagueId } from '../services/leagueInput';
 import { fetchIrAdvice, irStatusWord, type IrAdvice } from '../services/irAdvice';
+import LeagueMovesCard from '../components/LeagueMovesCard';
 import { Menu } from 'react-native-paper';
 
 const MAX_FANTASY_WEEK_VISIBLE = 18;
@@ -1319,9 +1320,9 @@ if (!activeLeagueId) {
                   Sleeper blocks adds, waiver claims and roster moves until he leaves the IR spot.
                 </Text>
                 <Text style={styles.alertLine}>
-                  Fix: {l.drop ? <>drop <Text style={{ fontWeight: '800' }}>{l.drop.name}</Text> ({l.drop.position}, {l.drop.value.toFixed(1)} pts/game, the smallest hit to your lineup), then </> : 'make room on your bench, then '}
+                  Fix: {l.drop ? <>drop <Text style={{ fontWeight: '800' }}>{l.drop.name}</Text> ({l.drop.position}, {l.drop.value.toFixed(2)} pts/game, the smallest hit to your lineup), then </> : 'make room on your bench, then '}
                   move {l.player.name} from IR to your bench.
-                  {l.netGain !== null && l.netGain > 0 ? ` Your lineup gets +${l.netGain.toFixed(1)} pts/week with him back.` : ''}
+                  {l.netGain !== null && l.netGain > 0 ? ` Your lineup gets +${l.netGain.toFixed(2)} pts/week with him back.` : ''}
                 </Text>
               </View>
             ))}
@@ -1353,8 +1354,8 @@ if (!activeLeagueId) {
                 <Text style={[styles.alertTitle, { marginTop: 6, fontSize: 13 }]}>Then pick up</Text>
                 {irAdvice.pickups.map(({ add, netGain }) => (
                   <Text key={add.id} style={styles.alertLine}>
-                    • {add.name} ({add.position}{add.team ? `, ${add.team}` : ''}) · {add.value.toFixed(1)} pts/game
-                    {netGain > 0 ? ` · makes your lineup +${netGain.toFixed(1)} pts/week` : ' · depth for your bench'}
+                    • {add.name} ({add.position}{add.team ? `, ${add.team}` : ''}) · {add.value.toFixed(2)} pts/game
+                    {netGain > 0 ? ` · makes your lineup +${netGain.toFixed(2)} pts/week` : ' · depth for your bench'}
                   </Text>
                 ))}
               </>
@@ -1364,6 +1365,53 @@ if (!activeLeagueId) {
                 {irAdvice.onIr.map(p => p.name).join(', ')} {irAdvice.onIr.length === 1 ? 'is' : 'are'} in your IR spots. Nobody else needs to move.
               </Text>
             )}
+          </View>
+        );
+      })()}
+
+      {/* OPEN ROSTER SPOTS (bench included): who to pick up, based on what the team needs */}
+      {isViewingMyTeam && !!irAdvice?.openSpots?.open && (() => {
+        const spots = irAdvice.openSpots!;
+        const needText = spots.needs.length ? ` You're short at ${spots.needs.join(', ')}.` : '';
+        return (
+          <View style={styles.openCard}>
+            <View style={styles.alertHeader}>
+              <Ionicons name="person-add" size={16} color={colors.primary} />
+              <Text style={[styles.alertTitle, { flex: 1 }]}>
+                {spots.open} open roster spot{spots.open === 1 ? '' : 's'}
+              </Text>
+              <Text style={styles.irSlots}>{spots.used} of {spots.size} spots used</Text>
+            </View>
+            <Text style={styles.alertLine}>
+              An empty spot is free points left on the table: pick someone up in Sleeper.{needText}
+            </Text>
+            {spots.pickups.length > 0 && (
+              <>
+                <Text style={[styles.alertTitle, { marginTop: 6, fontSize: 13 }]}>Best pickups for your team</Text>
+                {spots.pickups.map(({ add, reason }) => (
+                  <Text key={add.id} style={styles.alertLine}>
+                    • <Text style={{ fontWeight: '800' }}>{add.name}</Text> ({add.position}{add.team ? `, ${add.team}` : ''}) · {add.value.toFixed(2)} pts/game
+                    <Text style={styles.irNote}>{` ${reason}`}</Text>
+                  </Text>
+                ))}
+              </>
+            )}
+            <TouchableOpacity
+              style={styles.openAsk}
+              onPress={() =>
+                navigation.navigate('MainTabs', {
+                  screen: 'ChatBot',
+                  params: {
+                    ask: `I have ${spots.open} open roster spot${spots.open === 1 ? '' : 's'}${spots.needs.length ? ` and I'm short at ${spots.needs.join(', ')}` : ''}. Who should I pick up?`,
+                    leagueId: activeLeagueId,
+                    nonce: Date.now(),
+                  },
+                } as any)
+              }
+            >
+              <Ionicons name="sparkles" size={13} color={colors.primary} />
+              <Text style={styles.openAskText}>Ask the AI who to pick up</Text>
+            </TouchableOpacity>
           </View>
         );
       })()}
@@ -1398,6 +1446,11 @@ if (!activeLeagueId) {
         viewMode === 'team' ? renderRoster(mySide) :
         !oppSide ? <Text style={styles.hint}>No opponent found for this week.</Text> :
         renderSideBySide(mySide, oppSide)
+      )}
+
+      {/* LEAGUE ACTIVITY: trades and roster moves by the other managers */}
+      {!!selectedSeasonLeagueId && irEligible && (
+        <LeagueMovesCard leagueId={selectedSeasonLeagueId} rosterId={irRosterId !== undefined ? Number(irRosterId) : null} />
       )}
     </ScrollView>
   );
@@ -1444,6 +1497,9 @@ const makeStyles = (c: Palette) => ({
   irCard: { backgroundColor: c.surface, borderRadius: radius.md, padding: 12, marginTop: 12, gap: 4, borderWidth: 1, borderColor: c.border, borderLeftWidth: 4, borderLeftColor: c.danger },
   irSlots: { fontSize: 11, fontWeight: '700' as const, color: c.textMuted },
   irNote: { color: c.textMuted, fontSize: 12 },
+  openCard: { backgroundColor: c.surface, borderRadius: radius.md, padding: 12, marginTop: 12, gap: 4, borderWidth: 1, borderColor: c.border, borderLeftWidth: 4, borderLeftColor: c.primary },
+  openAsk: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 5, alignSelf: 'flex-start' as const, marginTop: 8, backgroundColor: c.primarySoft, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 6 },
+  openAskText: { color: c.primary, fontWeight: '700' as const, fontSize: 12 },
   emptyRow: { paddingVertical: 12, paddingHorizontal: 16, gap: 10, backgroundColor: c.dangerSoft },
   emptyBadge: { minWidth: 52, height: 26, borderRadius: 6, borderWidth: 1.5, borderStyle: 'dashed' as const, alignItems: 'center' as const, justifyContent: 'center' as const, paddingHorizontal: 4 },
   emptyBadgeText: { fontWeight: '800' as const, fontSize: 11 },

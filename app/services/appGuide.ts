@@ -130,6 +130,32 @@ export const GUIDE: GuideTopic[] = [
     goLabel: 'Open Home',
   },
   {
+    id: 'ranks',
+    title: 'Player rankings',
+    keywords: ['rank', 'ranking', 'overall', 'position rank', 'rb1', 'wr1', 'top'],
+    answer:
+      'Each player page shows where he ranks this season by fantasy points, scored with your league\'s settings like Sleeper: at his position (e.g. RB12 = 12th most points among running backs) and overall among all players, plus his total points and games. Drop advice uses this too: at a position you have too many of, the lowest scorer is the one to cut.',
+    screen: 'Home',
+  },
+  {
+    id: 'league-activity',
+    title: 'League activity (other teams\' moves)',
+    keywords: ['activity', 'moves', 'transactions', 'other teams', 'waiver claim', 'who added', 'who dropped', 'trades in my league'],
+    answer:
+      'At the bottom of the Fantasy tab, "League activity" lists the trades, waiver claims and free-agent adds and drops every manager made in the last two weeks. Filter by other teams, trades or everyone. New moves by other managers also show up in the bell.',
+    screen: 'Fantasy',
+    goLabel: 'Open Fantasy',
+  },
+  {
+    id: 'open-spots',
+    title: 'Open roster spots',
+    keywords: ['open spot', 'empty spot', 'roster spot', 'bench spot', 'room', 'pick up'],
+    answer:
+      'If your roster has an empty spot (bench included), the Fantasy tab tells you and suggests who to pick up based on what your team needs: a position you\'re short at first, then whoever helps your lineup most. No drop is needed to fill an open spot.',
+    screen: 'Fantasy',
+    goLabel: 'Open Fantasy',
+  },
+  {
     id: 'chat-storage',
     title: 'Chat history',
     keywords: ['chat', 'history', 'saved', 'clear', 'delete', 'storage'],

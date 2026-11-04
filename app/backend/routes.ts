@@ -43,9 +43,11 @@ import { buildIrAdvice } from "./services/irAdvice";
 import { buildMatchupContext, formatMatchupBlock } from "./services/matchupContext";
 import { playedPoints, pointRange } from "./utils/pointRange";
 import { imagesForArticles } from "./services/articleImages";
-import { getNflState, getRosters, getTransactions } from "./services/sleeperServer";
+import { getAllPlayers, getLeague, getLeagueUsers, getNflState, getRosters, getTransactions } from "./services/sleeperServer";
 import { gradeTrade, pendingTradesFor, tradeForPlayer } from "./services/tradeGrade";
 import { getLineupCheck } from "./services/lineupCheck";
+import { getPlayerRanks } from "./services/playerRanks";
+import { describeMoves } from "./services/leagueMoves";
 import { normalizePlayerName } from "./utils/names";
 import { incompatibleStartSitReply } from "./utils/slotCompat";
 import { generateTradeIdeas } from "./services/tradeEngine";
@@ -598,6 +600,48 @@ export function registerRoutes(router: Router): void {
     }
   });
 
+  // League activity: completed trades and roster moves by every manager, newest first.
+  router.get("/league-moves", async (req: Request, res: Response) => {
+    const leagueId = String(req.query.leagueId ?? "");
+    if (!leagueId) return res.status(400).json({ error: "leagueId is required" });
+    try {
+      const myRosterId = req.query.rosterId !== undefined ? Number(req.query.rosterId) : null;
+      const [state, users, rosters, players] = await Promise.all([
+        getNflState().catch(() => null),
+        getLeagueUsers(leagueId).catch(() => []),
+        getRosters(leagueId).catch(() => []),
+        getAllPlayers().catch(() => ({} as Record<string, any>)),
+      ]);
+      const week = Number(state?.week) || 1;
+      const weeks = [week - 1, week].filter(w => w >= 1);
+      const transactions = (await Promise.all(weeks.map(w => getTransactions(leagueId, w).catch(() => [])))).flat();
+      const userById = new Map<string, any>((users ?? []).map((u: any) => [String(u.user_id), u]));
+      const teamNames: Record<number, string> = {};
+      for (const r of rosters ?? []) {
+        const u = userById.get(String(r.owner_id));
+        teamNames[Number(r.roster_id)] = String(u?.metadata?.team_name || u?.display_name || `Team ${r.roster_id}`);
+      }
+      res.json({ weeks, moves: describeMoves(transactions, teamNames, players, myRosterId).slice(0, 40) });
+    } catch (err: any) {
+      console.error("❌ League moves failed:", err);
+      res.status(500).json({ error: err?.message || "Failed to load league moves" });
+    }
+  });
+
+  // Fantasy ranks this season (overall and at each position) with the league's scoring.
+  router.get("/player-ranks", async (req: Request, res: Response) => {
+    try {
+      const leagueId = String(req.query.leagueId ?? "");
+      const league = leagueId ? await getLeague(leagueId).catch(() => null) : null;
+      const state = await getNflState().catch(() => null);
+      const season = Number(req.query.season) || Number(league?.season) || Number(state?.season) || new Date().getFullYear();
+      const ranks = await getPlayerRanks(season, league?.scoring_settings ?? null);
+      res.json({ season, scoring: league?.scoring_settings ? "league" : "ppr", ranks });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Ranks unavailable" });
+    }
+  });
+
   // A trade proposal for one player on another team (from Home's trending list).
   router.post("/trade-for", async (req: Request, res: Response) => {
     const { leagueId, rosterId, ownerId, playerId } = (req.body ?? {}) as { leagueId?: string; rosterId?: number; ownerId?: string; playerId?: string };
@@ -727,6 +771,7 @@ ANSWER:`;
           myPlayers: [...ctx.me.players, ...reserveOnly],
           freeAgents: ctx.freeAgents,
           slots: ctx.slots,
+          rosterPositions: ctx.league?.roster_positions,
         })
       );
     } catch (err: any) {
@@ -792,13 +837,15 @@ ANSWER:`;
 
     // Send the model's answer. With stream: true the text is written as it's generated
     // (plain text), so the app can show words immediately instead of waiting for the end.
-    const answer = async (prompt: string, fallback = "", errorReply = "⚠️ AI returned an error.") => {
+    // `prefix` is computed text shown before the model's words (e.g. the whole lineup).
+    const answer = async (prompt: string, fallback = "", errorReply = "⚠️ AI returned an error.", prefix = "") => {
       if (!stream) {
         try {
           const text = await generateWithLLM(prompt);
-          return res.json({ reply: text || fallback || "⚠️ AI returned no text." });
+          return res.json({ reply: prefix + (text || fallback || "⚠️ AI returned no text.") });
         } catch (err) {
           console.error("❌ Ollama error:", err);
+          if (prefix) return res.json({ reply: prefix + fallback + FALLBACK_NOTE });
           return fallback ? res.json({ reply: fallback + FALLBACK_NOTE }) : res.status(500).json({ reply: errorReply });
         }
       }
@@ -807,15 +854,16 @@ ANSWER:`;
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("X-Accel-Buffering", "no");
       let wrote = false;
+      if (prefix) res.write(prefix);
       try {
         const full = await streamWithLLM(prompt, piece => {
           wrote = true;
           res.write(piece);
         });
-        if (!full) res.write(fallback || "⚠️ AI returned no text.");
+        if (!full) res.write(fallback || (prefix ? "" : "⚠️ AI returned no text."));
       } catch (err) {
         console.error("❌ Ollama stream error:", err);
-        if (!wrote) res.write(fallback ? fallback + FALLBACK_NOTE : errorReply);
+        if (!wrote) res.write(fallback ? fallback + FALLBACK_NOTE : prefix ? FALLBACK_NOTE.trim() : errorReply);
       }
       res.end();
     };
@@ -857,7 +905,7 @@ ANSWER:`;
 
       if (advisor) {
         if (advisor.reply) return res.json({ reply: advisor.reply });
-        return answer(advisor.prompt ?? "", advisor.fallback);
+        return answer(advisor.prompt ?? "", advisor.fallback, undefined, advisor.prefix ?? "");
       }
 
       const opponentMap = await fetchOpponentMap(seasonYear, currentWeek).catch(err => {

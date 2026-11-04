@@ -19,6 +19,9 @@ export type InjuryRecord = {
   game_status?: string;
   practice_status?: string;
   injury?: string;
+  // "news" when today's practice info came from a beat report, not the official report
+  practice_source?: string;
+  latest_news?: { title: string; source?: string; published?: string; practice?: string };
 };
 
 let byName = new Map<string, InjuryRecord>();
@@ -57,3 +60,41 @@ export const injuriesForTeam = (team: string): InjuryRecord[] => byTeam.get(Stri
 
 const PRACTICE: Record<string, string> = { DNP: "Did not practice", LP: "Limited", FP: "Full" };
 export const practiceLabel = (code?: string) => (code ? PRACTICE[code] ?? code : "");
+
+const STATUS_WORDS: Record<string, string> = {
+  QUESTIONABLE: "questionable",
+  DOUBTFUL: "doubtful",
+  OUT: "out",
+  IR: "on injured reserve",
+  "INJURED RESERVE": "on injured reserve",
+  PUP: "on the PUP list",
+  SUSPENDED: "suspended",
+  NOT_ACTIVE: "not active",
+};
+
+/**
+ * One line about a player's injury for lineup advice, combining Sleeper's designation with
+ * nfl-data's injury report (game status, practice participation and the newest injury headline).
+ * Null when there's nothing to report.
+ */
+export function injuryNote(
+  p: { name: string; injuryStatus?: string | null },
+  record: InjuryRecord | null
+): string | null {
+  const status = String(record?.game_status || record?.status || p.injuryStatus || "").toUpperCase();
+  const parts: string[] = [];
+  const word = STATUS_WORDS[status];
+  if (word) parts.push(`is ${word}${record?.injury ? ` (${record.injury.toLowerCase()})` : ""}`);
+  if (record?.practice_status) {
+    const label = practiceLabel(record.practice_status).toLowerCase();
+    parts.push(
+      record.practice_source === "news"
+        ? `${label === "did not practice" ? "did not practice" : `was ${label} in practice`} today per news reports`
+        : `${label === "did not practice" ? "did not practice" : `was ${label} in practice`} on the latest report`
+    );
+  }
+  const news = record?.latest_news;
+  if (news?.title) parts.push(`latest news${news.published ? ` (${news.published})` : ""}: "${news.title}"`);
+  if (!parts.length) return null;
+  return `${p.name} ${parts.join("; ")}.`;
+}

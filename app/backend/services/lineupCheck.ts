@@ -8,6 +8,7 @@ import { getLeagueContext } from "./leagueContext";
 import { getGameStates } from "./schedule";
 import { getMatchups, getProjections, getRosters } from "./sleeperServer";
 import { projectionFor } from "./liveMatchup";
+import { ensureInjuriesLoaded, injuryNote, lookupInjury } from "./injuryStore";
 import { weeklyAdjustedPlayers } from "./advisor";
 
 export type CheckPlayer = { id: string; name: string; position: string; team?: string; value: number; injuryStatus?: string };
@@ -34,7 +35,30 @@ export type LineupCheck = {
   problems: string[];
   // Starting slots that are empty in Sleeper right now
   emptySlots: string[];
+  // The best lineup, slot by slot in Sleeper's order (labels like "FLEX 1" / "FLEX 2")
+  lineup: LineupSlot[];
+  // Injury and practice news for your starters and bench (Sleeper + nfl-data report)
+  injuryNotes: string[];
+  // Your other healthy players, best first
+  bench: CheckPlayer[];
+  // Why a player's points were scaled this week (matchup, weather, injuries around him), by id
+  matchupNotes: Record<string, string>;
 };
+
+export type LineupSlot = { slot: string; label: string; player: CheckPlayer | null; locked: boolean; changed: boolean };
+
+/** "WR 1", "WR 2", "FLEX 1", "FLEX 2" when a slot appears more than once, as in Sleeper's list. */
+export function slotLabels(slots: string[]): string[] {
+  const total = new Map<string, number>();
+  slots.forEach(s => total.set(s, (total.get(s) ?? 0) + 1));
+  const seen = new Map<string, number>();
+  return slots.map(s => {
+    const n = (seen.get(s) ?? 0) + 1;
+    seen.set(s, n);
+    const name = s === "SUPER_FLEX" ? "SUPERFLEX" : s;
+    return (total.get(s) ?? 0) > 1 ? `${name} ${n}` : name;
+  });
+}
 
 const round = (n: number) => Math.round(n * 100) / 100;
 
@@ -51,7 +75,7 @@ export function compareLineups(
   currentStarterIds: string[],
   slots: SlotName[],
   locked: Set<string> = new Set()
-): { swaps: LineupSwap[]; currentPoints: number; bestPoints: number; emptySlots: string[] } {
+): { swaps: LineupSwap[]; currentPoints: number; bestPoints: number; emptySlots: string[]; lineup: LineupSlot[] } {
   const byId = new Map(players.map(p => [p.id, p]));
   const current = slots.map((slot, i) => {
     const id = String(currentStarterIds[i] ?? "");
@@ -69,7 +93,15 @@ export function compareLineups(
   const bestPoints = round(
     current.filter(c => c.locked).reduce((t, c) => t + c.player!.value, 0) + best.reduce((t, a) => t + (a.player?.value ?? 0), 0)
   );
-  if (bestPoints <= currentPoints && emptySlots.length === 0) return { swaps: [], currentPoints, bestPoints: currentPoints, emptySlots };
+  const labels = slotLabels(slots);
+  if (bestPoints <= currentPoints && emptySlots.length === 0)
+    return {
+      swaps: [],
+      currentPoints,
+      bestPoints: currentPoints,
+      emptySlots,
+      lineup: current.map((c, i) => ({ slot: c.slot, label: labels[i], player: c.player, locked: c.locked, changed: false })),
+    };
 
   // Put the best players into slots while keeping as many current starters where they already
   // are as possible, so the advice is the fewest swaps (e.g. "Vele in for Shakir", not a
@@ -93,7 +125,14 @@ export function compareLineups(
     if (bench && newSlotOf.has(bench.id)) swap.movesTo = newSlotOf.get(bench.id);
     swaps.push(swap);
   });
-  return { swaps: swaps.sort((a, b) => b.gain - a.gain), currentPoints, bestPoints: Math.max(bestPoints, currentPoints), emptySlots };
+  let openIndex = 0;
+  const lineup: LineupSlot[] = current.map((c, i) => {
+    if (c.locked) return { slot: c.slot, label: labels[i], player: c.player, locked: true, changed: false };
+    const id = assignment[openIndex++];
+    const player = id ? byId.get(id) ?? null : null;
+    return { slot: c.slot, label: labels[i], player, locked: false, changed: (player?.id ?? null) !== (c.player?.id ?? null) };
+  });
+  return { swaps: swaps.sort((a, b) => b.gain - a.gain), currentPoints, bestPoints: Math.max(bestPoints, currentPoints), emptySlots, lineup };
 }
 
 /**
@@ -140,7 +179,7 @@ export function assignKeepingCurrent(
 export async function getLineupCheck(leagueId: string, rosterId?: number, ownerId?: string): Promise<LineupCheck> {
   const ctx = await getLeagueContext(leagueId, rosterId, ownerId);
   if (!ctx.me) throw new Error("Your team was not found in this league.");
-  const { week, teamsPlaying, weekly: adjusted } = await weeklyAdjustedPlayers(ctx, ctx.me);
+  const { week, teamsPlaying, matchups: matchupAdj, weekly: adjusted } = await weeklyAdjustedPlayers(ctx, ctx.me);
   const [matchups, games, projections, rosters] = await Promise.all([
     getMatchups(leagueId, week).catch(() => []),
     getGameStates(ctx.values.season, week).catch(() => null),
@@ -171,7 +210,7 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
     else if (g?.kickoff && Date.parse(g.kickoff) > Date.now()) kickoffs.add(g.kickoff);
   }
 
-  const { swaps, currentPoints, bestPoints, emptySlots } = compareLineups(weekly, starterIds, ctx.slots, locked);
+  const { swaps, currentPoints, bestPoints, emptySlots, lineup } = compareLineups(weekly, starterIds, ctx.slots, locked);
   const problems: string[] = [];
   // Empty slots nobody on the roster can fill.
   const unfilled = [...emptySlots];
@@ -193,5 +232,18 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
     const why = teamsPlaying && p.team && !teamsPlaying.has(p.team) ? "is on bye" : `is ${String(p.injuryStatus ?? "out").toLowerCase()}`;
     problems.push(`${p.name} ${why} and nobody on your bench can replace him. Pick up a ${p.position}.`);
   }
-  return { week, kickoffs: [...kickoffs].sort(), currentPoints, bestPoints, swaps, problems, emptySlots };
+  await ensureInjuriesLoaded();
+  const injuryNotes = weekly.flatMap(p => {
+    const note = injuryNote(p, lookupInjury(p.name, p.position));
+    return note ? [note] : [];
+  });
+  const starting = new Set(lineup.flatMap(l => (l.player ? [l.player.id] : [])));
+  const bench = weekly
+    .filter(p => !starting.has(p.id) && ["QB", "RB", "WR", "TE", "K", "DEF"].includes(p.position))
+    .sort((a, b) => b.value - a.value);
+  const matchupNotes: Record<string, string> = {};
+  matchupAdj.forEach((m, id) => {
+    if (m.parts.length) matchupNotes[id] = `x${m.multiplier.toFixed(2)} this week: ${m.parts.join("; ")}`;
+  });
+  return { week, kickoffs: [...kickoffs].sort(), currentPoints, bestPoints, swaps, problems, emptySlots, lineup, injuryNotes, bench, matchupNotes };
 }

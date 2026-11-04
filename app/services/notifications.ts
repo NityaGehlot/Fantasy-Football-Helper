@@ -6,7 +6,7 @@
 
 import type { LineupAlert } from './lineupAlerts';
 
-export type NotificationKind = 'lineup' | 'injury' | 'ir' | 'trade' | 'result' | 'big_play' | 'odds' | 'lineup_check' | 'drops';
+export type NotificationKind = 'lineup' | 'injury' | 'ir' | 'trade' | 'result' | 'big_play' | 'odds' | 'lineup_check' | 'drops' | 'roster' | 'league';
 export type NotificationTone = 'good' | 'bad' | 'info';
 
 export type AppNotification = {
@@ -56,6 +56,7 @@ export function notificationsFromState({
   irLocks = [],
   newTradeIdeas = 0,
   tradeScanAt = null,
+  openSpots = null,
   now = new Date().toISOString(),
 }: {
   leagueId: string;
@@ -67,6 +68,8 @@ export function notificationsFromState({
   irLocks?: { id: string; name: string; status: string; drop?: string | null }[];
   newTradeIdeas?: number;
   tradeScanAt?: string | null;
+  // Empty roster spots (bench included)
+  openSpots?: { open: number; used: number; needs: string[]; top?: string | null } | null;
   now?: string;
 }): AppNotification[] {
   const b: Base = { leagueId, leagueName, now };
@@ -123,6 +126,22 @@ export function notificationsFromState({
         body: `${p.name} can go on IR. Move him there in Sleeper and use his roster spot for a pickup.`,
         target: 'Fantasy',
         aiQuestion: `${p.name} is ${p.status.toLowerCase()} and I have an open IR spot. Who should I pick up with the free roster spot?`,
+      })
+    );
+  }
+
+  if (openSpots && openSpots.open > 0) {
+    const short = openSpots.needs.length ? ` You're short at ${openSpots.needs.join(', ')}.` : '';
+    out.push(
+      make(b, {
+        // A new notification when the number of players on your roster changes.
+        id: `open:${leagueId}:${openSpots.used}`,
+        kind: 'roster',
+        tone: 'info',
+        title: `${openSpots.open} open roster spot${openSpots.open === 1 ? '' : 's'}`,
+        body: `You have room for ${openSpots.open === 1 ? 'another player' : `${openSpots.open} more players`}.${short}${openSpots.top ? ` Top pickup: ${openSpots.top}.` : ''}`,
+        target: 'Fantasy',
+        aiQuestion: `I have ${openSpots.open} open roster spot${openSpots.open === 1 ? '' : 's'}${openSpots.needs.length ? ` and I'm short at ${openSpots.needs.join(', ')}` : ''}. Who should I pick up?`,
       })
     );
   }
@@ -254,6 +273,23 @@ export function tradeOfferNotification(
     body: `${offer.headline}${bad && offer.counters ? ` ${offer.counters} counter-offer${offer.counters === 1 ? '' : 's'} suggested.` : ''}`,
     target: 'Trades',
     aiQuestion: `${offer.partnerName} offered me ${offer.get.join(' and ') || 'nothing'} for ${offer.give.join(' and ') || 'nothing'}. Should I accept this trade?`,
+  });
+}
+
+/** A trade or roster move another manager in your league just made. */
+export function leagueMoveNotification(
+  b: Base,
+  move: { id: string; type: string; summary: string; at: number }
+): AppNotification {
+  const trade = move.type === 'trade';
+  return make(b, {
+    id: `move:${b.leagueId}:${move.id}`,
+    kind: 'league',
+    tone: 'info',
+    title: trade ? 'Trade in your league' : 'Roster move in your league',
+    body: move.summary,
+    target: 'Fantasy',
+    aiQuestion: trade ? `${move.summary}. Who won this trade, and does it change anything for my team?` : undefined,
   });
 }
 

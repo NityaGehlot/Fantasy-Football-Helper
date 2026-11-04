@@ -2,6 +2,7 @@
 // Finds trades that improve your starting lineup without hurting your trade partner's,
 // so the ideas are ones the other manager has a reason to accept.
 
+import type { PlayerRank } from "./playerRanks";
 import { LineupPlayer, SlotName, lineupValue, optimizeLineup } from "./lineup";
 
 export type TradePlayer = LineupPlayer & {
@@ -9,6 +10,8 @@ export type TradePlayer = LineupPlayer & {
   injuryStatus?: string;
   // Fantasy-playoff schedule strength, when known (see playoffSchedule.ts)
   playoff?: { label: "easy" | "average" | "tough" | "unknown"; avgRank: number | null; summary: string };
+  // Season fantasy points and rank (overall / at his position) with the league's scoring
+  rank?: PlayerRank;
 };
 
 export type LeagueTeam = {

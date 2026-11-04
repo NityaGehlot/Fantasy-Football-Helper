@@ -18,6 +18,7 @@ import { getInjuryIndex } from '../services/injuryService';
 import { currentInjury } from '../services/injuryFormat';
 import { getLineupAlerts, type GameState } from '../services/lineupAlerts';
 import { fetchIrAdvice } from '../services/irAdvice';
+import { fetchLeagueMoves, recentMovesByOthers } from '../services/leagueMoves';
 import { fetchLineupCheck, lineupCheckTimes, LINEUP_CHECK_LEAD_MS } from '../services/lineupCheck';
 import { fetchTradeOffers } from '../services/tradeGrader';
 import { getFavoriteTeamForLeague } from '../services/userService';
@@ -26,6 +27,7 @@ import {
   lineupCheckNotification,
   mergeNotifications,
   notificationsFromState,
+  leagueMoveNotification,
   oddsSwingNotification,
   snapshotOf,
   tradeOfferNotification,
@@ -169,13 +171,19 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   // ---------- One league ----------
   const checkLeague = async (t: WatchedTeam, week: number, injuryIndex: Awaited<ReturnType<typeof getInjuryIndex>> | null) => {
     const base = { leagueId: t.leagueId, leagueName: t.leagueName, week };
-    const [board, ir, check, offers] = await Promise.all([
+    const [board, ir, check, offers, moves] = await Promise.all([
       fetchLiveScoreboard(t.leagueId, t.rosterId, week).catch(() => null),
       fetchIrAdvice(t.leagueId, t.rosterId, t.ownerId).catch(() => null),
       fetchLineupCheck(t.leagueId, t.rosterId, t.ownerId).catch(() => null),
       fetchTradeOffers(t.leagueId, t.rosterId, t.ownerId).catch(() => null),
+      fetchLeagueMoves(t.leagueId, t.rosterId).catch(() => null),
     ]);
     const incoming: AppNotification[] = [];
+
+    // Trades and roster moves the other managers made in the last day.
+    for (const m of recentMovesByOthers(moves ?? [])) {
+      incoming.push({ ...leagueMoveNotification(base, m), createdAt: new Date(m.at).toISOString() });
+    }
 
     // Offers other managers sent you, graded.
     for (const o of offers?.offers ?? []) {
@@ -239,6 +247,9 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
         board,
         irMoves: (ir?.locked?.length ? [] : (ir?.shouldMove ?? []).slice(0, open)).map(p => ({ id: p.id, name: p.name, status: String(p.injuryStatus ?? '') })),
         irLocks: (ir?.locked ?? []).map(l => ({ id: l.player.id, name: l.player.name, status: String(l.player.injuryStatus ?? 'ACTIVE'), drop: l.drop?.name ?? null })),
+        openSpots: ir?.openSpots?.open
+          ? { open: ir.openSpots.open, used: ir.openSpots.used, needs: ir.openSpots.needs, top: ir.openSpots.pickups[0]?.add.name ?? null }
+          : null,
       })
     );
 

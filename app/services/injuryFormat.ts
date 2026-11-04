@@ -134,3 +134,84 @@ export function currentInjury(
   const status = sleeperStatus === 'SUS' ? 'SUSPENDED' : sleeperStatus === 'NA' ? 'NOT_ACTIVE' : sleeperStatus;
   return { status, injury: String(player?.injury_body_part ?? ''), record: null };
 }
+
+// ---------- A past week's injury report ----------
+
+export type InjuryHistoryFile = Record<string, InjuryHistoryEntry[]>;
+
+/** nflverse practice text ("Limited Participation in Practice") -> DNP / LP / FP. */
+export function practiceCode(text?: string): string {
+  const t = String(text ?? '').toLowerCase();
+  if (!t) return '';
+  if (['dnp', 'lp', 'fp'].includes(t)) return t.toUpperCase();
+  if (t.includes('did not') || t.includes('not participate')) return 'DNP';
+  if (t.includes('limited')) return 'LP';
+  if (t.includes('full')) return 'FP';
+  return '';
+}
+
+export type WeekInjury = {
+  // current: the live report (this week); past: what was reported that week; none: nothing saved
+  mode: 'current' | 'past';
+  status: string;
+  injury: string;
+  rows: ReturnType<typeof practiceTable>;
+  record: InjuryRecord | null;
+  // Where the past-week info comes from, shown under the status
+  source?: string;
+};
+
+/**
+ * The injury report for the week you're looking at. The current week (or no week) uses the live
+ * file; a past week uses that week's saved day-by-day history, or the injury fields in that
+ * week's stat line (official final report) when no history was saved.
+ */
+export function injuryForWeek({
+  file,
+  history,
+  weekStats,
+  player,
+  season,
+  week,
+}: {
+  file: InjuryFile | null;
+  history?: InjuryHistoryFile | null;
+  weekStats?: any;
+  player: any;
+  season?: number;
+  week?: number;
+}): WeekInjury {
+  const sameSeason = !file || !season || Number(season) === Number(file.season);
+  const isCurrent = !file || (sameSeason && (!week || Number(week) >= Number(file.week)));
+  // A past season with no week picked: this week's report doesn't apply, and none was saved.
+  if (!isCurrent && !week) return { mode: 'past', status: '', injury: '', record: null, rows: [] };
+  if (isCurrent) {
+    const { status, injury, record } = currentInjury(indexInjuries(file), player);
+    return { mode: 'current', status, injury, record, rows: practiceTable(record?.history) };
+  }
+  const entries = history?.[String(player?.player_id ?? '')];
+  if (entries?.length) {
+    const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date));
+    const last = sorted[sorted.length - 1];
+    return {
+      mode: 'past',
+      status: String(last.game_status || last.status || '').toUpperCase(),
+      injury: '',
+      record: null,
+      rows: practiceTable(sorted),
+      source: `Saved injury report for week ${week}`,
+    };
+  }
+  const statusText = String(weekStats?.injury_status ?? weekStats?.report_status ?? '').toUpperCase().trim();
+  const practice = practiceCode(weekStats?.practice_status);
+  const injury = String(weekStats?.primary_injury || weekStats?.practice_primary_injury || weekStats?.report_primary_injury || '');
+  const status = statusText === 'NONE' ? '' : statusText;
+  return {
+    mode: 'past',
+    status,
+    injury,
+    record: null,
+    rows: practice ? practiceTable([{ date: '', day: 'Final', practice_status: practice, game_status: status || undefined }]) : [],
+    source: weekStats ? `Final injury report for week ${week}` : undefined,
+  };
+}

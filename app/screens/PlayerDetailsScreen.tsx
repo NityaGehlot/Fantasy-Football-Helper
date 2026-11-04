@@ -27,7 +27,8 @@ import NewsCardRow from '../components/NewsCardRow';
 import InjuryReportCard from '../components/InjuryReportCard';
 
 import { useTheme, useLooseThemedStyles } from '../context/ThemeContext';
-import type { Palette } from '../theme';
+import { positionColors, type Palette } from '../theme';
+import { getPlayerRanks, ordinal, type PlayerRank } from '../services/playerRanks';
 
 type NewsArticle = {
   title: string;
@@ -89,6 +90,10 @@ export default function PlayerDetailsScreen({ route }: any) {
   const [showTradeFor, setShowTradeFor] = useState(false);
   // Who has him in your open league (your team, another team, or nobody).
   const [owner, setOwner] = useState<Ownership | null | undefined>(undefined);
+  // Fantasy rank this season (overall / at his position) with your league's scoring
+  const [rank, setRank] = useState<PlayerRank | null>(null);
+  // The season `allWeeksStats` holds, so the weekly range never shows another season's numbers
+  const [statsSeason, setStatsSeason] = useState<number | null>(null);
   useEffect(() => {
     setOwner(undefined);
     if (!activeLeagueId || !player?.player_id) return;
@@ -116,6 +121,9 @@ export default function PlayerDetailsScreen({ route }: any) {
   };
 
   const basePosition = String(player?.position_for_FFHelper || player?.position || player?.position_listed_on_sleeper || '').toUpperCase().trim();
+  // Sleeper has no full_name for team defenses ("Houston" + "Texans").
+  const playerName = String(player?.full_name || [player?.first_name, player?.last_name].filter(Boolean).join(' ') || player?.player_id || '');
+  const shortName = basePosition === 'DEF' ? playerName : player?.first_name || 'him';
 
   const getNewsFileKey = (position?: string) => {
     const pos = String(position || '').toUpperCase().trim();
@@ -212,10 +220,16 @@ export default function PlayerDetailsScreen({ route }: any) {
     return total / values.length;
   }, [allWeeksStats]);
 
-  // Floor and ceiling from the weeks he played this season.
+  // Weekly range for the season you're looking at: the last 10 games of the current season
+  // (recent form), or the whole regular season for a past one.
+  const isCurrentSeason = selectedSeason === getCurrentNFLSeason();
   const range = useMemo(
-    () => pointRange(playedPoints(Object.entries(allWeeksStats).map(([w, s]: [string, any]) => ({ ...s, week: Number(w) })).filter(r => Number(r.week) <= 18))),
-    [allWeeksStats]
+    () =>
+      pointRange(
+        playedPoints(Object.entries(allWeeksStats).map(([w, s]: [string, any]) => ({ ...s, week: Number(w) })).filter(r => Number(r.week) <= 18)),
+        isCurrentSeason ? 10 : 18
+      ),
+    [allWeeksStats, isCurrentSeason]
   );
 
   const getWeekCardBackground = (weekStats: any) => {
@@ -403,6 +417,7 @@ export default function PlayerDetailsScreen({ route }: any) {
           }
         });
         setAllWeeksStats(statsMap);
+        setStatsSeason(selectedSeason);
         setTeamPlayedPostseasonByWeek(postseasonPlayed);
       } catch (err) {
         console.error('Error fetching player stats:', err);
@@ -635,7 +650,7 @@ export default function PlayerDetailsScreen({ route }: any) {
 
     // Same cards as "Around the League" on Home, scrolling sideways.
     return (
-      <View style={{ marginHorizontal: -20 }}>
+      <View style={{ marginHorizontal: -16 }}>
         <NewsCardRow items={articles} images={newsImages} />
       </View>
     );
@@ -1295,30 +1310,66 @@ export default function PlayerDetailsScreen({ route }: any) {
     );
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    setRank(null);
+    if (!player?.player_id) return;
+    getPlayerRanks(activeLeagueId, selectedSeason).then(file => {
+      if (!cancelled) setRank(file?.ranks?.[String(player.player_id)] ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [player?.player_id, activeLeagueId, selectedSeason]);
+
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 32 }}>
 
       {/* ========================= */}
       {/* PLAYER HEADER */}
       {/* ========================= */}
 
       <View style={styles.header}>
+        <View style={[styles.headshotRing, { borderColor: positionColors[basePosition] ?? th.border }]}>
+          <Image
+            source={{
+              uri:
+                    basePosition === "DEF"
+                      ? getTeamLogo(displayTeam)
+                      : stats?.headshot_url || getHeadshotUrl(player)
+            }}
+            style={styles.headshot}
+          />
+        </View>
 
-        <Image
-          source={{
-            uri:
-                  basePosition === "DEF"
-                    ? getTeamLogo(displayTeam)
-                    : stats?.headshot_url || getHeadshotUrl(player)
-          }}
-          style={styles.headshot}
-        />
+        <Text style={styles.playerName}>{playerName}</Text>
 
-        <Text style={styles.playerName}>{player.full_name}</Text>
+        <View style={styles.infoRow}>
+          {!!(basePosition || player.position) && (
+            <View style={[styles.posPill, { backgroundColor: positionColors[basePosition] ?? th.primary }]}>
+              <Text style={styles.posPillText}>{basePosition || player.position}</Text>
+            </View>
+          )}
+          <Text style={styles.playerInfo}>{displayTeam}</Text>
+        </View>
 
-        <Text style={styles.playerInfo}>
-          {basePosition || player.position} • {displayTeam}
-        </Text>
+        {/* Fantasy rank this season, like Sleeper: at his position and overall */}
+        {!!rank && (
+          <View style={styles.rankRow}>
+            <View style={styles.rankChip}>
+              <Text style={styles.rankValue}>{rank.pos}{rank.position}</Text>
+              <Text style={styles.rankCaption}>{ordinal(rank.position)} of {rank.positionCount} {rank.pos}s</Text>
+            </View>
+            <View style={styles.rankChip}>
+              <Text style={styles.rankValue}>#{rank.overall}</Text>
+              <Text style={styles.rankCaption}>overall</Text>
+            </View>
+            <View style={styles.rankChip}>
+              <Text style={styles.rankValue}>{rank.points.toFixed(2)}</Text>
+              <Text style={styles.rankCaption}>fantasy pts{rank.games ? ` · ${rank.games} g` : ''}</Text>
+            </View>
+          </View>
+        )}
 
         {/* Follow the player (news on Home) and his team */}
         <View style={styles.followRow}>
@@ -1326,14 +1377,14 @@ export default function PlayerDetailsScreen({ route }: any) {
             <TouchableOpacity
               style={[styles.followBtn, favorites.players.includes(String(player.player_id)) && styles.followBtnOn]}
               onPress={() => toggleFavoritePlayer(String(player.player_id))}
-              accessibilityLabel={favorites.players.includes(String(player.player_id)) ? `Unfollow ${player.full_name}` : `Follow ${player.full_name}`}
+              accessibilityLabel={favorites.players.includes(String(player.player_id)) ? `Unfollow ${playerName}` : `Follow ${playerName}`}
             >
               <Text style={[styles.followText, favorites.players.includes(String(player.player_id)) && styles.followTextOn]}>
                 {favorites.players.includes(String(player.player_id)) ? '★ Following' : '☆ Follow'}
               </Text>
             </TouchableOpacity>
           )}
-          {!!displayTeam && displayTeam !== 'FA' && (
+          {!!displayTeam && displayTeam !== 'FA' && basePosition !== 'DEF' && (
             <TouchableOpacity
               style={[styles.followBtn, favorites.teams.includes(String(displayTeam).toUpperCase()) && styles.followBtnOn]}
               onPress={() => toggleFavoriteTeam(String(displayTeam))}
@@ -1356,11 +1407,11 @@ export default function PlayerDetailsScreen({ route }: any) {
                   style={styles.dropAskBtn}
                   disabled={isChatTyping}
                   onPress={() => {
-                    sendChatMessage(`Who should I trade to ${owner.teamName} to get ${player.full_name}?`);
+                    sendChatMessage(`Who should I trade to ${owner.teamName} to get ${playerName}?`);
                     navigation.navigate('MainTabs', { screen: 'ChatBot' });
                   }}
                 >
-                  <Text style={styles.dropAskText}>Who should I trade for {player.first_name || 'him'}?</Text>
+                  <Text style={styles.dropAskText}>Who should I trade for {shortName}?</Text>
                 </TouchableOpacity>
                 {!!myTeam && !!activeLeagueId && (
                   <TouchableOpacity style={styles.dropAskBtn} onPress={() => setShowTradeFor(true)}>
@@ -1374,11 +1425,11 @@ export default function PlayerDetailsScreen({ route }: any) {
               style={styles.dropAskBtn}
               disabled={isChatTyping}
               onPress={() => {
-                sendChatMessage(`Who should I drop to pick up ${player.full_name}?`);
+                sendChatMessage(`Who should I drop to pick up ${playerName}?`);
                 navigation.navigate('MainTabs', { screen: 'ChatBot' });
               }}
             >
-              <Text style={styles.dropAskText}>Who should I drop to add {player.first_name || 'him'}?</Text>
+              <Text style={styles.dropAskText}>Who should I drop to add {shortName}?</Text>
             </TouchableOpacity>
           )
         )}
@@ -1387,22 +1438,23 @@ export default function PlayerDetailsScreen({ route }: any) {
             visible={showTradeFor}
             team={myTeam}
             leagueId={activeLeagueId}
-            player={{ id: String(player.player_id), name: player.full_name }}
+            player={{ id: String(player.player_id), name: playerName }}
             onClose={() => setShowTradeFor(false)}
           />
         )}
 
-        <Text style={styles.experience}>
-          {(() => {
+        <View style={styles.seasonPickerRow}>
+          <Text style={styles.experience}>
+            {(() => {
             const rookieSeason = getRookieSeason(player, stats);
             if (rookieSeason === null) return '';
             const seasonNumber = getCurrentNFLSeason() - rookieSeason + 1;
             if (seasonNumber <= 1) return 'Experience: Rookie';
             return `Experience: ${seasonNumber} years`;
           })()}
-        </Text>
-        <View style={styles.seasonPickerRow}>
-          <Text style={{ color: th.textMuted, marginRight: 8, fontWeight: '700' }}>Season:</Text>
+          </Text>
+          <View style={styles.metaDot} />
+          <Text style={{ color: th.textMuted, marginRight: 8, fontWeight: '700' }}>Season</Text>
           {isRookie ? (
             // Rookies have no previous seasons to pick from
             <View style={styles.seasonPicker}>
@@ -1432,10 +1484,10 @@ export default function PlayerDetailsScreen({ route }: any) {
       </View>
 
       {/* WEEKLY RANGE: floor / typical / ceiling */}
-      {['QB', 'RB', 'WR', 'TE', 'K'].includes(basePosition) && range.games >= 3 && (
+      {['QB', 'RB', 'WR', 'TE', 'K'].includes(basePosition) && range.games >= 3 && statsSeason === selectedSeason && !loadingPlayerStats && (
         <View style={styles.section}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Text style={styles.sectionTitle}>Weekly range</Text>
+            <Text style={styles.sectionTitle}>Weekly range · {selectedSeason}</Text>
             <Text style={[styles.rangeLabel, { color: range.label === 'safe' ? th.success : range.label === 'boom/bust' ? th.warning : th.primary }]}>
               {range.label.toUpperCase()}
             </Text>
@@ -1448,12 +1500,23 @@ export default function PlayerDetailsScreen({ route }: any) {
               </View>
             ))}
           </View>
-          <Text style={styles.statLine}>{range.summary}</Text>
+          <Text style={styles.statLine}>
+            {isCurrentSeason
+              ? range.summary
+              : range.summary.replace(/last \d+ games/, `${range.games} games in ${selectedSeason}`)}
+          </Text>
         </View>
       )}
 
-      {/* INJURY REPORT (current designation + this week's practice report) */}
-      {['QB', 'RB', 'WR', 'TE', 'K'].includes(basePosition) && <InjuryReportCard player={player} />}
+      {/* INJURY REPORT for the week you're looking at (live this week, saved report for past weeks) */}
+      {['QB', 'RB', 'WR', 'TE', 'K'].includes(basePosition) && (
+        <InjuryReportCard
+          player={player}
+          season={selectedSeason}
+          week={week}
+          weekStats={statsSeason === selectedSeason && week !== undefined ? allWeeksStats[week] : undefined}
+        />
+      )}
 
       {/* ========================= */}
       {/* CURRENT WEEK STATS */}
@@ -1844,19 +1907,84 @@ const makeStyles = (th: Palette) => ({
 
   container: {
     flex: 1,
-    backgroundColor: th.surface
+    backgroundColor: th.background
   },
 
   header: {
     alignItems: "center",
-    padding: 20
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 16,
+    marginHorizontal: 16,
+    marginTop: 12,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: th.border,
+    backgroundColor: th.surface,
+  },
+
+  headshotRing: {
+    borderWidth: 3,
+    borderRadius: 60,
+    padding: 3,
+    marginBottom: 10,
   },
 
   headshot: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    marginBottom: 10
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    backgroundColor: th.surfaceMuted,
+  },
+
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
+  },
+  posPill: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  posPillText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 12,
+    letterSpacing: 0.5,
+  },
+  rankRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 14,
+    alignSelf: 'stretch',
+  },
+  rankChip: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: th.surfaceMuted,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  rankValue: {
+    color: th.text,
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  rankCaption: {
+    color: th.textMuted,
+    fontSize: 11,
+    marginTop: 2,
+    textAlign: 'center',
+  },
+  metaDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: th.textSubtle,
+    marginHorizontal: 10,
   },
 
   dropAskBtn: {
@@ -1873,24 +2001,30 @@ const makeStyles = (th: Palette) => ({
   },
   playerName: { color: th.text,
     fontSize: 26,
-    fontWeight: "700"
+    fontWeight: "800",
+    textAlign: 'center',
   },
 
   playerInfo: {
-    fontSize: 16,
+    fontSize: 15,
+    fontWeight: '700',
     color: th.textMuted,
-    marginTop: 4
   },
 
   experience: {
-    fontSize: 14,
+    fontSize: 13,
     color: th.textMuted,
-    marginTop: 6,
+    fontWeight: '600',
   },
   seasonPickerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 8,
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: th.border,
+    alignSelf: 'stretch',
+    justifyContent: 'center',
   },
   seasonPicker: {
     paddingVertical: 6,
@@ -1945,15 +2079,18 @@ const makeStyles = (th: Palette) => ({
   },
 
   section: {
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-    borderTopWidth: 1,
-    borderColor: th.border
+    marginHorizontal: 16,
+    marginTop: 12,
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: th.border,
+    backgroundColor: th.surface,
   },
 
   sectionTitle: { color: th.text,
-    fontSize: 18,
-    fontWeight: "700",
+    fontSize: 17,
+    fontWeight: "800",
     marginBottom: 10
   },
 
@@ -1963,10 +2100,10 @@ const makeStyles = (th: Palette) => ({
   },
 
   weekBlock: {
-    marginBottom: 15,
-    padding: 10,
+    marginBottom: 10,
+    padding: 12,
     backgroundColor: th.surfaceMuted,
-    borderRadius: 8
+    borderRadius: 12
   },
 
   weekTitle: {
@@ -1978,9 +2115,7 @@ const makeStyles = (th: Palette) => ({
 
   weeklyLogContainer: {
     height: 500, // Fixed height for scrollable log
-    backgroundColor: th.background,
-    borderRadius: 8,
-    padding: 10
+    borderRadius: 12,
   },
 
   weekFantasyPoints: {

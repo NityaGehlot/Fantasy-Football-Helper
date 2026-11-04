@@ -2,7 +2,6 @@
 // Prompts for roster-wide questions: full lineups, waiver adds/drops, trades, drafts and
 // general strategy. All numbers are computed in code first; the model only explains them.
 
-import type { LineupAssignment } from "./lineup";
 import type { TradeIdea, TradePlayer } from "./tradeEngine";
 import type { DropOption, PickupSuggestion } from "./waiver";
 import type { DraftBoardEntry } from "./draft";
@@ -33,7 +32,9 @@ FORMATTING RULES:
 const fmt = (p: TradePlayer) =>
   `${p.name} (${p.position}${p.team ? `, ${p.team}` : ""}) — ${p.value.toFixed(2)} pts/g${
     p.injuryStatus && p.injuryStatus !== "ACTIVE" ? ` [${p.injuryStatus}]` : ""
-  }${p.playoff && p.playoff.label !== "unknown" ? ` {${playoffNote(p.playoff)}}` : ""}`;
+  }${p.rank ? ` · ${p.rank.points.toFixed(2)} pts this season, ${p.rank.pos}${p.rank.position} / #${p.rank.overall} overall` : ""}${
+    p.playoff && p.playoff.label !== "unknown" ? ` {${playoffNote(p.playoff)}}` : ""
+  }`;
 
 function assemble(title: string, data: string, question: string, format: string): string {
   return `
@@ -64,45 +65,56 @@ export function rosterBlock(players: TradePlayer[]): string {
 }
 
 // ---------- Full lineup ----------
+type LineupSlotLike = { label: string; player: { id: string; name: string; position: string; team?: string; value: number } | null; changed: boolean; locked: boolean };
+
 export function buildLineupPrompt(
   question: string,
-  lineup: LineupAssignment[],
-  bench: TradePlayer[],
+  lineup: LineupSlotLike[],
+  bench: { id: string; name: string; position: string; team?: string; value: number }[],
   notes: string[],
-  matchupNotes: Record<string, string> = {}
+  matchupNotes: Record<string, string> = {},
+  injuryNotes: string[] = []
 ): string {
-  const withMatchup = (p: TradePlayer) => (matchupNotes[p.id] ? `\n    ↳ ${matchupNotes[p.id]}` : "");
+  const why = (id: string) => (matchupNotes[id] ? `\n    ↳ ${matchupNotes[id]}` : "");
   const lineupText = lineup
-    .map(a => `• ${a.slot}: ${a.player ? fmt(a.player as TradePlayer) + withMatchup(a.player as TradePlayer) : "EMPTY — no eligible player"}`)
+    .map(l =>
+      l.player
+        ? `• ${l.label}: ${l.player.name} (${l.player.position}${l.player.team ? `, ${l.player.team}` : ""}) — ${l.player.value.toFixed(2)} projected pts${l.locked ? " [game started]" : l.changed ? " [CHANGE from current Sleeper lineup]" : ""}${why(l.player.id)}`
+        : `• ${l.label}: EMPTY — nobody on the roster can play here`
+    )
     .join("\n");
-  const benchText = bench.map(p => `• ${fmt(p)}${withMatchup(p)}`).join("\n");
-  const data = `RECOMMENDED STARTERS (pre-computed: points per game for THIS week, already adjusted for the opponent defense, weather and injuries shown under each player)
+  const benchText = bench.map(p => `• ${p.name} (${p.position}${p.team ? `, ${p.team}` : ""}) — ${p.value.toFixed(2)} projected pts${why(p.id)}`).join("\n");
+  const labels = lineup.map(l => l.label);
+  const data = `BEST LINEUP — ${lineup.length} starting slots, in Sleeper's order (pre-computed from Sleeper's projections for THIS week; the user already sees this list)
 ${lineupText}
 
 BENCH
 ${bench.length ? benchText : "• (none)"}
 
-HOW TO READ "x1.08": his usual points per game times 1.08 = 8% more this week. Defense ranks: 1 = toughest, 32 = easiest.
+INJURIES (Sleeper designation, official practice report and latest injury news)
+${injuryNotes.length ? injuryNotes.map(n => `• ${n}`).join("\n") : "• No injuries reported for any of your players."}
 
 NOTES
-${notes.length ? notes.map(n => `• ${n}`).join("\n") : "• No bye weeks or injury problems among your players."}`;
+${notes.length ? notes.map(n => `• ${n}`).join("\n") : "• No bye weeks or empty slots."}
+
+HOW TO READ "x1.08": his usual output times 1.08 = 8% more this week. Defense ranks: 1 = toughest, 32 = easiest.`;
 
   return assemble("YOUR LINEUP", data, question, `
 ${DIVIDER}
-▶ START THESE
+▶ WHY THESE STARTERS
 ${DIVIDER}
-• [slot]: [player] — [pts/g shown, plus the matchup/weather/injury reason from his ↳ line in plain words]
-(one bullet per starter, in the order given)
+Write exactly ${lineup.length} bullets, one per slot, in this order: ${labels.join(", ")}.
+• [slot label]: [player] — [one short reason: projection plus the matchup/weather/injury reason from his ↳ line in plain words]
 
 ${DIVIDER}
-▶ WATCH OUT
+▶ INJURIES TO WATCH
 ${DIVIDER}
-• [bye weeks, injuries or empty slots from NOTES, or "Nothing to worry about this week"]
+• [every player listed under INJURIES, with what it means for this week; or "No injuries on your roster"]
 
 ${DIVIDER}
 ▶ CLOSE CALLS
 ${DIVIDER}
-• [any bench player within ~1 pt/g of a starter at an eligible slot, explaining which matchup, weather or injury factor separates them, or "None"]
+• [any bench player within ~1 pt of a starter he could replace, and what separates them, or "None"]
 `);
 }
 
@@ -162,6 +174,36 @@ ${DIVIDER}
 `);
 }
 
+export function buildOpenSpotPrompt(
+  question: string,
+  spots: { open: number; size: number; used: number; needs: string[]; pickups: { add: TradePlayer; netGain: number; reason: string }[] },
+  roster: TradePlayer[],
+  balance = "",
+  target?: TradePlayer
+): string {
+  const lines = spots.pickups.length
+    ? spots.pickups.map((p, i) => `${i + 1}. ADD ${fmt(p.add)} → ${p.reason}${p.netGain > 0 ? ` (lineup +${p.netGain.toFixed(2)} pts/week)` : ""}`)
+    : ["No healthy free agent with points this season is available."];
+  return assemble("OPEN ROSTER SPOTS", `YOU HAVE ${spots.open} EMPTY ROSTER SPOT${spots.open === 1 ? "" : "S"} (${spots.used} of ${spots.size} used). NO DROP IS NEEDED: just add a player.
+${target ? `THE USER ASKED ABOUT ADDING ${fmt(target)}: tell them they can add him without dropping anyone.\n` : ""}SHORT AT: ${spots.needs.length ? spots.needs.join(", ") : "nothing (roster is balanced)"}
+
+BEST PICKUPS FOR WHAT YOUR TEAM NEEDS (pre-computed, best first)
+${lines.join("\n")}
+
+${balance ? `ROSTER BALANCE\n${balance}\n\n` : ""}YOUR ROSTER
+${rosterBlock(roster)}`, question, `
+${DIVIDER}
+▶ OPEN SPOTS
+${DIVIDER}
+• [how many open spots, and that no drop is needed]
+
+${DIVIDER}
+▶ PICK UP
+${DIVIDER}
+• [each pickup from the list, in order, with its reason in plain words]
+`);
+}
+
 export function buildPickupPrompt(question: string, suggestions: PickupSuggestion[], roster: TradePlayer[], balance = ""): string {
   const lines = suggestions.length
     ? suggestions.map(
@@ -206,10 +248,14 @@ export function describeTradeIdea(idea: TradeIdea, index?: number): string {
 ${idea.reasons.map(r => `• ${r}`).join("\n")}`;
 }
 
-export function buildTradeIdeasPrompt(question: string, ideas: TradeIdea[], roster: TradePlayer[]): string {
+export function buildTradeIdeasPrompt(question: string, ideas: TradeIdea[], roster: TradePlayer[], target?: string): string {
   const data = ideas.length
-    ? ideas.map((idea, i) => describeTradeIdea(idea, i)).join("\n\n")
-    : "No trade was found that improves your lineup without hurting the other team's lineup.";
+    ? `${target ? `EVERY OFFER BELOW GETS YOU ${target.toUpperCase()}. Only talk about these offers; do not suggest trades without ${target}.\n\n` : ""}${ideas
+        .map((idea, i) => describeTradeIdea(idea, i))
+        .join("\n\n")}`
+    : target
+      ? `No offer for ${target} could be built from your roster.`
+      : "No trade was found that improves your lineup without hurting the other team's lineup.";
 
   return assemble("TRADE IDEAS (pre-computed)", `${data}
 

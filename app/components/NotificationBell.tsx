@@ -22,6 +22,8 @@ const ICONS: Record<NotificationKind, keyof typeof Ionicons.glyphMap> = {
   odds: 'trending-up',
   lineup_check: 'clipboard',
   drops: 'trending-down',
+  roster: 'person-add',
+  league: 'newspaper',
 };
 
 export default function NotificationBell() {

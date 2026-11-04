@@ -69,3 +69,13 @@ export const getWeekStats = (season: number, week: number): Promise<Record<strin
   cache.get(`stats:${season}:${week}`, 30 * 1000, async () =>
     asPlayerMap(await fetchJson(`${SLEEPER_ROOT}/stats/nfl/${season}/${week}?season_type=regular`))
   );
+
+// Season-to-date stat totals (one row per player, with his position). Refreshed every 3 hours.
+export const getSeasonStatRows = (season: number): Promise<{ id: string; position: string; stats: Record<string, number> }[]> =>
+  cache.get(`seasonStats:${season}`, 3 * HOUR, async () => {
+    const data = await fetchJson(`${SLEEPER_ROOT}/stats/nfl/${season}?season_type=regular`);
+    const rows: any[] = Array.isArray(data) ? data : Object.entries(data ?? {}).map(([player_id, stats]) => ({ player_id, stats }));
+    return rows
+      .filter(r => r?.player_id && r?.stats)
+      .map(r => ({ id: String(r.player_id), position: String(r.player?.position ?? r.position ?? "").toUpperCase(), stats: r.stats }));
+  });

@@ -4,7 +4,7 @@
 // changes, how even the values are, and the fantasy-playoff schedules involved.
 
 import { evaluateTrade, generateTradeIdeas, LeagueTeam, TradeIdea, TradePlayer } from "./tradeEngine";
-import type { SlotName } from "./lineup";
+import { optimizeLineup, type SlotName } from "./lineup";
 import { playoffTradeNote } from "./playoffSchedule";
 
 export type CounterOffer = {
@@ -194,6 +194,21 @@ export function tradeForPlayer(me: LeagueTeam, owner: LeagueTeam, playerId: stri
       simple.push(evaluateTrade(me, owner, g, [target], slots));
     }
   }
+  // Kickers and defenses: swap yours at the same spot (plus a bench player when his is better),
+  // or a bench player worth about the same.
+  if (target.position === "K" || target.position === "DEF") {
+    const same = me.players.filter(p => p.position === target.position);
+    const starters = startersOf(me.players, slots);
+    const bench = me.players
+      .filter(p => !starters.has(p.id) && TRADEABLE.has(p.position))
+      .sort((a, b) => Math.abs(a.value - target.value) - Math.abs(b.value - target.value))
+      .slice(0, 4);
+    for (const s of same) {
+      simple.push(evaluateTrade(me, owner, [s], [target], slots));
+      for (const b of bench.slice(0, 2)) simple.push(evaluateTrade(me, owner, [s, b], [target], slots));
+    }
+    for (const b of bench) simple.push(evaluateTrade(me, owner, [b], [target], slots));
+  }
   const seen = new Set<string>();
   return [...winWin, ...simple]
     .filter(i => {
@@ -211,4 +226,8 @@ export function tradeForPlayer(me: LeagueTeam, owner: LeagueTeam, playerId: stri
         b.myGain - a.myGain
     )
     .slice(0, limit);
+}
+
+function startersOf(players: LeagueTeam["players"], slots: SlotName[]): Set<string> {
+  return new Set(optimizeLineup(players, slots).flatMap(a => (a.player ? [a.player.id] : [])));
 }

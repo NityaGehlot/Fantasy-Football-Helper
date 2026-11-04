@@ -14,6 +14,14 @@ export type IrAdvice = {
   // Players in IR spots who aren't eligible anymore: Sleeper locks the roster until fixed
   locked?: { player: IrPlayer; drop: IrPlayer | null; netGain: number | null }[];
   eligibleStatuses: string[];
+  // Empty roster spots (bench included) and who to pick up for them
+  openSpots?: {
+    size: number;
+    used: number;
+    open: number;
+    needs: string[];
+    pickups: { add: IrPlayer; netGain: number; reason: string }[];
+  };
 };
 
 export async function fetchIrAdvice(leagueId: string, rosterId: number, ownerId?: string): Promise<IrAdvice> {

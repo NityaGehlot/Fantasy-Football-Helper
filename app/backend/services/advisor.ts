@@ -3,12 +3,15 @@
 // Each handler returns the LLM prompt plus a plain-text fallback answer built from the same
 // pre-computed numbers, which is shown if the local model is unavailable.
 
-import { DEFAULT_SLOTS, optimizeLineup, SLOT_ELIGIBILITY } from "./lineup";
+import { DEFAULT_SLOTS, SLOT_ELIGIBILITY } from "./lineup";
+import { getLineupCheck } from "./lineupCheck";
 import { evaluateTrade, generateTradeIdeas, LeagueTeam, TradePlayer } from "./tradeEngine";
 import { rankDropCandidates, suggestPickups } from "./waiver";
+import { tradeForPlayer } from "./tradeGrade";
+import { openRosterSpots, type OpenSpots } from "./irAdvice";
 import { buildDraftBoard } from "./draft";
 import { getLeagueContext, getValueContext, LeagueContext, weeklyValue } from "./leagueContext";
-import { getDraftPicks, getNflState } from "./sleeperServer";
+import { getDraftPicks, getNflState, getRosters } from "./sleeperServer";
 import { getTeamsPlaying } from "./schedule";
 import { isOutStatus } from "./playerValues";
 import { buildMatchupContext, matchupAdjustment } from "./matchupContext";
@@ -31,6 +34,7 @@ import {
   buildDropForTargetPrompt,
   buildGeneralPrompt,
   buildLineupPrompt,
+  buildOpenSpotPrompt,
   buildPickupPrompt,
   buildTradeEvaluationPrompt,
   buildTradeIdeasPrompt,
@@ -44,7 +48,9 @@ export type AdvisorTeamPayload = {
   teamName?: string;
 };
 
-export type AdvisorResult = { prompt?: string; reply?: string; fallback: string };
+// prefix: computed text shown before the AI's explanation (e.g. the full lineup), so nothing in
+// it depends on the model getting every line right.
+export type AdvisorResult = { prompt?: string; reply?: string; fallback: string; prefix?: string };
 
 const NEED_TEAM =
   "⚠️ I need to know your team for that. Go to the Fantasy tab, pick your team, and tap 'Set Viewed Team As My Team'.";
@@ -64,6 +70,18 @@ export function findMentionedPlayers(message: string, pool: TradePlayer[], myRos
     if (name.split(" ").length < 2) continue;
     const at = text.indexOf(` ${name} `);
     if (at >= 0 && !found.has(p.id)) found.set(p.id, { player: p, at });
+  }
+
+  // Defenses: "Texans", "Houston", "HOU" or "Houston D/ST" all mean the Houston Texans defense.
+  // A bare team word counts only when the question is about a defense or names nobody else
+  // ("Texans WR Nico Collins" is about Collins, not the Texans defense).
+  const aboutDefense = / (defense|defence|def|d st|dst) /.test(text) || found.size === 0;
+  for (const p of pool) {
+    if (p.position !== "DEF" || found.has(p.id) || !aboutDefense) continue;
+    const words = normalizePlayerName(p.name).split(" ").filter(w => w.length > 2);
+    const aliases = [...words, String(p.team ?? p.id).toLowerCase()];
+    const at = Math.min(...aliases.map(a => text.indexOf(` ${a} `)).filter(i => i >= 0));
+    if (Number.isFinite(at)) found.set(p.id, { player: p, at });
   }
 
   const lastNameCounts = new Map<string, number>();
@@ -121,38 +139,63 @@ export async function weeklyAdjustedPlayers(ctx: LeagueContext, me: LeagueTeam) 
   return { week, teamsPlaying, matchups, weekly };
 }
 
-async function handleLineup(message: string, ctx: LeagueContext, me: LeagueTeam): Promise<AdvisorResult> {
-  const { week, teamsPlaying, matchups, weekly } = await weeklyAdjustedPlayers(ctx, me);
-  const lineup = optimizeLineup(weekly, ctx.slots);
-  const starters = new Set(lineup.flatMap(a => (a.player ? [a.player.id] : [])));
-  const bench = weekly.filter(p => !starters.has(p.id) && p.position in SLOT_ELIGIBILITY);
-
-  const notes: string[] = [];
+async function handleLineup(message: string, ctx: LeagueContext, me: LeagueTeam, leagueId: string): Promise<AdvisorResult> {
+  // Same numbers and lineup as the lineup check (Sleeper's projections, fewest swaps), listed
+  // slot by slot in the order Sleeper shows them.
+  const check = await getLineupCheck(leagueId, me.rosterId, me.ownerId);
+  const notes: string[] = [...check.problems];
   me.players.forEach(p => {
     const status = String(p.injuryStatus ?? "").toUpperCase();
-    if (status === "IR" || status === "INJURED RESERVE")
+    if ((status === "IR" || status === "INJURED RESERVE") && !check.lineup.some(l => l.player?.id === p.id))
       notes.push(`${p.name} is on IR — move him to an IR spot in Sleeper so his roster spot can go to a waiver pickup.`);
-    else if (isOutStatus(p.injuryStatus)) notes.push(`${p.name} is ${p.injuryStatus} — do not start him.`);
-    else if (teamsPlaying && p.team && teamsPlaying.size > 0 && !teamsPlaying.has(p.team))
-      notes.push(`${p.name} (${p.team}) is on bye in week ${week}.`);
   });
-  lineup.filter(a => !a.player).forEach(a => notes.push(`No eligible player for your ${a.slot} slot — pick one up.`));
+  const listing = lineupListing(check);
+  return {
+    prefix: `${listing}\n\n`,
+    prompt: buildLineupPrompt(message, check.lineup, check.bench, notes, check.matchupNotes, check.injuryNotes),
+    fallback: [
+      ...(notes.length ? ["Heads up:", ...notes.map(n => `• ${n}`)] : []),
+      ...(check.injuryNotes.length ? ["", "Injuries:", ...check.injuryNotes.map(n => `• ${n}`)] : []),
+    ].join("\n"),
+  };
+}
 
-  const fallback = [
-    `Recommended lineup for week ${week}:`,
-    ...lineup.map(a => `• ${a.slot}: ${a.player ? `${a.player.name} (${a.player.value.toFixed(2)} pts/g)` : "EMPTY"}`),
-    ...(notes.length ? ["", "Heads up:", ...notes.map(n => `• ${n}`)] : []),
+/** The best lineup in Sleeper's slot order, with the changes from the lineup set in Sleeper. */
+export function lineupListing(check: { week: number; lineup: { label: string; player: { name: string; value: number } | null; changed: boolean; locked: boolean }[]; swaps: { slot: string; start: { name: string }; bench: { name: string } | null; movesTo?: string; from?: string; gain: number }[] }): string {
+  const lines = check.lineup.map(l => {
+    const who = l.player ? `${l.player.name} — ${l.player.value.toFixed(2)} pts` : "EMPTY (nobody on your roster can play here)";
+    const tag = l.locked ? " (game started, locked)" : l.changed && l.player ? " ← change" : "";
+    return `• ${l.label}: ${who}${tag}`;
+  });
+  const changes = check.swaps
+    .filter(s => !s.from)
+    .map(s => `• Start ${s.start.name}${s.bench ? ` instead of ${s.bench.name}${s.movesTo ? ` (${s.bench.name} moves to ${s.movesTo})` : ""}` : ` in your empty ${s.slot} spot`} (+${s.gain.toFixed(2)})`);
+  return [
+    `Best lineup for week ${check.week} (same order as Sleeper):`,
+    ...lines,
+    "",
+    changes.length ? "Changes to make in Sleeper:" : "No changes needed: this is already your lineup in Sleeper.",
+    ...changes,
   ].join("\n");
-
-  const matchupNotes: Record<string, string> = {};
-  matchups.forEach((m, id) => {
-    if (m.parts.length) matchupNotes[id] = `x${m.multiplier.toFixed(2)} this week: ${m.parts.join("; ")}`;
-  });
-  return { prompt: buildLineupPrompt(message, lineup, bench, notes, matchupNotes), fallback };
 }
 
 // ---------- Waivers ----------
-function handleWaiver(message: string, ctx: LeagueContext, me: LeagueTeam): AdvisorResult {
+/** Your open roster spots (bench included) and pickups for them, from Sleeper's roster. */
+async function openSpotsFor(ctx: LeagueContext, me: LeagueTeam): Promise<OpenSpots | null> {
+  const rosters = await getRosters(String(ctx.league?.league_id ?? "")).catch(() => null);
+  const roster = (rosters ?? []).find((r: any) => Number(r.roster_id) === me.rosterId);
+  if (!roster) return null;
+  const away = new Set([...(roster.reserve ?? []), ...(roster.taxi ?? [])].map(String));
+  return openRosterSpots({
+    rosterPositions: ctx.league?.roster_positions,
+    activePlayers: me.players.filter(p => !away.has(p.id)),
+    freeAgents: ctx.freeAgents,
+    slots: ctx.slots,
+  });
+}
+
+async function handleWaiver(message: string, ctx: LeagueContext, me: LeagueTeam): Promise<AdvisorResult> {
+  const spots = await openSpotsFor(ctx, me);
   const rostered = ctx.teams.flatMap(t => t.players.map(p => ({ p, team: t })));
   const pool = [...ctx.freeAgents, ...rostered.map(r => r.p)];
   const mentioned = findMentionedPlayers(message, pool, me.players);
@@ -165,6 +208,15 @@ function handleWaiver(message: string, ctx: LeagueContext, me: LeagueTeam): Advi
       return {
         reply: `${target.name} is already on ${owner.team.teamName}'s roster, so you can't pick him up. Try asking: "What would it take to trade for ${target.name}?"`,
         fallback: "",
+      };
+    }
+
+    // With an open roster spot there's nothing to drop.
+    if (spots && spots.open > 0) {
+      const balance = balanceSummary(me.players, positionTargets(ctx.slots));
+      return {
+        prompt: buildOpenSpotPrompt(message, spots, me.players, balance, target),
+        fallback: `You have ${spots.open} open roster spot${spots.open === 1 ? "" : "s"}, so just add ${target.name}: no drop needed.`,
       };
     }
 
@@ -184,6 +236,15 @@ function handleWaiver(message: string, ctx: LeagueContext, me: LeagueTeam): Advi
           .join("\n")}`
       : `Your roster is empty, so just add ${target.name}.`;
     return { prompt: buildDropForTargetPrompt(message, target, options, me.players, balance), fallback };
+  }
+
+  if (spots && spots.open > 0) {
+    const balance = balanceSummary(me.players, positionTargets(ctx.slots));
+    const fallback = [
+      `You have ${spots.open} open roster spot${spots.open === 1 ? "" : "s"}: no drop needed.${spots.needs.length ? ` You're short at ${spots.needs.join(", ")}.` : ""}`,
+      ...spots.pickups.map(p => `• Add ${p.add.name} (${p.add.position}, ${p.add.value.toFixed(2)} pts/g): ${p.reason}`),
+    ].join("\n");
+    return { prompt: buildOpenSpotPrompt(message, spots, me.players, balance), fallback };
   }
 
   const suggestions = suggestPickups(me.players, ctx.freeAgents, ctx.slots, 5);
@@ -216,6 +277,20 @@ function handleTrade(message: string, ctx: LeagueContext, me: LeagueTeam): Advis
       reply: "Those players are on different teams. Ask about a trade with one team at a time.",
       fallback: "",
     };
+  }
+
+  // "Who should I trade to get X?": every idea must include X (the same offers as the
+  // "Build a trade offer" button on his page).
+  if (get.length === 1 && give.length === 0) {
+    const target = get[0];
+    const owner = others.find(t => t.players.some(p => p.id === target.id));
+    if (owner) {
+      const offers = tradeForPlayer(me, owner, target.id, ctx.slots, 3);
+      const fallback = offers.length
+        ? offers.map((idea, i) => describeTradeIdea(idea, i)).join("\n\n")
+        : `I couldn't put together an offer for ${target.name} from your roster.`;
+      return { prompt: buildTradeIdeasPrompt(message, offers, me.players, target.name), fallback };
+    }
   }
 
   const ideas = generateTradeIdeas(me, others, ctx.slots, {
@@ -301,13 +376,13 @@ export async function handleAdvisorQuestion(
 
   switch (intent) {
     case "waiver":
-      return handleWaiver(message, ctx, me);
+      return await handleWaiver(message, ctx, me);
     case "trade":
       return handleTrade(message, ctx, me);
     case "draft":
       return handleDraft(message, ctx, me);
     case "start_sit":
-      return handleLineup(message, ctx, me);
+      return handleLineup(message, ctx, me, String(team!.leagueId));
     default:
       return { prompt: buildGeneralPrompt(message, me.players), fallback: "" };
   }

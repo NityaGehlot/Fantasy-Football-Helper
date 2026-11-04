@@ -4,6 +4,7 @@
 
 import { parseRosterSlots, SlotName } from "./lineup";
 import { buildValueIndex, isOutStatus, PlayerValue, valueForSleeperPlayer, FANTASY_POSITIONS } from "./playerValues";
+import { getPlayerRanks } from "./playerRanks";
 import { getAllPlayers, getLeague, getLeagueUsers, getRosters } from "./sleeperServer";
 import { getSeasonRows, resolveStatsSeason } from "./statsStore";
 import type { LeagueTeam, TradePlayer } from "./tradeEngine";
@@ -27,7 +28,15 @@ export function toTradePlayer(id: string, sleeperPlayer: any, index: Map<string,
   const position = String(sleeperPlayer?.position ?? valued?.position ?? "").toUpperCase();
   return {
     id: String(id),
-    name: String(sleeperPlayer?.full_name || (position === "DEF" ? `${id} DEF` : valued?.name || id)),
+    // Defenses are named like Sleeper shows them ("Houston Texans"); Sleeper has no full_name for them.
+    name: String(
+      sleeperPlayer?.full_name ||
+        (position === "DEF"
+          ? sleeperPlayer?.first_name && sleeperPlayer?.last_name
+            ? `${sleeperPlayer.first_name} ${sleeperPlayer.last_name}`
+            : `${id} DEF`
+          : valued?.name || id)
+    ),
     position,
     team: normalizeTeam(sleeperPlayer?.team ?? valued?.team),
     injuryStatus: String(sleeperPlayer?.injury_status || valued?.injuryStatus || "ACTIVE").toUpperCase(),
@@ -60,6 +69,9 @@ export async function getLeagueContext(leagueId: string, myRosterId?: number, my
     getAllPlayers(),
     getValueContext(),
   ]);
+  // Season fantasy points and ranks with this league's scoring (empty if Sleeper is unavailable).
+  const ranks = await getPlayerRanks(Number(league?.season) || values.season, league?.scoring_settings);
+  const withRank = (p: TradePlayer): TradePlayer => (ranks[p.id] ? { ...p, rank: ranks[p.id] } : p);
 
   const userById = new Map<string, any>((users ?? []).map((u: any) => [String(u.user_id), u]));
   const rostered = new Set<string>();
@@ -72,7 +84,7 @@ export async function getLeagueContext(leagueId: string, myRosterId?: number, my
       rosterId: Number(roster.roster_id),
       ownerId: String(roster.owner_id ?? ""),
       teamName: String(user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`),
-      players: ids.map(id => toTradePlayer(id, players[id] ?? { player_id: id }, values.index)),
+      players: ids.map(id => withRank(toTradePlayer(id, players[id] ?? { player_id: id }, values.index))),
     };
   });
 
@@ -83,7 +95,7 @@ export async function getLeagueContext(leagueId: string, myRosterId?: number, my
 
   const freeAgents = Object.entries(players)
     .filter(([id, p]) => !rostered.has(id) && p?.team && FANTASY_POSITIONS.includes(String(p?.position).toUpperCase()))
-    .map(([id, p]) => toTradePlayer(id, p, values.index))
+    .map(([id, p]) => withRank(toTradePlayer(id, p, values.index)))
     .filter(p => p.value > 0);
 
   return { league, slots: parseRosterSlots(league?.roster_positions), teams, me, freeAgents, values, players };
