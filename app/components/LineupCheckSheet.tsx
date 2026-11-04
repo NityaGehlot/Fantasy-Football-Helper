@@ -89,16 +89,24 @@ export default function LineupCheckSheet({
                       <Text style={styles.slot}>{s.slot}</Text>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.start}>
-                          <Ionicons name="arrow-up" size={13} color={colors.success} /> Start {s.start.name} ({s.start.value.toFixed(1)})
+                          <Ionicons name="arrow-up" size={13} color={colors.success} /> {s.from ? `Move ${s.start.name} here from ${s.from}` : `Start ${s.start.name}`} ({s.start.position}, {s.start.value.toFixed(1)})
                         </Text>
-                        {s.bench && (
+                        {s.bench ? (
                           <Text style={styles.bench}>
-                            <Ionicons name="arrow-down" size={13} color={colors.danger} /> Bench {s.bench.name} ({s.bench.value.toFixed(1)})
+                            <Ionicons name={s.movesTo ? 'swap-vertical' : 'arrow-down'} size={13} color={s.movesTo ? colors.primary : colors.danger} />{' '}
+                            {s.movesTo ? `${s.bench.name} moves to ${s.movesTo}` : `Bench ${s.bench.name}`} ({s.bench.position}, {s.bench.value.toFixed(1)})
                             {s.bench.injuryStatus && s.bench.injuryStatus !== 'ACTIVE' ? ` · ${s.bench.injuryStatus}` : ''}
                           </Text>
+                        ) : (
+                          <Text style={[styles.bench, { color: colors.danger }]}>Fills your empty {s.slot} spot (it scores 0 right now)</Text>
                         )}
                       </View>
-                      <Text style={styles.gain}>+{s.gain.toFixed(1)}</Text>
+                      {/* Moves between slots are part of a chain; only real gains get a number. */}
+                      {s.movesTo || s.from ? (
+                        <Text style={[styles.gain, { color: colors.primary }]}>move</Text>
+                      ) : (
+                        <Text style={styles.gain}>+{s.gain.toFixed(1)}</Text>
+                      )}
                     </View>
                   ))}
                   <Text style={styles.section}>HOW TO DO IT IN SLEEPER</Text>

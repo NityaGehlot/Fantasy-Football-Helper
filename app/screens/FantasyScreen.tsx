@@ -43,6 +43,9 @@ import PlayerCard from '../components/PlayerCard';
 import LeaguesModal from '../components/LeaguesModal';
 import LeagueIdHelp from '../components/LeagueIdHelp';
 import LineupCheckSheet from '../components/LineupCheckSheet';
+import { fetchLineupCheck, type LineupCheck } from '../services/lineupCheck';
+
+const FLEX_NAMES: Record<string, string> = { SUPER_FLEX: 'SUPER FLEX', REC_FLEX: 'W/T FLEX', WRRB_FLEX: 'W/R FLEX' };
 import { parseLeagueId } from '../services/leagueInput';
 import { fetchIrAdvice, irStatusWord, type IrAdvice } from '../services/irAdvice';
 import { Menu } from 'react-native-paper';
@@ -117,6 +120,7 @@ export default function FantasyScreen() {
   const [addError, setAddError] = useState('');
   const [irAdvice, setIrAdvice] = useState<IrAdvice | null>(null);
   const [showLineupCheck, setShowLineupCheck] = useState(false);
+  const [lineupCheck, setLineupCheck] = useState<LineupCheck | null>(null);
   const route = useRoute<any>();
   // Opened from a lineup-check notification
   useEffect(() => {
@@ -455,6 +459,22 @@ useEffect(() => {
       cancelled = true;
     };
   }, [irEligible, selectedSeasonLeagueId, irRosterId, refreshNonce]);
+
+  // When your lineup has an empty starting spot, load the lineup check so the empty row can say
+  // who to put there.
+  const myStarters: string[] = (weekMatchups.find(m => m.roster_id === irRosterId)?.starters ?? []).map(String);
+  const hasEmptyStarter = myStarters.some(id => !id || id === '0');
+  useEffect(() => {
+    setLineupCheck(null);
+    if (!irEligible || !hasEmptyStarter || !activeLeagueId || !myTeam) return;
+    let cancelled = false;
+    fetchLineupCheck(activeLeagueId, Number(irRosterId), myTeam.ownerId)
+      .then(c => { if (!cancelled) setLineupCheck(c); })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [irEligible, hasEmptyStarter, activeLeagueId, irRosterId, refreshNonce]);
 
   const handleRefresh = async () => {
     if (!selectedSeasonLeagueId) return;
@@ -866,7 +886,15 @@ if (!activeLeagueId) {
           : (p.position || '').toUpperCase();
         return { ...p, assignedSlot };
       })
-      .sort((a, b) => {
+      // Empty starting spots in Sleeper ("0") are shown too, so you can see what to fill.
+      .concat(
+        sIds.flatMap((id, idx) =>
+          !id || String(id) === '0'
+            ? [{ player_id: `empty-${idx}`, empty: true, assignedSlot: String(league?.roster_positions?.[idx] ?? '').toUpperCase() }]
+            : []
+        )
+      )
+      .sort((a: any, b: any) => {
         const oa = SLOT_ORDER[a.assignedSlot] ?? 99;
         const ob = SLOT_ORDER[b.assignedSlot] ?? 99;
         if (oa !== ob) return oa - ob;
@@ -894,6 +922,7 @@ if (!activeLeagueId) {
     return !!team && !teamsPlaying.has(aliases[team] ?? team);
   };
   const renderPlayer = (side: ReturnType<typeof buildSide>, player: any, isStarter: boolean, dense = false) => {
+    if (player.empty) return renderEmptySlot(side, player.assignedSlot, player.player_id, dense);
     let stats = getPlayerNFLStats(player.player_id, selectedWeek);
     const live = weekStatus !== 'completed' ? liveById[String(player.player_id)] : undefined;
     // Weeks that aren't over have no stats file yet: show today's injury designation instead.
@@ -929,6 +958,38 @@ if (!activeLeagueId) {
           onBye={byeForSelectedWeek(player)}
           projected={live && live.game.state !== 'post' && live.game.state !== 'bye' && live.id !== '0' ? live.projectedFinal : undefined}
         />
+      </TouchableOpacity>
+    );
+  };
+
+  // An empty starting spot, with who to put there (from the lineup check) for your own team.
+  const renderEmptySlot = (side: ReturnType<typeof buildSide>, slot: string, key: string, dense: boolean) => {
+    const mine = isViewingMyTeam && side === mySide;
+    const fill = mine ? lineupCheck?.swaps.find(sw => sw.slot === slot && !sw.bench) : undefined;
+    const label = FLEX_NAMES[slot] ?? slot;
+    return (
+      <TouchableOpacity
+        key={key}
+        style={[styles.playerRow, styles.emptyRow, dense && { paddingHorizontal: 8 }]}
+        activeOpacity={0.7}
+        disabled={!mine}
+        onPress={() => setShowLineupCheck(true)}
+      >
+        <View style={[styles.emptyBadge, { borderColor: colors.danger }]}>
+          <Text style={[styles.emptyBadgeText, { color: colors.danger }]}>{label}</Text>
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.emptySlotTitle} numberOfLines={1}>Empty {label} spot</Text>
+          <Text style={styles.emptySlotSub} numberOfLines={dense ? 3 : 2}>
+            {!mine
+              ? 'No one is starting here.'
+              : fill
+                ? `Start ${fill.start.name} here (+${fill.start.value.toFixed(1)} pts). Tap for the full lineup check.`
+                : lineupCheck
+                  ? `Nobody on your roster can play ${label}. Pick one up from waivers.`
+                  : 'This spot scores 0. Tap to see who to put here.'}
+          </Text>
+        </View>
       </TouchableOpacity>
     );
   };
@@ -1383,6 +1444,11 @@ const makeStyles = (c: Palette) => ({
   irCard: { backgroundColor: c.surface, borderRadius: radius.md, padding: 12, marginTop: 12, gap: 4, borderWidth: 1, borderColor: c.border, borderLeftWidth: 4, borderLeftColor: c.danger },
   irSlots: { fontSize: 11, fontWeight: '700' as const, color: c.textMuted },
   irNote: { color: c.textMuted, fontSize: 12 },
+  emptyRow: { paddingVertical: 12, paddingHorizontal: 16, gap: 10, backgroundColor: c.dangerSoft },
+  emptyBadge: { minWidth: 52, height: 26, borderRadius: 6, borderWidth: 1.5, borderStyle: 'dashed' as const, alignItems: 'center' as const, justifyContent: 'center' as const, paddingHorizontal: 4 },
+  emptyBadgeText: { fontWeight: '800' as const, fontSize: 11 },
+  emptySlotTitle: { fontSize: 15, fontWeight: '800' as const, color: c.danger },
+  emptySlotSub: { fontSize: 12, color: c.text, marginTop: 2, lineHeight: 16 },
   checkBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 8, backgroundColor: c.primarySoft, borderRadius: radius.md, padding: 12, marginTop: 12 },
   checkBtnText: { flex: 1, color: c.primary, fontWeight: '700' as const, fontSize: 13 },
   lockBox: { backgroundColor: c.dangerSoft, borderRadius: radius.sm, padding: 10, gap: 4, marginVertical: 4 },

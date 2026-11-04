@@ -239,6 +239,24 @@ export function lineupCheckNotification(b: Base & { week: number }, swaps: numbe
   });
 }
 
+/** A trade offer someone sent you, graded. */
+export function tradeOfferNotification(
+  b: Base,
+  offer: { transactionId: string; partnerName: string; grade: string; headline: string; give: string[]; get: string[]; counters: number }
+): AppNotification {
+  const good = offer.grade === 'A' || offer.grade === 'B';
+  const bad = offer.grade === 'D' || offer.grade === 'F';
+  return make(b, {
+    id: `offer:${b.leagueId}:${offer.transactionId}`,
+    kind: 'trade',
+    tone: good ? 'good' : bad ? 'bad' : 'info',
+    title: `Trade offer from ${offer.partnerName}: grade ${offer.grade}`,
+    body: `${offer.headline}${bad && offer.counters ? ` ${offer.counters} counter-offer${offer.counters === 1 ? '' : 's'} suggested.` : ''}`,
+    target: 'Trades',
+    aiQuestion: `${offer.partnerName} offered me ${offer.get.join(' and ') || 'nothing'} for ${offer.give.join(' and ') || 'nothing'}. Should I accept this trade?`,
+  });
+}
+
 /** Add new notifications to the saved list (newest first), skipping ids already seen. */
 export function mergeNotifications(
   existing: AppNotification[],

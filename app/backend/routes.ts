@@ -44,9 +44,10 @@ import { buildMatchupContext, formatMatchupBlock } from "./services/matchupConte
 import { playedPoints, pointRange } from "./utils/pointRange";
 import { imagesForArticles } from "./services/articleImages";
 import { getNflState, getRosters, getTransactions } from "./services/sleeperServer";
-import { gradeTrade, pendingTradesFor } from "./services/tradeGrade";
+import { gradeTrade, pendingTradesFor, tradeForPlayer } from "./services/tradeGrade";
 import { getLineupCheck } from "./services/lineupCheck";
 import { normalizePlayerName } from "./utils/names";
+import { incompatibleStartSitReply } from "./utils/slotCompat";
 import { generateTradeIdeas } from "./services/tradeEngine";
 import { getLiveScoreboard } from "./services/liveScoreboard";
 import { ensureInjuriesLoaded } from "./services/injuryStore";
@@ -88,6 +89,8 @@ type MyTeamPayload = {
   players: TeamPlayerPayload[];
   starters: string[];
   starterSlotsByPosition?: Partial<Record<"QB" | "RB" | "WR" | "TE" | "K" | "DEF", number>>;
+  // league.roster_positions, for which positions can share a lineup spot
+  rosterPositions?: string[];
 };
 
 // ===============================
@@ -561,6 +564,53 @@ export function registerRoutes(router: Router): void {
     }
   });
 
+  // Pending trade offers involving your team, each graded (with counter-offers when it's bad).
+  router.post("/trade-offers", async (req: Request, res: Response) => {
+    const { leagueId, rosterId, ownerId } = (req.body ?? {}) as { leagueId?: string; rosterId?: number; ownerId?: string };
+    if (!leagueId) return res.status(400).json({ error: "leagueId is required" });
+    try {
+      const ctx = await getLeagueContext(String(leagueId), rosterId, ownerId);
+      if (!ctx.me) return res.status(404).json({ error: "Your team was not found in this league." });
+      const state = await getNflState().catch(() => null);
+      const week = Number(state?.week) || 1;
+      // Offers are filed under the week they were made; look at this week, last week and next.
+      const transactions = (
+        await Promise.all([week + 1, week, week - 1].filter(w => w >= 1).map(w => getTransactions(String(leagueId), w).catch(() => [])))
+      ).flat();
+      const pending = pendingTradesFor(transactions, ctx.me.rosterId, ctx.me.ownerId);
+      if (pending.length) await addPlayoffSchedules(ctx);
+      const offers = pending.flatMap(t => {
+        const partner = ctx.teams.find(x => x.rosterId === t.partnerRosterId);
+        if (!partner) return [];
+        const give = ctx.me!.players.filter(p => t.give.includes(p.id));
+        const get = partner.players.filter(p => t.get.includes(p.id));
+        return [{ ...t, partnerName: partner.teamName, result: gradeTrade(ctx.me!, partner, give, get, ctx.slots) }];
+      });
+      res.json({ checkedAt: new Date().toISOString(), offers });
+    } catch (err: any) {
+      console.error("❌ Trade offers failed:", err);
+      res.status(500).json({ error: err?.message || "Failed to load trade offers" });
+    }
+  });
+
+  // A trade proposal for one player on another team (from Home's trending list).
+  router.post("/trade-for", async (req: Request, res: Response) => {
+    const { leagueId, rosterId, ownerId, playerId } = (req.body ?? {}) as { leagueId?: string; rosterId?: number; ownerId?: string; playerId?: string };
+    if (!leagueId || !playerId) return res.status(400).json({ error: "leagueId and playerId are required" });
+    try {
+      const ctx = await getLeagueContext(String(leagueId), rosterId, ownerId);
+      if (!ctx.me) return res.status(404).json({ error: "Your team was not found in this league." });
+      const owner = ctx.teams.find(t => t.players.some(p => p.id === String(playerId)));
+      if (!owner) return res.json({ owner: null, ideas: [] });
+      if (owner.rosterId === ctx.me.rosterId) return res.json({ owner: owner.teamName, mine: true, ideas: [] });
+      await addPlayoffSchedules(ctx);
+      res.json({ owner: owner.teamName, ideas: tradeForPlayer(ctx.me, owner, String(playerId), ctx.slots) });
+    } catch (err: any) {
+      console.error("❌ Trade-for failed:", err);
+      res.status(500).json({ error: err?.message || "Failed to build a trade" });
+    }
+  });
+
   router.post("/grade-trade", async (req: Request, res: Response) => {
     const { leagueId, rosterId, ownerId, partnerRosterId, give, get } = (req.body ?? {}) as {
       leagueId?: string; rosterId?: number; ownerId?: string; partnerRosterId?: number; give?: string[]; get?: string[];
@@ -828,6 +878,18 @@ ANSWER:`;
       }
 
       console.log(`🔍 Detected ${mentionedPlayers.length} player(s):`, mentionedPlayers);
+
+      // "Start A or B?" only makes sense when they can play the same lineup spot.
+      if (intent === "start_sit" && mentionedPlayers.length === 2 && !usedRosterInference) {
+        const [a, b] = mentionedPlayers;
+        const reply = incompatibleStartSitReply(
+          { name: a.name, position: String(a.position) },
+          { name: b.name, position: String(b.position) },
+          myTeam?.rosterPositions,
+          myTeam?.players ?? []
+        );
+        if (reply) return res.json({ reply });
+      }
 
       const playerContexts: {
         name: string;

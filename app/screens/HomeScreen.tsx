@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { getPlayersFromGithub, getTrendingPlayers, TrendType } from '../services/sleeperAPI';
+import { getLeagueUsers, getPlayersFromGithub, getRosters, getTrendingPlayers, TrendType } from '../services/sleeperAPI';
+import { ownershipLabel, ownershipMap, type Ownership } from '../services/leagueOwnership';
+import TradeForSheet from '../components/TradeForSheet';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../AppNavigator';
@@ -40,7 +42,21 @@ export default function HomeScreen() {
 
   type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'MainTabs'>;
   const navigation = useNavigation<NavigationProp>();
-  const { sendChatMessage, isChatTyping } = useFantasy();
+  const { sendChatMessage, isChatTyping, activeLeagueId, myTeam } = useFantasy();
+  // Who owns each player in your open league (for "On Team X" and "Trade for him").
+  const [owners, setOwners] = useState<Map<string, Ownership> | null>(null);
+  const [tradeFor, setTradeFor] = useState<{ id: string; name: string } | null>(null);
+  useEffect(() => {
+    setOwners(null);
+    if (!activeLeagueId) return;
+    let cancelled = false;
+    Promise.all([getRosters(activeLeagueId), getLeagueUsers(activeLeagueId).catch(() => [])])
+      .then(([rosters, users]) => !cancelled && setOwners(ownershipMap(rosters, users, myTeam?.ownerId)))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLeagueId, myTeam?.ownerId]);
 
   // Ask the assistant who to drop from your roster to make room for this player.
   const askWhoToDrop = (playerName: string) => {
@@ -122,6 +138,8 @@ export default function HomeScreen() {
             const player = { ...(players[item.player_id] ?? item), player_id: item.player_id };
             const pos = String(player.position_for_FFHelper || player.position || player.position_listed_on_sleeper || '').toUpperCase().trim();
             const name = player.full_name || `${player.first_name ?? ''} ${player.last_name ?? ''}`.trim();
+            const owner = owners?.get(String(item.player_id));
+            const ownedByOther = !!owner && !owner.mine;
             return (
               <TouchableOpacity key={item.player_id} style={styles.trendRow} onPress={() => openPlayer(player)}>
                 <Text style={styles.rank}>{index + 1}</Text>
@@ -133,13 +151,29 @@ export default function HomeScreen() {
                     positionColor={getPositionColor(pos)}
                     imageUri={pos === 'DEF' ? getTeamLogo(player.team) : getHeadshotUrl(player)}
                   />
+                  {!!owners && (
+                    <Text
+                      style={[styles.owner, owner?.mine ? { color: colors.primary } : !owner ? { color: colors.success } : null]}
+                      numberOfLines={1}
+                    >
+                      {ownershipLabel(owner, true)}
+                    </Text>
+                  )}
                 </View>
                 <View style={styles.trendInfo}>
                   <View style={styles.trendCountRow}>
                     <Ionicons name={isAdd ? 'arrow-up' : 'arrow-down'} size={13} color={isAdd ? colors.success : colors.danger} />
                     <Text style={[styles.trendCount, { color: isAdd ? colors.success : colors.danger }]}>{formatCount(Number(item.count) || 0)}</Text>
                   </View>
-                  {isAdd && (
+                  {ownedByOther && myTeam ? (
+                    <TouchableOpacity
+                      style={styles.dropAskBtn}
+                      onPress={() => setTradeFor({ id: String(item.player_id), name })}
+                      accessibilityLabel={`Build a trade offer for ${name}`}
+                    >
+                      <Text style={styles.dropAskText} numberOfLines={1}>Trade for him</Text>
+                    </TouchableOpacity>
+                  ) : isAdd && !owner?.mine ? (
                     <TouchableOpacity
                       style={styles.dropAskBtn}
                       onPress={() => askWhoToDrop(name)}
@@ -147,7 +181,7 @@ export default function HomeScreen() {
                     >
                       <Text style={styles.dropAskText} numberOfLines={1}>Who to drop?</Text>
                     </TouchableOpacity>
-                  )}
+                  ) : null}
                 </View>
               </TouchableOpacity>
             );
@@ -160,6 +194,9 @@ export default function HomeScreen() {
           </TouchableOpacity>
         )}
       </View>
+      {myTeam && activeLeagueId && (
+        <TradeForSheet visible={!!tradeFor} team={myTeam} leagueId={activeLeagueId} player={tradeFor} onClose={() => setTradeFor(null)} />
+      )}
     </ScrollView>
   );
 }
@@ -186,6 +223,7 @@ const makeStyles = (c: Palette) => ({
   trendInfo: { width: 96, alignItems: 'flex-start' as const, gap: 6, flexShrink: 0 },
   trendCountRow: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 2 },
   trendCount: { fontSize: 15, fontWeight: '800' as const },
+  owner: { fontSize: 11, fontWeight: '700' as const, color: c.textMuted, marginTop: 3, marginLeft: 58 },
   dropAskBtn: { backgroundColor: c.primarySoft, borderRadius: radius.pill, paddingHorizontal: 9, paddingVertical: 4 },
   dropAskText: { fontSize: 11, fontWeight: '700' as const, color: c.primary },
   showMore: { flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const, gap: 4, paddingVertical: 12 },

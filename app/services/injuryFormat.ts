@@ -20,6 +20,8 @@ export type InjuryRecord = {
   injury?: string;
   notes?: string;
   injury_start_date?: string;
+  // Where the status comes from ("Carried over from his last game..." / official report)
+  status_note?: string;
   history?: InjuryHistoryEntry[];
 };
 
@@ -70,8 +72,14 @@ export function practiceTable(history: InjuryHistoryEntry[] = []) {
       day: e.day,
       date: e.date,
       practice: e.practice_status ?? '',
-      practiceLabel: PRACTICE_LABELS[e.practice_status ?? ''] ?? '—',
-      status: injuryLabel(e.game_status || e.status) || '—',
+      // No entry = the team didn't publish a practice report that day (or he wasn't on it).
+      practiceLabel: PRACTICE_LABELS[e.practice_status ?? ''] ?? 'No report',
+      // A status with no official game status that day is left over from his last game.
+      status: e.game_status
+        ? injuryLabel(e.game_status) || e.game_status
+        : injuryLabel(e.status)
+          ? `${injuryLabel(e.status)}${['QUESTIONABLE', 'DOUBTFUL', 'OUT'].includes(String(e.status).toUpperCase()) ? ' (last game)' : ''}`
+          : '—',
     }));
 }
 

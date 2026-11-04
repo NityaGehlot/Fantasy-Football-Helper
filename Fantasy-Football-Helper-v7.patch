@@ -1,0 +1,1720 @@
+diff --git a/app/backend/routes.ts b/app/backend/routes.ts
+index 6aa49e6..af17e27 100644
+--- a/app/backend/routes.ts
++++ b/app/backend/routes.ts
+@@ -44,9 +44,10 @@ import { buildMatchupContext, formatMatchupBlock } from "./services/matchupConte
+ import { playedPoints, pointRange } from "./utils/pointRange";
+ import { imagesForArticles } from "./services/articleImages";
+ import { getNflState, getRosters, getTransactions } from "./services/sleeperServer";
+-import { gradeTrade, pendingTradesFor } from "./services/tradeGrade";
++import { gradeTrade, pendingTradesFor, tradeForPlayer } from "./services/tradeGrade";
+ import { getLineupCheck } from "./services/lineupCheck";
+ import { normalizePlayerName } from "./utils/names";
++import { incompatibleStartSitReply } from "./utils/slotCompat";
+ import { generateTradeIdeas } from "./services/tradeEngine";
+ import { getLiveScoreboard } from "./services/liveScoreboard";
+ import { ensureInjuriesLoaded } from "./services/injuryStore";
+@@ -88,6 +89,8 @@ type MyTeamPayload = {
+   players: TeamPlayerPayload[];
+   starters: string[];
+   starterSlotsByPosition?: Partial<Record<"QB" | "RB" | "WR" | "TE" | "K" | "DEF", number>>;
++  // league.roster_positions, for which positions can share a lineup spot
++  rosterPositions?: string[];
+ };
+ 
+ // ===============================
+@@ -561,6 +564,53 @@ export function registerRoutes(router: Router): void {
+     }
+   });
+ 
++  // Pending trade offers involving your team, each graded (with counter-offers when it's bad).
++  router.post("/trade-offers", async (req: Request, res: Response) => {
++    const { leagueId, rosterId, ownerId } = (req.body ?? {}) as { leagueId?: string; rosterId?: number; ownerId?: string };
++    if (!leagueId) return res.status(400).json({ error: "leagueId is required" });
++    try {
++      const ctx = await getLeagueContext(String(leagueId), rosterId, ownerId);
++      if (!ctx.me) return res.status(404).json({ error: "Your team was not found in this league." });
++      const state = await getNflState().catch(() => null);
++      const week = Number(state?.week) || 1;
++      // Offers are filed under the week they were made; look at this week, last week and next.
++      const transactions = (
++        await Promise.all([week + 1, week, week - 1].filter(w => w >= 1).map(w => getTransactions(String(leagueId), w).catch(() => [])))
++      ).flat();
++      const pending = pendingTradesFor(transactions, ctx.me.rosterId, ctx.me.ownerId);
++      if (pending.length) await addPlayoffSchedules(ctx);
++      const offers = pending.flatMap(t => {
++        const partner = ctx.teams.find(x => x.rosterId === t.partnerRosterId);
++        if (!partner) return [];
++        const give = ctx.me!.players.filter(p => t.give.includes(p.id));
++        const get = partner.players.filter(p => t.get.includes(p.id));
++        return [{ ...t, partnerName: partner.teamName, result: gradeTrade(ctx.me!, partner, give, get, ctx.slots) }];
++      });
++      res.json({ checkedAt: new Date().toISOString(), offers });
++    } catch (err: any) {
++      console.error("❌ Trade offers failed:", err);
++      res.status(500).json({ error: err?.message || "Failed to load trade offers" });
++    }
++  });
++
++  // A trade proposal for one player on another team (from Home's trending list).
++  router.post("/trade-for", async (req: Request, res: Response) => {
++    const { leagueId, rosterId, ownerId, playerId } = (req.body ?? {}) as { leagueId?: string; rosterId?: number; ownerId?: string; playerId?: string };
++    if (!leagueId || !playerId) return res.status(400).json({ error: "leagueId and playerId are required" });
++    try {
++      const ctx = await getLeagueContext(String(leagueId), rosterId, ownerId);
++      if (!ctx.me) return res.status(404).json({ error: "Your team was not found in this league." });
++      const owner = ctx.teams.find(t => t.players.some(p => p.id === String(playerId)));
++      if (!owner) return res.json({ owner: null, ideas: [] });
++      if (owner.rosterId === ctx.me.rosterId) return res.json({ owner: owner.teamName, mine: true, ideas: [] });
++      await addPlayoffSchedules(ctx);
++      res.json({ owner: owner.teamName, ideas: tradeForPlayer(ctx.me, owner, String(playerId), ctx.slots) });
++    } catch (err: any) {
++      console.error("❌ Trade-for failed:", err);
++      res.status(500).json({ error: err?.message || "Failed to build a trade" });
++    }
++  });
++
+   router.post("/grade-trade", async (req: Request, res: Response) => {
+     const { leagueId, rosterId, ownerId, partnerRosterId, give, get } = (req.body ?? {}) as {
+       leagueId?: string; rosterId?: number; ownerId?: string; partnerRosterId?: number; give?: string[]; get?: string[];
+@@ -829,6 +879,18 @@ ANSWER:`;
+ 
+       console.log(`🔍 Detected ${mentionedPlayers.length} player(s):`, mentionedPlayers);
+ 
++      // "Start A or B?" only makes sense when they can play the same lineup spot.
++      if (intent === "start_sit" && mentionedPlayers.length === 2 && !usedRosterInference) {
++        const [a, b] = mentionedPlayers;
++        const reply = incompatibleStartSitReply(
++          { name: a.name, position: String(a.position) },
++          { name: b.name, position: String(b.position) },
++          myTeam?.rosterPositions,
++          myTeam?.players ?? []
++        );
++        if (reply) return res.json({ reply });
++      }
++
+       const playerContexts: {
+         name: string;
+         position: Position;
+diff --git a/app/backend/services/lineupCheck.ts b/app/backend/services/lineupCheck.ts
+index d5dc975..789f5f4 100644
+--- a/app/backend/services/lineupCheck.ts
++++ b/app/backend/services/lineupCheck.ts
+@@ -10,7 +10,17 @@ import { getMatchups } from "./sleeperServer";
+ import { weeklyAdjustedPlayers } from "./advisor";
+ 
+ export type CheckPlayer = { id: string; name: string; position: string; team?: string; value: number; injuryStatus?: string };
+-export type LineupSwap = { slot: string; start: CheckPlayer; bench: CheckPlayer | null; gain: number };
++export type LineupSwap = {
++  slot: string;
++  start: CheckPlayer;
++  // Who comes out of that slot (null = the slot is empty in Sleeper now)
++  bench: CheckPlayer | null;
++  gain: number;
++  // The starting player is moving over from another slot
++  from?: string;
++  // The player coming out isn't benched, he moves to another slot
++  movesTo?: string;
++};
+ 
+ export type LineupCheck = {
+   week: number;
+@@ -21,52 +31,69 @@ export type LineupCheck = {
+   swaps: LineupSwap[];
+   // Starters who won't play (out / bye) and can't be fixed by a swap from your bench
+   problems: string[];
++  // Starting slots that are empty in Sleeper right now
++  emptySlots: string[];
+ };
+ 
+ const round = (n: number) => Math.round(n * 10) / 10;
+ 
+ /**
+- * Pure part: current starters vs best lineup. `locked` = players whose game has started.
++ * Pure part: the lineup set in Sleeper vs the best lineup, slot by slot.
++ *
++ * `currentStarterIds` is Sleeper's starters array, in the same order as `slots` (the league's
++ * starting slots), with "0" (or "") for an empty slot. Players whose game started (`locked`)
++ * stay in their slot. Every swap pairs a player with a slot he can actually play: the player
++ * coming out was in a slot the new starter is eligible for, or the slot was empty.
+  */
+ export function compareLineups(
+   players: CheckPlayer[],
+   currentStarterIds: string[],
+   slots: SlotName[],
+-  locked: Set<string> = new Set(),
+-  // The slot each current starter is in (same order as currentStarterIds), when known
+-  starterSlots: string[] = []
+-): { swaps: LineupSwap[]; currentPoints: number; bestPoints: number } {
++  locked: Set<string> = new Set()
++): { swaps: LineupSwap[]; currentPoints: number; bestPoints: number; emptySlots: string[] } {
+   const byId = new Map(players.map(p => [p.id, p]));
+-  const current = currentStarterIds.map(id => byId.get(String(id))).filter((p): p is CheckPlayer => !!p);
+-  const currentPoints = round(current.reduce((t, p) => t + p.value, 0));
+-
+-  // Locked starters stay where they are; optimize the remaining slots with unlocked players.
+-  const lockedStarters = current.filter(p => locked.has(p.id));
+-  const freeSlots = [...slots];
+-  for (const p of lockedStarters) {
+-    // Free up the exact slot he's in when we know it; otherwise the first one he fits.
+-    const known = starterSlots[currentStarterIds.map(String).indexOf(p.id)];
+-    let i = known ? freeSlots.indexOf(known as SlotName) : -1;
+-    if (i < 0) i = freeSlots.findIndex(s => SLOT_ELIGIBILITY[s].includes(p.position));
+-    if (i >= 0) freeSlots.splice(i, 1);
+-  }
+-  const pool = players.filter(p => !locked.has(p.id) && !lockedStarters.includes(p));
+-  const best = optimizeLineup(pool, freeSlots);
+-  const bestPoints = round(lockedStarters.reduce((t, p) => t + p.value, 0) + best.reduce((t, a) => t + (a.player?.value ?? 0), 0));
++  const current = slots.map((slot, i) => {
++    const id = String(currentStarterIds[i] ?? "");
++    const player = id && id !== "0" ? byId.get(id) ?? null : null;
++    return { slot, player, locked: !!player && locked.has(player.id) };
++  });
++  const emptySlots = current.filter(c => !c.player).map(c => c.slot);
++  const currentPoints = round(current.reduce((t, c) => t + (c.player?.value ?? 0), 0));
+ 
+-  const currentIds = new Set(current.map(p => p.id));
+-  const bestIds = new Set(best.flatMap(a => (a.player ? [a.player.id] : [])));
+-  const toStart = best.filter(a => a.player && !currentIds.has(a.player.id));
+-  const toBench = current.filter(p => !locked.has(p.id) && !bestIds.has(p.id)).sort((a, b) => a.value - b.value);
++  // Locked starters keep their slot; fill the other slots with the best unlocked players.
++  const lockedIds = new Set(current.filter(c => c.locked).map(c => c.player!.id));
++  const openSlots = current.filter(c => !c.locked).map(c => c.slot);
++  const pool = players.filter(p => !locked.has(p.id) && !lockedIds.has(p.id));
++  const best = optimizeLineup(pool, openSlots);
++  const bestPoints = round(
++    current.filter(c => c.locked).reduce((t, c) => t + c.player!.value, 0) + best.reduce((t, a) => t + (a.player?.value ?? 0), 0)
++  );
++  if (bestPoints <= currentPoints && emptySlots.length === 0) return { swaps: [], currentPoints, bestPoints: currentPoints, emptySlots };
+ 
+-  const swaps: LineupSwap[] = toStart.map((a, i) => {
+-    const start = byId.get(a.player!.id)!;
+-    const bench = toBench[i] ?? null;
+-    return { slot: a.slot, start, bench, gain: round(start.value - (bench?.value ?? 0)) };
+-  });
+-  // Never suggest a lineup that's worse than the one you have.
+-  if (bestPoints <= currentPoints) return { swaps: [], currentPoints, bestPoints: currentPoints };
+-  return { swaps: swaps.filter(s => s.gain > 0.05), currentPoints, bestPoints };
++  // Compare slot type by slot type, keeping players who are already in the right kind of slot.
++  const swaps: LineupSwap[] = [];
++  for (const slot of [...new Set(openSlots)]) {
++    const now = current.filter(c => !c.locked && c.slot === slot).map(c => c.player);
++    const want = best.filter(a => a.slot === slot).map(a => a.player);
++    const wantIds = new Set(want.flatMap(p => (p ? [p.id] : [])));
++    const nowIds = new Set(now.flatMap(p => (p ? [p.id] : [])));
++    const incoming = want.filter((p): p is CheckPlayer => !!p && !nowIds.has(p.id)).map(p => byId.get(p.id)!);
++    // Empty spots get filled first, then the lowest-value player in that kind of slot comes out.
++    const outgoing = now.filter(p => !p || !wantIds.has(p.id)).sort((a, b) => (a ? a.value : -1) - (b ? b.value : -1));
++    incoming.forEach((start, i) => {
++      const bench = outgoing[i] ?? null;
++      swaps.push({ slot, start, bench, gain: round(start.value - (bench?.value ?? 0)) });
++    });
++  }
++  // Label players who just change slots ("move Wilson from FLEX to WR") instead of "bench".
++  const startSlot = new Map(swaps.map(s => [s.start.id, s.slot]));
++  const currentSlot = new Map(current.flatMap(c => (c.player ? [[c.player.id, c.slot] as const] : [])));
++  for (const s of swaps) {
++    if (currentSlot.has(s.start.id)) s.from = currentSlot.get(s.start.id);
++    if (s.bench && startSlot.has(s.bench.id)) s.movesTo = startSlot.get(s.bench.id);
++  }
++  const meaningful = swaps.filter(s => !s.bench || s.gain > 0.05 || s.movesTo || s.from);
++  return { swaps: meaningful.sort((a, b) => b.gain - a.gain), currentPoints, bestPoints: Math.max(bestPoints, currentPoints), emptySlots };
+ }
+ 
+ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerId?: string): Promise<LineupCheck> {
+@@ -78,7 +105,8 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
+     getGameStates(ctx.values.season, week).catch(() => null),
+   ]);
+   const mine = (matchups ?? []).find((m: any) => Number(m.roster_id) === ctx.me!.rosterId);
+-  const starterIds: string[] = (mine?.starters ?? []).map(String).filter((id: string) => id && id !== "0");
++  // Keep "0" entries: they are empty starting slots in Sleeper.
++  const starterIds: string[] = (mine?.starters ?? []).map(String);
+ 
+   const locked = new Set<string>();
+   const kickoffs = new Set<string>();
+@@ -88,11 +116,21 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
+     else if (g?.kickoff && Date.parse(g.kickoff) > Date.now()) kickoffs.add(g.kickoff);
+   }
+ 
+-  const starterSlots = (mine?.starters ?? []).map((id: string, i: number) => [String(id), String(ctx.league?.roster_positions?.[i] ?? "").toUpperCase()] as const)
+-    .filter(([id]: readonly [string, string]) => id && id !== "0")
+-    .map(([, slot]: readonly [string, string]) => slot);
+-  const { swaps, currentPoints, bestPoints } = compareLineups(weekly, starterIds, ctx.slots, locked, starterSlots);
++  const { swaps, currentPoints, bestPoints, emptySlots } = compareLineups(weekly, starterIds, ctx.slots, locked);
+   const problems: string[] = [];
++  // Empty slots nobody on the roster can fill.
++  const unfilled = [...emptySlots];
++  for (const s of swaps.filter(x => !x.bench)) {
++    const i = unfilled.indexOf(s.slot);
++    if (i >= 0) unfilled.splice(i, 1);
++  }
++  if (unfilled.length) {
++    problems.push(
++      `Your ${unfilled.join(", ")} spot${unfilled.length > 1 ? "s are" : " is"} empty and nobody on your roster can fill ${unfilled.length > 1 ? "them" : "it"}. Pick up a ${unfilled
++        .map(sl => (SLOT_ELIGIBILITY as any)[sl]?.join("/") ?? sl)
++        .join(" and a ")} from waivers.`
++    );
++  }
+   const benchFixes = new Set(swaps.flatMap(s => (s.bench ? [s.bench.id] : [])));
+   for (const id of starterIds) {
+     const p = weekly.find(x => x.id === id);
+@@ -100,5 +138,5 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
+     const why = teamsPlaying && p.team && !teamsPlaying.has(p.team) ? "is on bye" : `is ${String(p.injuryStatus ?? "out").toLowerCase()}`;
+     problems.push(`${p.name} ${why} and nobody on your bench can replace him. Pick up a ${p.position}.`);
+   }
+-  return { week, kickoffs: [...kickoffs].sort(), currentPoints, bestPoints, swaps, problems };
++  return { week, kickoffs: [...kickoffs].sort(), currentPoints, bestPoints, swaps, problems, emptySlots };
+ }
+diff --git a/app/backend/services/tradeGrade.ts b/app/backend/services/tradeGrade.ts
+index 3454c11..33251a9 100644
+--- a/app/backend/services/tradeGrade.ts
++++ b/app/backend/services/tradeGrade.ts
+@@ -3,16 +3,24 @@
+ // same lineup math as the trade agent: how your best starting lineup changes, how theirs
+ // changes, how even the values are, and the fantasy-playoff schedules involved.
+ 
+-import { evaluateTrade, LeagueTeam, TradeIdea, TradePlayer } from "./tradeEngine";
++import { evaluateTrade, generateTradeIdeas, LeagueTeam, TradeIdea, TradePlayer } from "./tradeEngine";
+ import type { SlotName } from "./lineup";
+ import { playoffTradeNote } from "./playoffSchedule";
+ 
++export type CounterOffer = {
++  // What changes compared with their offer, in plain words
++  summary: string;
++  idea: TradeIdea;
++};
++
+ export type TradeGrade = {
+   grade: "A" | "B" | "C" | "D" | "F";
+   verdict: "accept" | "consider" | "counter" | "decline";
+   headline: string;
+   idea: TradeIdea;
+   notes: string[];
++  // Better versions of the trade to send back (only when it isn't already good for you)
++  counters: CounterOffer[];
+ };
+ 
+ export function gradeFromGain(myGain: number): TradeGrade["grade"] {
+@@ -57,7 +65,81 @@ export function gradeTrade(me: LeagueTeam, partner: LeagueTeam, give: TradePlaye
+     verdict = "decline";
+     headline = `Decline: your lineup would lose about ${Math.abs(idea.myGain).toFixed(1)} points a week.`;
+   }
+-  return { grade, verdict, headline, idea, notes };
++  return { grade, verdict, headline, idea, notes, counters: verdict === "accept" ? [] : counterOffers(me, partner, give, get, slots, idea) };
++}
++
++const TRADEABLE = new Set(["QB", "RB", "WR", "TE"]);
++const names = (list: TradePlayer[]) => list.map(p => p.name).join(" and ");
++
++function combos<T>(items: T[], size: 1 | 2): T[][] {
++  if (size === 1) return items.map(i => [i]);
++  const out: T[][] = [];
++  for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) out.push([items[i], items[j]]);
++  return out;
++}
++
++/**
++ * Counter-offers for a trade that isn't good for you: keep most of what they proposed but
++ * ask for more, give less, or swap one player, so the trade helps your lineup (or, for an
++ * offer that was already OK, helps it by another point a week) without costing their lineup
++ * much more than their own offer did.
++ */
++export function counterOffers(
++  me: LeagueTeam,
++  partner: LeagueTeam,
++  give: TradePlayer[],
++  get: TradePlayer[],
++  slots: SlotName[],
++  original: TradeIdea,
++  limit = 3
++): CounterOffer[] {
++  const top = (team: LeagueTeam) =>
++    team.players.filter(p => TRADEABLE.has(p.position) && p.value > 0).sort((a, b) => b.value - a.value).slice(0, 12);
++  const mine = top(me);
++  const theirs = top(partner);
++  const giveIds = new Set(give.map(p => p.id));
++  const getIds = new Set(get.map(p => p.id));
++  // A bad offer just needs to become a good one for you; an OK one should get clearly better.
++  const target = original.myGain < 0 ? 0.3 : original.myGain + 1;
++  // How much a counter may cost their lineup: 2 points a week, plus however far their own
++  // offer was from even (an offer that helped them a lot, or one they were willing to lose
++  // points on, leaves room to ask for more).
++  const theirFloor = -(2 + Math.abs(original.theirGain));
++  const options: { summary: string; idea: TradeIdea; score: number }[] = [];
++  const consider = (g: TradePlayer[], r: TradePlayer[], summary: string) => {
++    if (g.length === 0 && r.length === 0) return;
++    const idea = evaluateTrade(me, partner, g, r, slots);
++    if (idea.myGain < target || idea.theirGain < theirFloor || idea.fairness < 0.55) return;
++    options.push({ summary, idea, score: idea.myGain + 0.5 * Math.min(idea.theirGain - theirFloor, idea.myGain) + idea.fairness });
++  };
++
++  // 1. Same players from them, but you give something else.
++  for (const size of [1, 2] as const) {
++    for (const g of combos(mine.filter(p => !getIds.has(p.id)), size)) {
++      if (g.length === give.length && g.every(p => giveIds.has(p.id))) continue;
++      consider(g, get, `Give ${names(g)} instead of ${names(give) || "nothing"} for the same players.`);
++    }
++  }
++  // 2. Same players from you, but ask for one more of theirs.
++  for (const extra of theirs.filter(p => !getIds.has(p.id))) {
++    consider(give, [...get, extra], `Ask for ${extra.name} too.`);
++  }
++  // 3. Same players from you, but ask for a different player.
++  for (const r of combos(theirs.filter(p => !getIds.has(p.id)), 1)) {
++    consider(give, r, `Ask for ${names(r)} instead of ${names(get) || "nothing"}.`);
++  }
++
++  const seen = new Set<string>();
++  return options
++    .sort((a, b) => b.score - a.score)
++    .filter(o => {
++      const key = `${o.idea.give.map(p => p.id).sort()}|${o.idea.get.map(p => p.id).sort()}`;
++      if (seen.has(key)) return false;
++      seen.add(key);
++      return true;
++    })
++    .slice(0, limit)
++    .map(({ summary, idea }) => ({ summary, idea }));
+ }
+ 
+ export type PendingTrade = {
+@@ -92,3 +174,41 @@ export function pendingTradesFor(transactions: any[], rosterId: number, ownerId?
+       } as PendingTrade;
+     });
+ }
++
++/**
++ * Offers to send for one player on another team: first trades that help both lineups (the
++ * trade agent's rules), then, if none exist, the cheapest fair-value offer for him.
++ */
++export function tradeForPlayer(me: LeagueTeam, owner: LeagueTeam, playerId: string, slots: SlotName[], limit = 3): TradeIdea[] {
++  const target = owner.players.find(p => p.id === playerId);
++  if (!target) return [];
++  // Win-win trades the trade agent finds that include him...
++  const winWin = generateTradeIdeas(me, [owner], slots, { mustGet: [playerId], maxIdeas: 8, perPartner: 8, minGain: -3 });
++  // ...plus simple offers for just him: about his value (95-130%) from your roster.
++  const mine = me.players.filter(p => TRADEABLE.has(p.position) && p.value > 0).sort((a, b) => b.value - a.value).slice(0, 12);
++  const simple: TradeIdea[] = [];
++  for (const size of [1, 2] as const) {
++    for (const g of combos(mine, size)) {
++      const total = g.reduce((t, p) => t + p.value, 0);
++      if (total < target.value * 0.95 || total > target.value * 1.3) continue;
++      simple.push(evaluateTrade(me, owner, g, [target], slots));
++    }
++  }
++  const seen = new Set<string>();
++  return [...winWin, ...simple]
++    .filter(i => {
++      const key = `${i.give.map(p => p.id).sort()}|${i.get.map(p => p.id).sort()}`;
++      if (seen.has(key)) return false;
++      seen.add(key);
++      return true;
++    })
++    // Just him first, then offers that don't hurt your lineup, then the best for you.
++    .sort(
++      (a, b) =>
++        Number(a.get.length > 1) - Number(b.get.length > 1) ||
++        Number(b.myGain >= 0) - Number(a.myGain >= 0) ||
++        Number(b.theirGain >= 0) - Number(a.theirGain >= 0) ||
++        b.myGain - a.myGain
++    )
++    .slice(0, limit);
++}
+diff --git a/app/backend/utils/slotCompat.ts b/app/backend/utils/slotCompat.ts
+new file mode 100644
+index 0000000..821c758
+--- /dev/null
++++ b/app/backend/utils/slotCompat.ts
+@@ -0,0 +1,51 @@
++// app/backend/utils/slotCompat.ts
++// Can two players take each other's lineup spot in this league? (e.g. a QB and a WR can't,
++// unless the league has a SUPER FLEX spot.)
++
++import { parseRosterSlots, SLOT_ELIGIBILITY, SlotName } from "../services/lineup";
++
++export function slotsFor(position: string, rosterPositions?: string[] | null): SlotName[] {
++  const pos = String(position).toUpperCase();
++  return [...new Set(parseRosterSlots(rosterPositions ?? undefined).filter(s => SLOT_ELIGIBILITY[s].includes(pos)))];
++}
++
++export function sharedSlots(a: string, b: string, rosterPositions?: string[] | null): SlotName[] {
++  const bs = new Set(slotsFor(b, rosterPositions));
++  return slotsFor(a, rosterPositions).filter(s => bs.has(s));
++}
++
++/**
++ * Reply for "start A or B?" when A and B can't play the same spot, listing who each one can be
++ * compared with on your roster. Null when the comparison is fine.
++ */
++export function incompatibleStartSitReply(
++  a: { name: string; position: string },
++  b: { name: string; position: string },
++  rosterPositions?: string[] | null,
++  roster: { fullName: string; position: string }[] = []
++): string | null {
++  if (sharedSlots(a.position, b.position, rosterPositions).length > 0) return null;
++  // Names from the stats files are lowercase: use your roster's spelling, or capitalize.
++  const pretty = (name: string) =>
++    roster.find(r => r.fullName.toLowerCase() === name.toLowerCase())?.fullName ??
++    name.replace(/(^|[\s'-])([a-z])/g, (_m, sep, ch) => sep + ch.toUpperCase());
++  a = { ...a, name: pretty(a.name) };
++  b = { ...b, name: pretty(b.name) };
++  const options = (p: { name: string; position: string }) => {
++    const mySlots = new Set(slotsFor(p.position, rosterPositions));
++    return roster
++      .filter(r => r.fullName.toLowerCase() !== p.name.toLowerCase() && slotsFor(r.position, rosterPositions).some(s => mySlots.has(s)))
++      .map(r => `${r.fullName} (${r.position})`)
++      .slice(0, 6);
++  };
++  const where = (p: { position: string }) => slotsFor(p.position, rosterPositions).join(" or ") || "no starting spot";
++  const lines = [
++    `⚠️ ${a.name} (${a.position}) and ${b.name} (${b.position}) can't take each other's spot in your lineup: a ${a.position} plays ${where(a)}, and a ${b.position} plays ${where(b)}. So starting one never means benching the other.`,
++  ];
++  const oa = options(a);
++  const ob = options(b);
++  if (oa.length) lines.push(`• Compare ${a.name} with: ${oa.join(", ")}.`);
++  if (ob.length) lines.push(`• Compare ${b.name} with: ${ob.join(", ")}.`);
++  lines.push('Tip: the "Start or sit?" button only shows players who can swap with each other.');
++  return lines.join("\n");
++}
+diff --git a/app/components/InjuryReportCard.tsx b/app/components/InjuryReportCard.tsx
+index 8633e86..4e5446c 100644
+--- a/app/components/InjuryReportCard.tsx
++++ b/app/components/InjuryReportCard.tsx
+@@ -6,6 +6,9 @@ import React, { useEffect, useState } from 'react';
+ import { View, Text, ActivityIndicator } from 'react-native';
+ import { Ionicons } from '@expo/vector-icons';
+ import { getInjuryFile } from '../services/injuryService';
++import { getNewsFile } from '../services/newsService';
++import { latestInjuryNews } from '../services/injuryNews';
++import type { NewsItem } from '../services/newsDiversity';
+ import { currentInjury, indexInjuries, injuryLabel, isOutStatus, practiceTable, type InjuryFile } from '../services/injuryFormat';
+ import { useTheme, useThemedStyles } from '../context/ThemeContext';
+ import { radius, type Palette } from '../theme';
+@@ -15,6 +18,20 @@ export default function InjuryReportCard({ player }: { player: any }) {
+   const styles = useThemedStyles(makeStyles);
+   const [file, setFile] = useState<InjuryFile | null>(null);
+   const [loading, setLoading] = useState(true);
++  const [news, setNews] = useState<NewsItem | null>(null);
++
++  // The newest injury/practice headline about him (news often comes before official reports).
++  useEffect(() => {
++    let cancelled = false;
++    const key = String(player?.position_for_FFHelper || player?.position || '').toLowerCase();
++    if (!key) return;
++    getNewsFile(key)
++      .then(items => !cancelled && setNews(latestInjuryNews(items, player?.full_name)))
++      .catch(() => undefined);
++    return () => {
++      cancelled = true;
++    };
++  }, [player?.full_name, player?.position]);
+ 
+   useEffect(() => {
+     let cancelled = false;
+@@ -56,10 +73,19 @@ export default function InjuryReportCard({ player }: { player: any }) {
+         <View style={{ flex: 1 }}>
+           <Text style={[styles.statusText, { color: tone }]}>{status ? injuryLabel(status) || status : 'No injury designation'}</Text>
+           {!!injury && <Text style={styles.injuryText}>{injury}</Text>}
++          {!!record?.status_note && <Text style={styles.notes}>{record.status_note}</Text>}
+           {!!record?.notes && <Text style={styles.notes}>{record.notes}</Text>}
+         </View>
+       </View>
+ 
++      {!!news && (
++        <View style={[styles.newsBox, { borderLeftColor: news.impact === 'positive' || news.impact === 'injury_return' ? colors.success : colors.danger }]}>
++          <Text style={styles.newsLabel}>LATEST INJURY NEWS · {[news.source, news.published].filter(Boolean).join(' · ')}</Text>
++          <Text style={styles.newsTitle}>{news.title}</Text>
++          {!!news.summary && <Text style={styles.notes}>{news.summary}</Text>}
++        </View>
++      )}
++
+       {rows.length > 0 && (
+         <View style={styles.table}>
+           <View style={[styles.tr, styles.thRow]}>
+@@ -77,7 +103,10 @@ export default function InjuryReportCard({ player }: { player: any }) {
+               <Text style={[styles.td, { flex: 1.4 }]}>{r.status}</Text>
+             </View>
+           ))}
+-          <Text style={styles.legend}>Full = full practice · Limited = partial · Did not practice = held out</Text>
++          <Text style={styles.legend}>
++            Full = full practice · Limited = partial · Did not practice = held out · No report = no official report that day
++            (teams publish them Wednesday–Friday for Sunday games). "(last game)" = still his status from last week.
++          </Text>
+         </View>
+       )}
+       {status && rows.length === 0 && (
+@@ -102,5 +131,8 @@ const makeStyles = (c: Palette) => ({
+   th: { fontSize: 11, fontWeight: '800' as const, color: c.textMuted, letterSpacing: 0.5, textTransform: 'uppercase' as const },
+   td: { fontSize: 13, color: c.text },
+   dot: { width: 8, height: 8, borderRadius: 4 },
++  newsBox: { marginTop: 10, borderLeftWidth: 3, paddingLeft: 10, paddingVertical: 2, gap: 2 },
++  newsLabel: { fontSize: 10, fontWeight: '800' as const, color: c.textMuted, letterSpacing: 0.5 },
++  newsTitle: { fontSize: 13, fontWeight: '700' as const, color: c.text },
+   legend: { fontSize: 11, color: c.textSubtle, padding: 10, lineHeight: 16 },
+ });
+diff --git a/app/components/LineupCheckSheet.tsx b/app/components/LineupCheckSheet.tsx
+index 5343a42..948b396 100644
+--- a/app/components/LineupCheckSheet.tsx
++++ b/app/components/LineupCheckSheet.tsx
+@@ -89,16 +89,24 @@ export default function LineupCheckSheet({
+                       <Text style={styles.slot}>{s.slot}</Text>
+                       <View style={{ flex: 1 }}>
+                         <Text style={styles.start}>
+-                          <Ionicons name="arrow-up" size={13} color={colors.success} /> Start {s.start.name} ({s.start.value.toFixed(1)})
++                          <Ionicons name="arrow-up" size={13} color={colors.success} /> {s.from ? `Move ${s.start.name} here from ${s.from}` : `Start ${s.start.name}`} ({s.start.position}, {s.start.value.toFixed(1)})
+                         </Text>
+-                        {s.bench && (
++                        {s.bench ? (
+                           <Text style={styles.bench}>
+-                            <Ionicons name="arrow-down" size={13} color={colors.danger} /> Bench {s.bench.name} ({s.bench.value.toFixed(1)})
++                            <Ionicons name={s.movesTo ? 'swap-vertical' : 'arrow-down'} size={13} color={s.movesTo ? colors.primary : colors.danger} />{' '}
++                            {s.movesTo ? `${s.bench.name} moves to ${s.movesTo}` : `Bench ${s.bench.name}`} ({s.bench.position}, {s.bench.value.toFixed(1)})
+                             {s.bench.injuryStatus && s.bench.injuryStatus !== 'ACTIVE' ? ` · ${s.bench.injuryStatus}` : ''}
+                           </Text>
++                        ) : (
++                          <Text style={[styles.bench, { color: colors.danger }]}>Fills your empty {s.slot} spot (it scores 0 right now)</Text>
+                         )}
+                       </View>
+-                      <Text style={styles.gain}>+{s.gain.toFixed(1)}</Text>
++                      {/* Moves between slots are part of a chain; only real gains get a number. */}
++                      {s.movesTo || s.from ? (
++                        <Text style={[styles.gain, { color: colors.primary }]}>move</Text>
++                      ) : (
++                        <Text style={styles.gain}>+{s.gain.toFixed(1)}</Text>
++                      )}
+                     </View>
+                   ))}
+                   <Text style={styles.section}>HOW TO DO IT IN SLEEPER</Text>
+diff --git a/app/components/TradeForSheet.tsx b/app/components/TradeForSheet.tsx
+new file mode 100644
+index 0000000..879520c
+--- /dev/null
++++ b/app/components/TradeForSheet.tsx
+@@ -0,0 +1,130 @@
++// app/components/TradeForSheet.tsx
++// "Trade for him": a ready-to-send offer for a player on another team in your league, with
++// how both lineups change, the message to send, and the steps in Sleeper.
++
++import React, { useEffect, useState } from 'react';
++import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
++import { Ionicons } from '@expo/vector-icons';
++import type { MyFantasyTeam } from '../context/FantasyContext';
++import { useTheme, useThemedStyles } from '../context/ThemeContext';
++import { fetchTradeFor } from '../services/tradeGrader';
++import { buildTradeMessage, sleeperLeagueUrl, tradeSteps, type TradeIdea } from '../services/tradeFormat';
++import { radius, shadowFor, type Palette } from '../theme';
++
++export default function TradeForSheet({
++  visible,
++  team,
++  leagueId,
++  player,
++  onClose,
++}: {
++  visible: boolean;
++  team: MyFantasyTeam;
++  leagueId: string;
++  player: { id: string; name: string } | null;
++  onClose: () => void;
++}) {
++  const { colors } = useTheme();
++  const styles = useThemedStyles(makeStyles);
++  const [ideas, setIdeas] = useState<TradeIdea[] | null>(null);
++  const [owner, setOwner] = useState<string | null>(null);
++  const [pick, setPick] = useState(0);
++  const [error, setError] = useState('');
++
++  useEffect(() => {
++    if (!visible || !player) return;
++    setIdeas(null);
++    setPick(0);
++    setError('');
++    fetchTradeFor(leagueId, team.rosterId, team.ownerId, player.id)
++      .then(d => {
++        setOwner(d.owner);
++        setIdeas(d.ideas ?? []);
++      })
++      .catch(e => setError(e?.message || 'Could not build a trade'));
++  }, [visible, player?.id, leagueId]);
++
++  const idea = ideas?.[pick];
++
++  return (
++    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
++      <Pressable style={styles.backdrop} onPress={onClose}>
++        <Pressable style={styles.sheet} onPress={e => e.stopPropagation?.()}>
++          <View style={styles.header}>
++            <Ionicons name="swap-horizontal" size={18} color={colors.primary} />
++            <Text style={styles.title} numberOfLines={2}>Trade for {player?.name}</Text>
++            <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
++              <Ionicons name="close" size={22} color={colors.textMuted} />
++            </Pressable>
++          </View>
++          {error ? (
++            <Text style={styles.error}>{error}</Text>
++          ) : ideas === null ? (
++            <ActivityIndicator style={{ padding: 24 }} />
++          ) : !idea ? (
++            <Text style={styles.sub}>
++              {owner ? `Couldn't find a fair offer to ${owner} for him from your roster right now.` : "He isn't on a team in your league."}
++            </Text>
++          ) : (
++            <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ gap: 10 }}>
++              <Text style={styles.sub}>He's on {owner}. {ideas.length > 1 ? 'Pick an offer:' : 'Suggested offer:'}</Text>
++              {ideas.length > 1 && (
++                <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
++                  {ideas.map((_, i) => (
++                    <Pressable key={i} style={[styles.tab, pick === i && styles.tabOn]} onPress={() => setPick(i)}>
++                      <Text style={[styles.tabText, pick === i && { color: colors.onPrimary }]}>Offer {i + 1}</Text>
++                    </Pressable>
++                  ))}
++                </View>
++              )}
++              <View style={styles.card}>
++                <Text style={styles.line}>You give <Text style={styles.bold}>{idea.give.map(p => `${p.name} (${p.position})`).join(', ')}</Text></Text>
++                <Text style={styles.line}>You get <Text style={styles.bold}>{idea.get.map(p => `${p.name} (${p.position})`).join(', ')}</Text></Text>
++                <Text style={styles.line}>
++                  Your lineup{' '}
++                  <Text style={{ color: idea.myGain >= 0 ? colors.success : colors.danger, fontWeight: '800' }}>
++                    {idea.myGain >= 0 ? '+' : ''}{idea.myGain.toFixed(1)} pts/wk
++                  </Text>
++                  {' · '}their lineup {idea.theirGain >= 0 ? '+' : ''}{idea.theirGain.toFixed(1)} · value balance {Math.round(idea.fairness * 100)}%
++                </Text>
++                {idea.myGain < 0 && (
++                  <Text style={[styles.line, { color: colors.warning }]}>
++                    This costs your current lineup a little: it's worth it only if you want him for depth, injuries or the playoffs.
++                  </Text>
++                )}
++              </View>
++              <Text style={styles.section}>MESSAGE TO SEND (TAP AND HOLD TO COPY)</Text>
++              <Text style={styles.message} selectable>{buildTradeMessage(idea)}</Text>
++              <Text style={styles.section}>HOW TO PROPOSE IT IN SLEEPER</Text>
++              {tradeSteps(idea).map((s, i) => (
++                <Text key={i} style={styles.line}>{i + 1}. {s}</Text>
++              ))}
++              <Pressable style={styles.open} onPress={() => Linking.openURL(sleeperLeagueUrl(leagueId)).catch(() => undefined)}>
++                <Text style={styles.openText}>Open my league in Sleeper</Text>
++              </Pressable>
++            </ScrollView>
++          )}
++        </Pressable>
++      </Pressable>
++    </Modal>
++  );
++}
++
++const makeStyles = (c: Palette) => ({
++  backdrop: { flex: 1, backgroundColor: c.overlay, justifyContent: 'center' as const, alignItems: 'center' as const, padding: 16 },
++  sheet: { width: '100%' as const, maxWidth: 480, backgroundColor: c.surface, borderRadius: radius.lg, padding: 16, ...shadowFor(c) },
++  header: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 8, marginBottom: 10 },
++  title: { flex: 1, fontSize: 19, fontWeight: '800' as const, color: c.text },
++  sub: { fontSize: 13, color: c.textMuted, lineHeight: 18 },
++  error: { color: c.danger },
++  tab: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.pill, backgroundColor: c.surfaceMuted },
++  tabOn: { backgroundColor: c.primary },
++  tabText: { fontWeight: '700' as const, fontSize: 12, color: c.text },
++  card: { backgroundColor: c.surfaceMuted, borderRadius: radius.md, padding: 12, gap: 4 },
++  line: { fontSize: 13, color: c.text, lineHeight: 19 },
++  bold: { fontWeight: '800' as const },
++  section: { fontSize: 11, fontWeight: '800' as const, color: c.textSubtle, letterSpacing: 0.8 },
++  message: { fontSize: 13, color: c.text, backgroundColor: c.surfaceMuted, borderRadius: radius.sm, padding: 10, lineHeight: 19 },
++  open: { backgroundColor: c.primary, borderRadius: radius.md, paddingVertical: 11, alignItems: 'center' as const, marginTop: 4 },
++  openText: { color: c.onPrimary, fontWeight: '800' as const },
++});
+diff --git a/app/components/TradeGradeCard.tsx b/app/components/TradeGradeCard.tsx
+new file mode 100644
+index 0000000..a3db6e4
+--- /dev/null
++++ b/app/components/TradeGradeCard.tsx
+@@ -0,0 +1,113 @@
++// app/components/TradeGradeCard.tsx
++// One graded trade: letter grade, verdict, how both lineups change, notes, and (when the
++// offer isn't good for you) counter-offers with a message you can send back.
++
++import React, { useState } from 'react';
++import { Pressable, Text, View } from 'react-native';
++import { Ionicons } from '@expo/vector-icons';
++import { useTheme, useThemedStyles } from '../context/ThemeContext';
++import { askAboutOffer, counterMessage, GRADE_COLORS, type TradeGrade } from '../services/tradeGrader';
++import { radius, type Palette } from '../theme';
++
++export default function TradeGradeCard({
++  r,
++  partnerName,
++  onAskAI,
++}: {
++  r: TradeGrade;
++  partnerName: string;
++  onAskAI: (question: string) => void;
++}) {
++  const { colors } = useTheme();
++  const styles = useThemedStyles(makeStyles);
++  const [openCounter, setOpenCounter] = useState<number | null>(null);
++  const tone = colors[GRADE_COLORS[r.grade]];
++  const names = (list: { name: string }[]) => list.map(p => p.name);
++
++  const Metric = ({ label, value, color }: { label: string; value: string; color: string }) => (
++    <View style={styles.metric}>
++      <Text style={[styles.metricValue, { color }]}>{value}</Text>
++      <Text style={styles.metricLabel}>{label}</Text>
++    </View>
++  );
++
++  return (
++    <View style={styles.result}>
++      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
++        <View style={[styles.gradeBadge, { backgroundColor: tone }]}>
++          <Text style={styles.gradeText}>{r.grade}</Text>
++        </View>
++        <Text style={[styles.headline, { flex: 1 }]}>{r.headline}</Text>
++      </View>
++      <Text style={styles.sides}>
++        You give <Text style={styles.bold}>{names(r.idea.give).join(', ') || 'nothing'}</Text> · you get{' '}
++        <Text style={styles.bold}>{names(r.idea.get).join(', ') || 'nothing'}</Text>
++      </Text>
++      <View style={styles.metrics}>
++        <Metric label="Your lineup" value={`${r.idea.myGain >= 0 ? '+' : ''}${r.idea.myGain.toFixed(1)} pts/wk`} color={r.idea.myGain >= 0 ? colors.success : colors.danger} />
++        <Metric label="Their lineup" value={`${r.idea.theirGain >= 0 ? '+' : ''}${r.idea.theirGain.toFixed(1)} pts/wk`} color={colors.text} />
++        <Metric label="Value balance" value={`${Math.round(r.idea.fairness * 100)}%`} color={colors.text} />
++      </View>
++      {r.idea.reasons.concat(r.notes).map((line, i) => (
++        <Text key={i} style={styles.reason}>• {line}</Text>
++      ))}
++
++      {(r.counters?.length ?? 0) > 0 && (
++        <View style={{ gap: 6, marginTop: 4 }}>
++          <Text style={styles.section}>COUNTER-OFFERS THAT WORK BETTER FOR YOU</Text>
++          {r.counters!.map((c, i) => (
++            <Pressable key={i} style={styles.counter} onPress={() => setOpenCounter(openCounter === i ? null : i)}>
++              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
++                <Text style={[styles.bold, { flex: 1 }]}>{c.summary}</Text>
++                <Text style={{ color: colors.success, fontWeight: '800' }}>+{c.idea.myGain.toFixed(1)}</Text>
++              </View>
++              <Text style={styles.counterMeta}>
++                You give {names(c.idea.give).join(', ')} · you get {names(c.idea.get).join(', ')} · their lineup{' '}
++                {c.idea.theirGain >= 0 ? '+' : ''}{c.idea.theirGain.toFixed(1)}
++              </Text>
++              {openCounter === i && (
++                <View style={styles.message}>
++                  <Text style={styles.messageLabel}>Message to send {partnerName} (tap and hold to copy):</Text>
++                  <Text style={styles.messageText} selectable>{counterMessage(partnerName, c)}</Text>
++                  <Text style={styles.counterMeta}>
++                    In Sleeper, open the offer and tap "Counter", then pick these players.
++                  </Text>
++                </View>
++              )}
++            </Pressable>
++          ))}
++        </View>
++      )}
++      {r.verdict !== 'accept' && (r.counters?.length ?? 0) === 0 && (
++        <Text style={styles.counterMeta}>No counter-offer with their players helps your lineup by at least a point a week.</Text>
++      )}
++
++      <Pressable style={styles.askBtn} onPress={() => onAskAI(askAboutOffer(partnerName, names(r.idea.give), names(r.idea.get)))}>
++        <Ionicons name="sparkles" size={14} color={colors.primary} />
++        <Text style={styles.askText}>Ask the AI to explain this trade</Text>
++      </Pressable>
++    </View>
++  );
++}
++
++const makeStyles = (c: Palette) => ({
++  result: { backgroundColor: c.surfaceMuted, borderRadius: radius.md, padding: 12, gap: 6 },
++  gradeBadge: { width: 46, height: 46, borderRadius: 23, alignItems: 'center' as const, justifyContent: 'center' as const },
++  gradeText: { color: '#fff', fontSize: 22, fontWeight: '900' as const },
++  headline: { fontSize: 14, fontWeight: '700' as const, color: c.text, lineHeight: 19 },
++  sides: { fontSize: 13, color: c.text, lineHeight: 18 },
++  bold: { fontWeight: '800' as const, color: c.text },
++  metrics: { flexDirection: 'row' as const, gap: 6 },
++  metric: { flex: 1, backgroundColor: c.surface, borderRadius: radius.sm, padding: 8, alignItems: 'center' as const },
++  metricValue: { fontSize: 15, fontWeight: '800' as const },
++  metricLabel: { fontSize: 11, color: c.textMuted, marginTop: 2 },
++  reason: { fontSize: 12, color: c.text, lineHeight: 17 },
++  section: { fontSize: 11, fontWeight: '800' as const, color: c.textSubtle, letterSpacing: 0.8 },
++  counter: { backgroundColor: c.surface, borderRadius: radius.sm, padding: 10, gap: 4, borderWidth: 1, borderColor: c.border },
++  counterMeta: { fontSize: 12, color: c.textMuted, lineHeight: 17 },
++  message: { gap: 4, marginTop: 4 },
++  messageLabel: { fontSize: 11, fontWeight: '700' as const, color: c.textMuted },
++  messageText: { fontSize: 13, color: c.text, backgroundColor: c.surfaceMuted, borderRadius: radius.sm, padding: 8, lineHeight: 18 },
++  askBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6, paddingTop: 4 },
++  askText: { color: c.primary, fontWeight: '700' as const, fontSize: 13 },
++});
+diff --git a/app/components/TradeGrader.tsx b/app/components/TradeGrader.tsx
+index bac7fee..a3d4d21 100644
+--- a/app/components/TradeGrader.tsx
++++ b/app/components/TradeGrader.tsx
+@@ -7,7 +7,8 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from 'rea
+ import { Ionicons } from '@expo/vector-icons';
+ import type { MyFantasyTeam } from '../context/FantasyContext';
+ import { useTheme, useThemedStyles } from '../context/ThemeContext';
+-import { askAboutOffer, fetchLeagueTeams, GRADE_COLORS, gradeTradeOffer, type LeagueTeamRoster, type PendingOffer, type TradeGrade } from '../services/tradeGrader';
++import { fetchLeagueTeams, gradeTradeOffer, type LeagueTeamRoster, type PendingOffer, type TradeGrade } from '../services/tradeGrader';
++import TradeGradeCard from './TradeGradeCard';
+ import type { TradeIdeaPlayer } from '../services/tradeFormat';
+ import { getPositionColor, radius, shadowFor, type Palette } from '../theme';
+ 
+@@ -90,46 +91,6 @@ export default function TradeGrader({
+     </Pressable>
+   );
+ 
+-  const Result = ({ r, partnerName }: { r: TradeGrade; partnerName: string }) => {
+-    const tone = colors[GRADE_COLORS[r.grade]];
+-    const names = (list: TradeIdeaPlayer[]) => list.map(p => p.name);
+-    return (
+-      <View style={styles.result}>
+-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+-          <View style={[styles.gradeBadge, { backgroundColor: tone }]}>
+-            <Text style={styles.gradeText}>{r.grade}</Text>
+-          </View>
+-          <Text style={[styles.headline, { flex: 1 }]}>{r.headline}</Text>
+-        </View>
+-        <View style={styles.metrics}>
+-          <Metric label="Your lineup" value={`${r.idea.myGain >= 0 ? '+' : ''}${r.idea.myGain.toFixed(1)} pts/wk`} color={r.idea.myGain >= 0 ? colors.success : colors.danger} />
+-          <Metric label="Their lineup" value={`${r.idea.theirGain >= 0 ? '+' : ''}${r.idea.theirGain.toFixed(1)} pts/wk`} color={colors.text} />
+-          <Metric label="Value balance" value={`${Math.round(r.idea.fairness * 100)}%`} color={colors.text} />
+-        </View>
+-        {r.idea.reasons.concat(r.notes).map((line, i) => (
+-          <Text key={i} style={styles.reason}>• {line}</Text>
+-        ))}
+-        <Pressable
+-          style={styles.askBtn}
+-          onPress={() => {
+-            onAskAI(askAboutOffer(partnerName, names(r.idea.give), names(r.idea.get)));
+-            close();
+-          }}
+-        >
+-          <Ionicons name="sparkles" size={14} color={colors.primary} />
+-          <Text style={styles.askText}>Ask the AI to explain this trade</Text>
+-        </Pressable>
+-      </View>
+-    );
+-  };
+-
+-  const Metric = ({ label, value, color }: { label: string; value: string; color: string }) => (
+-    <View style={styles.metric}>
+-      <Text style={[styles.metricValue, { color }]}>{value}</Text>
+-      <Text style={styles.metricLabel}>{label}</Text>
+-    </View>
+-  );
+-
+   return (
+     <Modal visible={visible} transparent animationType="fade" onRequestClose={close}>
+       <View style={styles.backdrop}>
+@@ -153,7 +114,7 @@ export default function TradeGrader({
+                       <Text style={styles.sub}>
+                         {o.direction === 'received' ? `From ${o.partnerName}` : `You sent to ${o.partnerName}`}
+                       </Text>
+-                      <Result r={o.result} partnerName={o.partnerName} />
++                      <TradeGradeCard r={o.result} partnerName={o.partnerName} onAskAI={q => { onAskAI(q); close(); }} />
+                     </View>
+                   ))}
+                 </>
+@@ -190,7 +151,7 @@ export default function TradeGrader({
+                 </>
+               )}
+               {!!error && <Text style={styles.error}>{error}</Text>}
+-              {result && partner && <Result r={result} partnerName={partner.teamName} />}
++              {result && partner && <TradeGradeCard r={result} partnerName={partner.teamName} onAskAI={q => { onAskAI(q); close(); }} />}
+             </ScrollView>
+           )}
+ 
+@@ -225,17 +186,6 @@ const makeStyles = (c: Palette) => ({
+   posText: { color: '#fff', fontWeight: '800' as const, fontSize: 10 },
+   playerName: { flex: 1, fontSize: 14, fontWeight: '600' as const, color: c.text },
+   playerValue: { fontSize: 12, color: c.textMuted, fontWeight: '700' as const },
+-  result: { backgroundColor: c.surfaceMuted, borderRadius: radius.md, padding: 12, gap: 6 },
+-  gradeBadge: { width: 46, height: 46, borderRadius: 23, alignItems: 'center' as const, justifyContent: 'center' as const },
+-  gradeText: { color: '#fff', fontSize: 22, fontWeight: '900' as const },
+-  headline: { fontSize: 14, fontWeight: '700' as const, color: c.text, lineHeight: 19 },
+-  metrics: { flexDirection: 'row' as const, gap: 6 },
+-  metric: { flex: 1, backgroundColor: c.surface, borderRadius: radius.sm, padding: 8, alignItems: 'center' as const },
+-  metricValue: { fontSize: 15, fontWeight: '800' as const },
+-  metricLabel: { fontSize: 11, color: c.textMuted, marginTop: 2 },
+-  reason: { fontSize: 12, color: c.text, lineHeight: 17 },
+-  askBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6, paddingTop: 4 },
+-  askText: { color: c.primary, fontWeight: '700' as const, fontSize: 13 },
+   error: { color: c.danger, fontSize: 13 },
+   gradeBtn: { backgroundColor: c.primary, borderRadius: radius.md, paddingVertical: 12, alignItems: 'center' as const, marginTop: 10 },
+   gradeBtnText: { color: c.onPrimary, fontWeight: '800' as const, fontSize: 15 },
+diff --git a/app/components/TradeOffers.tsx b/app/components/TradeOffers.tsx
+new file mode 100644
+index 0000000..ba50347
+--- /dev/null
++++ b/app/components/TradeOffers.tsx
+@@ -0,0 +1,91 @@
++// app/components/TradeOffers.tsx
++// Trades tab: offers waiting in Sleeper that involve your team, each graded, with
++// counter-offers when an offer isn't good for you.
++
++import React, { useEffect, useState } from 'react';
++import { ActivityIndicator, Pressable, Text, View } from 'react-native';
++import { Ionicons } from '@expo/vector-icons';
++import type { MyFantasyTeam } from '../context/FantasyContext';
++import { useTheme, useThemedStyles } from '../context/ThemeContext';
++import { fetchTradeOffers, type PendingOffer } from '../services/tradeGrader';
++import TradeGradeCard from './TradeGradeCard';
++import { radius, type Palette } from '../theme';
++
++export default function TradeOffers({
++  team,
++  leagueId,
++  onAskAI,
++  onGradeByHand,
++}: {
++  team: MyFantasyTeam;
++  leagueId: string;
++  onAskAI: (question: string) => void;
++  onGradeByHand: () => void;
++}) {
++  const { colors } = useTheme();
++  const styles = useThemedStyles(makeStyles);
++  const [offers, setOffers] = useState<PendingOffer[] | null>(null);
++  const [error, setError] = useState('');
++  const [nonce, setNonce] = useState(0);
++
++  useEffect(() => {
++    let cancelled = false;
++    setError('');
++    fetchTradeOffers(leagueId, team.rosterId, team.ownerId)
++      .then(d => !cancelled && setOffers(d.offers))
++      .catch(e => !cancelled && setError(e?.message || 'Could not check for offers'));
++    return () => {
++      cancelled = true;
++    };
++  }, [leagueId, team.rosterId, nonce]);
++
++  const received = (offers ?? []).filter(o => o.direction === 'received');
++  const sent = (offers ?? []).filter(o => o.direction === 'sent');
++
++  return (
++    <View style={styles.panel}>
++      <View style={styles.header}>
++        <Ionicons name="mail-unread-outline" size={18} color={colors.primary} />
++        <Text style={styles.title}>Trade offers</Text>
++        <Pressable onPress={() => setNonce(n => n + 1)} hitSlop={8} accessibilityLabel="Check for new offers">
++          <Ionicons name="refresh" size={17} color={colors.primary} />
++        </Pressable>
++      </View>
++      {offers === null && !error ? (
++        <ActivityIndicator style={{ padding: 10 }} />
++      ) : error ? (
++        <Text style={styles.sub}>Couldn't check for offers: {error}</Text>
++      ) : received.length + sent.length === 0 ? (
++        <Text style={styles.sub}>
++          No pending offers found for {team.teamName}. Sleeper doesn't always share offers with other apps until they're
++          accepted, so if you got one,{' '}
++          <Text style={styles.link} onPress={onGradeByHand}>grade it by hand</Text>.
++        </Text>
++      ) : (
++        <View style={{ gap: 12 }}>
++          {received.map(o => (
++            <View key={o.transactionId} style={{ gap: 6 }}>
++              <Text style={styles.from}>Offer from {o.partnerName}</Text>
++              <TradeGradeCard r={o.result} partnerName={o.partnerName} onAskAI={onAskAI} />
++            </View>
++          ))}
++          {sent.map(o => (
++            <View key={o.transactionId} style={{ gap: 6 }}>
++              <Text style={styles.from}>Your offer to {o.partnerName} (waiting on them)</Text>
++              <TradeGradeCard r={o.result} partnerName={o.partnerName} onAskAI={onAskAI} />
++            </View>
++          ))}
++        </View>
++      )}
++    </View>
++  );
++}
++
++const makeStyles = (c: Palette) => ({
++  panel: { backgroundColor: c.surface, borderRadius: radius.lg, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: c.border, gap: 8 },
++  header: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 8 },
++  title: { flex: 1, fontSize: 16, fontWeight: '800' as const, color: c.text },
++  sub: { fontSize: 13, color: c.textMuted, lineHeight: 18 },
++  link: { color: c.primary, fontWeight: '700' as const },
++  from: { fontSize: 13, fontWeight: '800' as const, color: c.text },
++});
+diff --git a/app/context/NotificationContext.tsx b/app/context/NotificationContext.tsx
+index b4db262..29f3dc5 100644
+--- a/app/context/NotificationContext.tsx
++++ b/app/context/NotificationContext.tsx
+@@ -19,6 +19,7 @@ import { currentInjury } from '../services/injuryFormat';
+ import { getLineupAlerts, type GameState } from '../services/lineupAlerts';
+ import { fetchIrAdvice } from '../services/irAdvice';
+ import { fetchLineupCheck, lineupCheckTimes, LINEUP_CHECK_LEAD_MS } from '../services/lineupCheck';
++import { fetchTradeOffers } from '../services/tradeGrader';
+ import { getFavoriteTeamForLeague } from '../services/userService';
+ import {
+   bigPlayNotifications,
+@@ -27,6 +28,7 @@ import {
+   notificationsFromState,
+   oddsSwingNotification,
+   snapshotOf,
++  tradeOfferNotification,
+   type AppNotification,
+   type LiveSnapshot,
+ } from '../services/notifications';
+@@ -167,13 +169,30 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
+   // ---------- One league ----------
+   const checkLeague = async (t: WatchedTeam, week: number, injuryIndex: Awaited<ReturnType<typeof getInjuryIndex>> | null) => {
+     const base = { leagueId: t.leagueId, leagueName: t.leagueName, week };
+-    const [board, ir, check] = await Promise.all([
++    const [board, ir, check, offers] = await Promise.all([
+       fetchLiveScoreboard(t.leagueId, t.rosterId, week).catch(() => null),
+       fetchIrAdvice(t.leagueId, t.rosterId, t.ownerId).catch(() => null),
+       fetchLineupCheck(t.leagueId, t.rosterId, t.ownerId).catch(() => null),
++      fetchTradeOffers(t.leagueId, t.rosterId, t.ownerId).catch(() => null),
+     ]);
+     const incoming: AppNotification[] = [];
+ 
++    // Offers other managers sent you, graded.
++    for (const o of offers?.offers ?? []) {
++      if (o.direction !== 'received') continue;
++      incoming.push(
++        tradeOfferNotification(base, {
++          transactionId: o.transactionId,
++          partnerName: o.partnerName,
++          grade: o.result.grade,
++          headline: o.result.headline,
++          give: o.result.idea.give.map(p => p.name),
++          get: o.result.idea.get.map(p => p.name),
++          counters: o.result.counters?.length ?? 0,
++        })
++      );
++    }
++
+     let alerts: ReturnType<typeof getLineupAlerts> = [];
+     if (board) {
+       const starters = board.me.starters;
+diff --git a/app/screens/FantasyScreen.tsx b/app/screens/FantasyScreen.tsx
+index 07962c8..9031775 100644
+--- a/app/screens/FantasyScreen.tsx
++++ b/app/screens/FantasyScreen.tsx
+@@ -43,6 +43,9 @@ import PlayerCard from '../components/PlayerCard';
+ import LeaguesModal from '../components/LeaguesModal';
+ import LeagueIdHelp from '../components/LeagueIdHelp';
+ import LineupCheckSheet from '../components/LineupCheckSheet';
++import { fetchLineupCheck, type LineupCheck } from '../services/lineupCheck';
++
++const FLEX_NAMES: Record<string, string> = { SUPER_FLEX: 'SUPER FLEX', REC_FLEX: 'W/T FLEX', WRRB_FLEX: 'W/R FLEX' };
+ import { parseLeagueId } from '../services/leagueInput';
+ import { fetchIrAdvice, irStatusWord, type IrAdvice } from '../services/irAdvice';
+ import { Menu } from 'react-native-paper';
+@@ -117,6 +120,7 @@ export default function FantasyScreen() {
+   const [addError, setAddError] = useState('');
+   const [irAdvice, setIrAdvice] = useState<IrAdvice | null>(null);
+   const [showLineupCheck, setShowLineupCheck] = useState(false);
++  const [lineupCheck, setLineupCheck] = useState<LineupCheck | null>(null);
+   const route = useRoute<any>();
+   // Opened from a lineup-check notification
+   useEffect(() => {
+@@ -456,6 +460,22 @@ useEffect(() => {
+     };
+   }, [irEligible, selectedSeasonLeagueId, irRosterId, refreshNonce]);
+ 
++  // When your lineup has an empty starting spot, load the lineup check so the empty row can say
++  // who to put there.
++  const myStarters: string[] = (weekMatchups.find(m => m.roster_id === irRosterId)?.starters ?? []).map(String);
++  const hasEmptyStarter = myStarters.some(id => !id || id === '0');
++  useEffect(() => {
++    setLineupCheck(null);
++    if (!irEligible || !hasEmptyStarter || !activeLeagueId || !myTeam) return;
++    let cancelled = false;
++    fetchLineupCheck(activeLeagueId, Number(irRosterId), myTeam.ownerId)
++      .then(c => { if (!cancelled) setLineupCheck(c); })
++      .catch(() => undefined);
++    return () => {
++      cancelled = true;
++    };
++  }, [irEligible, hasEmptyStarter, activeLeagueId, irRosterId, refreshNonce]);
++
+   const handleRefresh = async () => {
+     if (!selectedSeasonLeagueId) return;
+     await refreshLeagueCache(selectedSeasonLeagueId);
+@@ -866,7 +886,15 @@ if (!activeLeagueId) {
+           : (p.position || '').toUpperCase();
+         return { ...p, assignedSlot };
+       })
+-      .sort((a, b) => {
++      // Empty starting spots in Sleeper ("0") are shown too, so you can see what to fill.
++      .concat(
++        sIds.flatMap((id, idx) =>
++          !id || String(id) === '0'
++            ? [{ player_id: `empty-${idx}`, empty: true, assignedSlot: String(league?.roster_positions?.[idx] ?? '').toUpperCase() }]
++            : []
++        )
++      )
++      .sort((a: any, b: any) => {
+         const oa = SLOT_ORDER[a.assignedSlot] ?? 99;
+         const ob = SLOT_ORDER[b.assignedSlot] ?? 99;
+         if (oa !== ob) return oa - ob;
+@@ -894,6 +922,7 @@ if (!activeLeagueId) {
+     return !!team && !teamsPlaying.has(aliases[team] ?? team);
+   };
+   const renderPlayer = (side: ReturnType<typeof buildSide>, player: any, isStarter: boolean, dense = false) => {
++    if (player.empty) return renderEmptySlot(side, player.assignedSlot, player.player_id, dense);
+     let stats = getPlayerNFLStats(player.player_id, selectedWeek);
+     const live = weekStatus !== 'completed' ? liveById[String(player.player_id)] : undefined;
+     // Weeks that aren't over have no stats file yet: show today's injury designation instead.
+@@ -933,6 +962,38 @@ if (!activeLeagueId) {
+     );
+   };
+ 
++  // An empty starting spot, with who to put there (from the lineup check) for your own team.
++  const renderEmptySlot = (side: ReturnType<typeof buildSide>, slot: string, key: string, dense: boolean) => {
++    const mine = isViewingMyTeam && side === mySide;
++    const fill = mine ? lineupCheck?.swaps.find(sw => sw.slot === slot && !sw.bench) : undefined;
++    const label = FLEX_NAMES[slot] ?? slot;
++    return (
++      <TouchableOpacity
++        key={key}
++        style={[styles.playerRow, styles.emptyRow, dense && { paddingHorizontal: 8 }]}
++        activeOpacity={0.7}
++        disabled={!mine}
++        onPress={() => setShowLineupCheck(true)}
++      >
++        <View style={[styles.emptyBadge, { borderColor: colors.danger }]}>
++          <Text style={[styles.emptyBadgeText, { color: colors.danger }]}>{label}</Text>
++        </View>
++        <View style={{ flex: 1, minWidth: 0 }}>
++          <Text style={styles.emptySlotTitle} numberOfLines={1}>Empty {label} spot</Text>
++          <Text style={styles.emptySlotSub} numberOfLines={dense ? 3 : 2}>
++            {!mine
++              ? 'No one is starting here.'
++              : fill
++                ? `Start ${fill.start.name} here (+${fill.start.value.toFixed(1)} pts). Tap for the full lineup check.`
++                : lineupCheck
++                  ? `Nobody on your roster can play ${label}. Pick one up from waivers.`
++                  : 'This spot scores 0. Tap to see who to put here.'}
++          </Text>
++        </View>
++      </TouchableOpacity>
++    );
++  };
++
+   const renderBanner = (side: ReturnType<typeof buildSide>, other?: ReturnType<typeof buildSide>) => {
+     const outcome = other && weekStatus === 'completed'
+       ? (side.total > other.total ? 'WIN' : side.total < other.total ? 'LOSS' : 'TIE')
+@@ -1383,6 +1444,11 @@ const makeStyles = (c: Palette) => ({
+   irCard: { backgroundColor: c.surface, borderRadius: radius.md, padding: 12, marginTop: 12, gap: 4, borderWidth: 1, borderColor: c.border, borderLeftWidth: 4, borderLeftColor: c.danger },
+   irSlots: { fontSize: 11, fontWeight: '700' as const, color: c.textMuted },
+   irNote: { color: c.textMuted, fontSize: 12 },
++  emptyRow: { paddingVertical: 12, paddingHorizontal: 16, gap: 10, backgroundColor: c.dangerSoft },
++  emptyBadge: { minWidth: 52, height: 26, borderRadius: 6, borderWidth: 1.5, borderStyle: 'dashed' as const, alignItems: 'center' as const, justifyContent: 'center' as const, paddingHorizontal: 4 },
++  emptyBadgeText: { fontWeight: '800' as const, fontSize: 11 },
++  emptySlotTitle: { fontSize: 15, fontWeight: '800' as const, color: c.danger },
++  emptySlotSub: { fontSize: 12, color: c.text, marginTop: 2, lineHeight: 16 },
+   checkBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 8, backgroundColor: c.primarySoft, borderRadius: radius.md, padding: 12, marginTop: 12 },
+   checkBtnText: { flex: 1, color: c.primary, fontWeight: '700' as const, fontSize: 13 },
+   lockBox: { backgroundColor: c.dangerSoft, borderRadius: radius.sm, padding: 10, gap: 4, marginVertical: 4 },
+diff --git a/app/screens/HomeScreen.tsx b/app/screens/HomeScreen.tsx
+index cb250b8..d142606 100644
+--- a/app/screens/HomeScreen.tsx
++++ b/app/screens/HomeScreen.tsx
+@@ -1,7 +1,9 @@
+ import React, { useEffect, useState } from 'react';
+ import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
+ import { Ionicons } from '@expo/vector-icons';
+-import { getPlayersFromGithub, getTrendingPlayers, TrendType } from '../services/sleeperAPI';
++import { getLeagueUsers, getPlayersFromGithub, getRosters, getTrendingPlayers, TrendType } from '../services/sleeperAPI';
++import { ownershipLabel, ownershipMap, type Ownership } from '../services/leagueOwnership';
++import TradeForSheet from '../components/TradeForSheet';
+ import { useNavigation } from '@react-navigation/native';
+ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+ import { RootStackParamList } from '../AppNavigator';
+@@ -40,7 +42,21 @@ export default function HomeScreen() {
+ 
+   type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'MainTabs'>;
+   const navigation = useNavigation<NavigationProp>();
+-  const { sendChatMessage, isChatTyping } = useFantasy();
++  const { sendChatMessage, isChatTyping, activeLeagueId, myTeam } = useFantasy();
++  // Who owns each player in your open league (for "On Team X" and "Trade for him").
++  const [owners, setOwners] = useState<Map<string, Ownership> | null>(null);
++  const [tradeFor, setTradeFor] = useState<{ id: string; name: string } | null>(null);
++  useEffect(() => {
++    setOwners(null);
++    if (!activeLeagueId) return;
++    let cancelled = false;
++    Promise.all([getRosters(activeLeagueId), getLeagueUsers(activeLeagueId).catch(() => [])])
++      .then(([rosters, users]) => !cancelled && setOwners(ownershipMap(rosters, users, myTeam?.ownerId)))
++      .catch(() => undefined);
++    return () => {
++      cancelled = true;
++    };
++  }, [activeLeagueId, myTeam?.ownerId]);
+ 
+   // Ask the assistant who to drop from your roster to make room for this player.
+   const askWhoToDrop = (playerName: string) => {
+@@ -122,6 +138,8 @@ export default function HomeScreen() {
+             const player = { ...(players[item.player_id] ?? item), player_id: item.player_id };
+             const pos = String(player.position_for_FFHelper || player.position || player.position_listed_on_sleeper || '').toUpperCase().trim();
+             const name = player.full_name || `${player.first_name ?? ''} ${player.last_name ?? ''}`.trim();
++            const owner = owners?.get(String(item.player_id));
++            const ownedByOther = !!owner && !owner.mine;
+             return (
+               <TouchableOpacity key={item.player_id} style={styles.trendRow} onPress={() => openPlayer(player)}>
+                 <Text style={styles.rank}>{index + 1}</Text>
+@@ -133,13 +151,29 @@ export default function HomeScreen() {
+                     positionColor={getPositionColor(pos)}
+                     imageUri={pos === 'DEF' ? getTeamLogo(player.team) : getHeadshotUrl(player)}
+                   />
++                  {!!owners && (
++                    <Text
++                      style={[styles.owner, owner?.mine ? { color: colors.primary } : !owner ? { color: colors.success } : null]}
++                      numberOfLines={1}
++                    >
++                      {ownershipLabel(owner, true)}
++                    </Text>
++                  )}
+                 </View>
+                 <View style={styles.trendInfo}>
+                   <View style={styles.trendCountRow}>
+                     <Ionicons name={isAdd ? 'arrow-up' : 'arrow-down'} size={13} color={isAdd ? colors.success : colors.danger} />
+                     <Text style={[styles.trendCount, { color: isAdd ? colors.success : colors.danger }]}>{formatCount(Number(item.count) || 0)}</Text>
+                   </View>
+-                  {isAdd && (
++                  {ownedByOther && myTeam ? (
++                    <TouchableOpacity
++                      style={styles.dropAskBtn}
++                      onPress={() => setTradeFor({ id: String(item.player_id), name })}
++                      accessibilityLabel={`Build a trade offer for ${name}`}
++                    >
++                      <Text style={styles.dropAskText} numberOfLines={1}>Trade for him</Text>
++                    </TouchableOpacity>
++                  ) : isAdd && !owner?.mine ? (
+                     <TouchableOpacity
+                       style={styles.dropAskBtn}
+                       onPress={() => askWhoToDrop(name)}
+@@ -147,7 +181,7 @@ export default function HomeScreen() {
+                     >
+                       <Text style={styles.dropAskText} numberOfLines={1}>Who to drop?</Text>
+                     </TouchableOpacity>
+-                  )}
++                  ) : null}
+                 </View>
+               </TouchableOpacity>
+             );
+@@ -160,6 +194,9 @@ export default function HomeScreen() {
+           </TouchableOpacity>
+         )}
+       </View>
++      {myTeam && activeLeagueId && (
++        <TradeForSheet visible={!!tradeFor} team={myTeam} leagueId={activeLeagueId} player={tradeFor} onClose={() => setTradeFor(null)} />
++      )}
+     </ScrollView>
+   );
+ }
+@@ -186,6 +223,7 @@ const makeStyles = (c: Palette) => ({
+   trendInfo: { width: 96, alignItems: 'flex-start' as const, gap: 6, flexShrink: 0 },
+   trendCountRow: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 2 },
+   trendCount: { fontSize: 15, fontWeight: '800' as const },
++  owner: { fontSize: 11, fontWeight: '700' as const, color: c.textMuted, marginTop: 3, marginLeft: 58 },
+   dropAskBtn: { backgroundColor: c.primarySoft, borderRadius: radius.pill, paddingHorizontal: 9, paddingVertical: 4 },
+   dropAskText: { fontSize: 11, fontWeight: '700' as const, color: c.primary },
+   showMore: { flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const, gap: 4, paddingVertical: 12 },
+diff --git a/app/screens/TradeIdeasScreen.tsx b/app/screens/TradeIdeasScreen.tsx
+index efdb658..0c2a0c1 100644
+--- a/app/screens/TradeIdeasScreen.tsx
++++ b/app/screens/TradeIdeasScreen.tsx
+@@ -16,6 +16,7 @@ import {
+ } from '../services/tradeFormat';
+ import { radius, shadowFor, getPositionColor, type Palette } from '../theme';
+ import TradeGrader from '../components/TradeGrader';
++import TradeOffers from '../components/TradeOffers';
+ 
+ const GUIDE_DISMISSED_KEY = 'ffh_trade_guide_dismissed_v1';
+ 
+@@ -281,7 +282,7 @@ export default function TradeIdeasScreen() {
+   const [showGuide, setShowGuide] = useState(false);
+   const [showGrader, setShowGrader] = useState(false);
+   const navigation = useNavigation<any>();
+-  const { sendChatMessage } = useFantasy();
++  const { sendChatMessage, activeLeagueId } = useFantasy();
+ 
+   useEffect(() => {
+     AsyncStorage.getItem(GUIDE_DISMISSED_KEY).then(v => setShowGuide(v !== '1')).catch(() => setShowGuide(true));
+@@ -356,6 +357,18 @@ export default function TradeIdeasScreen() {
+         </View>
+       )}
+ 
++      {activeLeagueId && (
++        <TradeOffers
++          team={myTeam}
++          leagueId={activeLeagueId}
++          onGradeByHand={() => setShowGrader(true)}
++          onAskAI={q => {
++            sendChatMessage(q);
++            navigation.navigate('MainTabs', { screen: 'ChatBot' });
++          }}
++        />
++      )}
++
+       <TouchableOpacity style={styles.graderBtn} onPress={() => setShowGrader(true)}>
+         <Ionicons name="ribbon-outline" size={18} color={colors.primary} />
+         <View style={{ flex: 1 }}>
+diff --git a/app/services/injuryFormat.ts b/app/services/injuryFormat.ts
+index 69f42ef..9092d05 100644
+--- a/app/services/injuryFormat.ts
++++ b/app/services/injuryFormat.ts
+@@ -20,6 +20,8 @@ export type InjuryRecord = {
+   injury?: string;
+   notes?: string;
+   injury_start_date?: string;
++  // Where the status comes from ("Carried over from his last game..." / official report)
++  status_note?: string;
+   history?: InjuryHistoryEntry[];
+ };
+ 
+@@ -70,8 +72,14 @@ export function practiceTable(history: InjuryHistoryEntry[] = []) {
+       day: e.day,
+       date: e.date,
+       practice: e.practice_status ?? '',
+-      practiceLabel: PRACTICE_LABELS[e.practice_status ?? ''] ?? '—',
+-      status: injuryLabel(e.game_status || e.status) || '—',
++      // No entry = the team didn't publish a practice report that day (or he wasn't on it).
++      practiceLabel: PRACTICE_LABELS[e.practice_status ?? ''] ?? 'No report',
++      // A status with no official game status that day is left over from his last game.
++      status: e.game_status
++        ? injuryLabel(e.game_status) || e.game_status
++        : injuryLabel(e.status)
++          ? `${injuryLabel(e.status)}${['QUESTIONABLE', 'DOUBTFUL', 'OUT'].includes(String(e.status).toUpperCase()) ? ' (last game)' : ''}`
++          : '—',
+     }));
+ }
+ 
+diff --git a/app/services/injuryNews.ts b/app/services/injuryNews.ts
+new file mode 100644
+index 0000000..e3f3507
+--- /dev/null
++++ b/app/services/injuryNews.ts
+@@ -0,0 +1,23 @@
++// app/services/injuryNews.ts
++// The newest injury or practice headline about a player, so the injury card can show news
++// that comes out before the official report (e.g. "not spotted at practice").
++
++import type { NewsItem } from './newsDiversity';
++
++const norm = (s: unknown) => String(s ?? '').toLowerCase().replace(/[^a-z]/g, '');
++const INJURY_TEXT = /injur|practice|not spotted|sidelined|out for|ruled out|questionable|doubtful|ankle|knee|hamstring|concussion|foot|shoulder|groin|calf|return/i;
++
++export function latestInjuryNews(items: NewsItem[], playerName: string, now = Date.now(), maxDays = 5): NewsItem | null {
++  const name = norm(playerName);
++  if (!name) return null;
++  return (
++    items
++      .filter(a => norm(a.player) === name)
++      .filter(a => a.category === 'injury' || a.category === 'injury_return' || INJURY_TEXT.test(a.title))
++      .filter(a => {
++        const t = Date.parse(String(a.published ?? ''));
++        return Number.isFinite(t) && now - t <= maxDays * 86_400_000;
++      })
++      .sort((a, b) => String(b.published).localeCompare(String(a.published)))[0] ?? null
++  );
++}
+diff --git a/app/services/leagueOwnership.ts b/app/services/leagueOwnership.ts
+new file mode 100644
+index 0000000..153e88a
+--- /dev/null
++++ b/app/services/leagueOwnership.ts
+@@ -0,0 +1,28 @@
++// app/services/leagueOwnership.ts
++// Who owns each player in your league: your team, another team (by name), or nobody.
++
++export type Ownership = { rosterId: number; teamName: string; mine: boolean };
++
++export function ownershipMap(
++  rosters: { roster_id: number; owner_id: string; players?: string[] | null; reserve?: string[] | null; taxi?: string[] | null }[],
++  users: { user_id: string; display_name?: string; metadata?: { team_name?: string } }[],
++  myOwnerId?: string | null
++): Map<string, Ownership> {
++  const nameOf = (ownerId: string) => {
++    const u = users.find(x => String(x.user_id) === String(ownerId));
++    return u?.metadata?.team_name || u?.display_name || 'Another team';
++  };
++  const map = new Map<string, Ownership>();
++  for (const r of rosters ?? []) {
++    const info = { rosterId: Number(r.roster_id), teamName: nameOf(r.owner_id), mine: !!myOwnerId && String(r.owner_id) === String(myOwnerId) };
++    for (const id of [...(r.players ?? []), ...(r.reserve ?? []), ...(r.taxi ?? [])]) map.set(String(id), info);
++  }
++  return map;
++}
++
++/** Short label for a trending player's row. */
++export function ownershipLabel(o: Ownership | undefined, leagueLoaded: boolean): string {
++  if (!leagueLoaded) return '';
++  if (!o) return 'Free agent in your league';
++  return o.mine ? 'On your team' : `On ${o.teamName}`;
++}
+diff --git a/app/services/lineupCheck.ts b/app/services/lineupCheck.ts
+index 708b5b3..b9ffe60 100644
+--- a/app/services/lineupCheck.ts
++++ b/app/services/lineupCheck.ts
+@@ -4,8 +4,17 @@
+ import { getApiBaseUrl } from './apiBaseUrl';
+ 
+ export type CheckPlayer = { id: string; name: string; position: string; team?: string; value: number; injuryStatus?: string };
+-export type LineupSwap = { slot: string; start: CheckPlayer; bench: CheckPlayer | null; gain: number };
+-export type LineupCheck = { week: number; kickoffs: string[]; currentPoints: number; bestPoints: number; swaps: LineupSwap[]; problems: string[] };
++export type LineupSwap = { slot: string; start: CheckPlayer; bench: CheckPlayer | null; gain: number; from?: string; movesTo?: string };
++export type LineupCheck = {
++  week: number;
++  kickoffs: string[];
++  currentPoints: number;
++  bestPoints: number;
++  swaps: LineupSwap[];
++  problems: string[];
++  // Starting slots that are empty in Sleeper right now
++  emptySlots?: string[];
++};
+ 
+ export async function fetchLineupCheck(leagueId: string, rosterId: number, ownerId?: string): Promise<LineupCheck> {
+   const res = await fetch(`${getApiBaseUrl()}/lineup-check`, {
+diff --git a/app/services/notifications.ts b/app/services/notifications.ts
+index 67ed1a9..15d12bc 100644
+--- a/app/services/notifications.ts
++++ b/app/services/notifications.ts
+@@ -239,6 +239,24 @@ export function lineupCheckNotification(b: Base & { week: number }, swaps: numbe
+   });
+ }
+ 
++/** A trade offer someone sent you, graded. */
++export function tradeOfferNotification(
++  b: Base,
++  offer: { transactionId: string; partnerName: string; grade: string; headline: string; give: string[]; get: string[]; counters: number }
++): AppNotification {
++  const good = offer.grade === 'A' || offer.grade === 'B';
++  const bad = offer.grade === 'D' || offer.grade === 'F';
++  return make(b, {
++    id: `offer:${b.leagueId}:${offer.transactionId}`,
++    kind: 'trade',
++    tone: good ? 'good' : bad ? 'bad' : 'info',
++    title: `Trade offer from ${offer.partnerName}: grade ${offer.grade}`,
++    body: `${offer.headline}${bad && offer.counters ? ` ${offer.counters} counter-offer${offer.counters === 1 ? '' : 's'} suggested.` : ''}`,
++    target: 'Trades',
++    aiQuestion: `${offer.partnerName} offered me ${offer.get.join(' and ') || 'nothing'} for ${offer.give.join(' and ') || 'nothing'}. Should I accept this trade?`,
++  });
++}
++
+ /** Add new notifications to the saved list (newest first), skipping ids already seen. */
+ export function mergeNotifications(
+   existing: AppNotification[],
+diff --git a/app/services/tradeGrader.ts b/app/services/tradeGrader.ts
+index cdaa857..6d7b8cd 100644
+--- a/app/services/tradeGrader.ts
++++ b/app/services/tradeGrader.ts
+@@ -4,12 +4,16 @@
+ import { getApiBaseUrl } from './apiBaseUrl';
+ import type { TradeIdea, TradeIdeaPlayer } from './tradeFormat';
+ 
++export type CounterOffer = { summary: string; idea: TradeIdea };
++
+ export type TradeGrade = {
+   grade: 'A' | 'B' | 'C' | 'D' | 'F';
+   verdict: 'accept' | 'consider' | 'counter' | 'decline';
+   headline: string;
+   idea: TradeIdea;
+   notes: string[];
++  // Better versions to send back when the offer isn't good for you
++  counters?: CounterOffer[];
+ };
+ 
+ export type LeagueTeamRoster = { rosterId: number; teamName: string; players: TradeIdeaPlayer[] };
+@@ -39,6 +43,24 @@ async function post<T>(path: string, body: unknown): Promise<T> {
+ export const fetchLeagueTeams = (leagueId: string, rosterId: number, ownerId?: string) =>
+   post<{ myRosterId: number; teams: LeagueTeamRoster[]; offers: PendingOffer[] }>('/league-teams', { leagueId, rosterId, ownerId });
+ 
++export const fetchTradeOffers = (leagueId: string, rosterId: number, ownerId?: string) =>
++  post<{ checkedAt: string; offers: PendingOffer[] }>('/trade-offers', { leagueId, rosterId, ownerId });
++
++/** Message to send the other manager with a counter-offer. */
++export function counterMessage(partner: string, counter: CounterOffer): string {
++  const give = counter.idea.give.map(p => p.name).join(' and ') || 'nothing';
++  const get = counter.idea.get.map(p => p.name).join(' and ') || 'nothing';
++  const theirs = counter.idea.theirGain;
++  const why =
++    theirs > 0.3
++      ? `By my numbers it still makes your starting lineup about ${theirs.toFixed(1)} points a week better.`
++      : 'It still gets you the player you were after.';
++  return `Hey ${partner}, thanks for the offer! I can't do that one as is, but how about my ${give} for your ${get}? ${why} Let me know!`;
++}
++
++export const fetchTradeFor = (leagueId: string, rosterId: number, ownerId: string | undefined, playerId: string) =>
++  post<{ owner: string | null; mine?: boolean; ideas: TradeIdea[] }>('/trade-for', { leagueId, rosterId, ownerId, playerId });
++
+ export const gradeTradeOffer = (args: { leagueId: string; rosterId: number; ownerId?: string; partnerRosterId: number; give: string[]; get: string[] }) =>
+   post<TradeGrade>('/grade-trade', args);
+ 
+diff --git a/tests/backend/round6.test.ts b/tests/backend/round6.test.ts
+new file mode 100644
+index 0000000..d222e85
+--- /dev/null
++++ b/tests/backend/round6.test.ts
+@@ -0,0 +1,92 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { compareLineups } from "../../app/backend/services/lineupCheck";
++
++const pl = (id: string, name: string, position: string, value: number, injuryStatus = "ACTIVE") => ({ id, name, position, team: "CHI", injuryStatus, value });
++
++test("lineup check: an empty QB spot is filled by a QB, and a WR is only swapped for someone who can play his spot", () => {
++  // Your QB spot is empty in Sleeper; Shakir (WR) is in FLEX; Caleb (QB) and Loveland (TE) sit on the bench.
++  const players = [
++    pl("caleb", "Caleb Williams", "QB", 15.9),
++    pl("shakir", "Khalil Shakir", "WR", 10.9),
++    pl("loveland", "Colston Loveland", "TE", 12.0),
++    pl("wr1", "WR One", "WR", 14),
++    pl("te1", "TE One", "TE", 13),
++  ];
++  const slots = ["QB", "WR", "TE", "FLEX"] as any;
++  const out = compareLineups(players, ["0", "wr1", "te1", "shakir"], slots);
++  assert.deepEqual(out.emptySlots, ["QB"]);
++  const qb = out.swaps.find(s => s.slot === "QB")!;
++  assert.equal(qb.start.name, "Caleb Williams");
++  assert.equal(qb.bench, null); // fills the empty spot, nobody benched
++  const flex = out.swaps.find(s => s.slot === "FLEX")!;
++  assert.equal(flex.start.name, "Colston Loveland");
++  assert.equal(flex.bench?.name, "Khalil Shakir");
++  // Never pair a QB with a WR's spot.
++  assert.ok(!out.swaps.some(s => s.start.position === "QB" && s.bench?.position === "WR"));
++  assert.equal(out.bestPoints, 15.9 + 14 + 13 + 12);
++});
++
++test("lineup check: players who change slots are labeled as moves", () => {
++  const players = [pl("a", "WR A", "WR", 20), pl("b", "WR B", "WR", 5), pl("c", "RB C", "RB", 12), pl("d", "RB D", "RB", 15)];
++  // A is in FLEX and B in WR; best is A at WR and D at FLEX.
++  const out = compareLineups(players, ["c", "b", "a"], ["RB", "WR", "FLEX"] as any);
++  const wr = out.swaps.find(s => s.slot === "WR")!;
++  assert.equal(wr.start.name, "WR A");
++  assert.equal(wr.from, "FLEX");
++  const flex = out.swaps.find(s => s.slot === "FLEX")!;
++  assert.equal(flex.bench?.name, "WR A");
++  assert.equal(flex.movesTo, "WR");
++});
++
++import { incompatibleStartSitReply, sharedSlots } from "../../app/backend/utils/slotCompat";
++
++test("start/sit: players who can't share a lineup spot get an explanation and real options", () => {
++  const slots = ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "K", "DEF", "BN"];
++  assert.deepEqual(sharedSlots("RB", "WR", slots), ["FLEX"]);
++  assert.deepEqual(sharedSlots("QB", "WR", slots), []);
++  assert.deepEqual(sharedSlots("QB", "WR", [...slots, "SUPER_FLEX"]), ["SUPER_FLEX"]);
++  const roster = [
++    { fullName: "Caleb Williams", position: "QB" },
++    { fullName: "Bryce Young", position: "QB" },
++    { fullName: "Khalil Shakir", position: "WR" },
++    { fullName: "Colston Loveland", position: "TE" },
++  ];
++  const reply = incompatibleStartSitReply({ name: "caleb williams", position: "QB" }, { name: "khalil shakir", position: "WR" }, slots, roster)!;
++  assert.match(reply, /Caleb Williams \(QB\) and Khalil Shakir \(WR\) can't take each other's spot/);
++  assert.match(reply, /Compare Caleb Williams with: Bryce Young \(QB\)/);
++  assert.match(reply, /Compare Khalil Shakir with: Colston Loveland \(TE\)/); // via FLEX
++  assert.equal(incompatibleStartSitReply({ name: "a", position: "RB" }, { name: "b", position: "WR" }, slots, roster), null);
++  assert.match(incompatibleStartSitReply({ name: "ja'marr chase", position: "WR" }, { name: "x y", position: "QB" }, slots)!, /Ja'Marr Chase/);
++});
++
++import { counterOffers, gradeTrade, tradeForPlayer } from "../../app/backend/services/tradeGrade";
++
++const tp = (id: string, position: string, value: number) => ({ id, name: `P${id}`, position, team: "KC", injuryStatus: "ACTIVE", value });
++const me = { rosterId: 1, ownerId: "u1", teamName: "Me", players: [tp("1", "RB", 15), tp("2", "RB", 6), tp("3", "WR", 12), tp("4", "WR", 5), tp("5", "TE", 7)] };
++const them = { rosterId: 2, ownerId: "u2", teamName: "Them", players: [tp("6", "RB", 9), tp("7", "WR", 17), tp("8", "WR", 6), tp("9", "RB", 7), tp("10", "TE", 11)] };
++const slots = ["RB", "WR", "TE", "FLEX"] as any;
++
++test("bad offers come with counter-offers that are better for you", () => {
++  // They offer their 7-point RB for your 15-point RB: bad for you.
++  const g = gradeTrade(me, them, [me.players[0]], [them.players[3]], slots);
++  assert.ok(["D", "F"].includes(g.grade), g.grade);
++  assert.ok(g.counters.length > 0);
++  for (const c of g.counters) {
++    assert.ok(c.idea.myGain >= 0.3, String(c.idea.myGain));
++    assert.ok(c.idea.theirGain >= -(2 + Math.abs(g.idea.theirGain)), String(c.idea.theirGain));
++  }
++  assert.match(g.counters[0].summary, /^(Give|Ask for)/);
++  // Good offers don't need counters.
++  const good = gradeTrade(me, them, [me.players[3]], [them.players[1]], slots);
++  assert.equal(good.verdict, "accept");
++  assert.equal(good.counters.length, 0);
++  assert.deepEqual(counterOffers(me, them, [], [], slots, good.idea, 0), []);
++});
++
++test("trade for a player on another team always targets that player", () => {
++  const ideas = tradeForPlayer(me, them, "7", slots);
++  assert.ok(ideas.length > 0);
++  assert.ok(ideas.every(i => i.get.some(p => p.id === "7")));
++  assert.deepEqual(tradeForPlayer(me, them, "missing", slots), []);
++});
+diff --git a/tests/round6.test.ts b/tests/round6.test.ts
+new file mode 100644
+index 0000000..f6c7c02
+--- /dev/null
++++ b/tests/round6.test.ts
+@@ -0,0 +1,69 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { practiceTable } from "../app/services/injuryFormat";
++import { latestInjuryNews } from "../app/services/injuryNews";
++import { ownershipLabel, ownershipMap } from "../app/services/leagueOwnership";
++import { tradeOfferNotification } from "../app/services/notifications";
++import { counterMessage } from "../app/services/tradeGrader";
++
++test("injury table: no report days and carried-over statuses are labeled", () => {
++  const rows = practiceTable([
++    { date: "2026-11-03", day: "Tue", status: "QUESTIONABLE" },
++    { date: "2026-11-04", day: "Wed", status: "QUESTIONABLE", practice_status: "DNP" },
++    { date: "2026-11-06", day: "Fri", status: "QUESTIONABLE", practice_status: "LP", game_status: "DOUBTFUL" },
++  ] as any);
++  assert.equal(rows[0].practiceLabel, "No report");
++  assert.equal(rows[0].status, "Questionable (last game)");
++  assert.equal(rows[1].practiceLabel, "Did not practice");
++  assert.equal(rows[2].status, "Doubtful");
++});
++
++test("latest injury news about a player (the Tuten case)", () => {
++  const now = Date.parse("2026-11-04T12:00:00Z");
++  const items = [
++    { title: "Fantasy Football: Bhayshul Tuten bringing the explosives", player: "Bhayshul Tuten", published: "2026-11-02", category: "fantasy_advice", impact: "neutral" },
++    { title: "Bhayshul Tuten remains out of practice for the Jaguars", player: "Bhayshul Tuten", published: "2026-11-03", category: "injury", impact: "negative" },
++    { title: "Tuten (ankle/foot) not spotted on Tuesday", player: "Bhayshul Tuten", published: "2026-11-03", category: "injury", impact: "negative" },
++    { title: "Old injury", player: "Bhayshul Tuten", published: "2026-10-01", category: "injury" },
++    { title: "Other player hurt", player: "Someone Else", published: "2026-11-04", category: "injury" },
++  ];
++  const n = latestInjuryNews(items as any, "Bhayshul Tuten", now)!;
++  assert.match(n.title, /out of practice|not spotted/);
++  assert.equal(latestInjuryNews(items as any, "Nobody", now), null);
++  assert.equal(latestInjuryNews([items[3]] as any, "Bhayshul Tuten", now), null); // too old
++});
++
++test("trending players show which team in your league has them", () => {
++  const map = ownershipMap(
++    [
++      { roster_id: 1, owner_id: "u1", players: ["a"], reserve: ["r"] },
++      { roster_id: 2, owner_id: "u2", players: ["b"] },
++    ],
++    [{ user_id: "u1", display_name: "nitya" }, { user_id: "u2", display_name: "bob", metadata: { team_name: "Bob's Bombers" } }],
++    "u1"
++  );
++  assert.equal(ownershipLabel(map.get("a"), true), "On your team");
++  assert.equal(ownershipLabel(map.get("r"), true), "On your team"); // IR players count
++  assert.equal(ownershipLabel(map.get("b"), true), "On Bob's Bombers");
++  assert.equal(ownershipLabel(map.get("z"), true), "Free agent in your league");
++  assert.equal(ownershipLabel(undefined, false), "");
++});
++
++test("trade offer notifications are good or bad by grade, with an AI question", () => {
++  const base = { leagueId: "L", leagueName: "My League", now: "2026-11-04T12:00:00Z" };
++  const bad = tradeOfferNotification(base, { transactionId: "t1", partnerName: "Bob", grade: "F", headline: "Decline.", give: ["A"], get: ["B"], counters: 2 });
++  assert.equal(bad.tone, "bad");
++  assert.equal(bad.target, "Trades");
++  assert.match(bad.body, /2 counter-offers suggested/);
++  assert.match(bad.aiQuestion!, /Bob offered me B for A/);
++  assert.equal(tradeOfferNotification(base, { transactionId: "t2", partnerName: "Bob", grade: "A", headline: "Accept.", give: [], get: [], counters: 0 }).tone, "good");
++});
++
++test("counter-offer message", () => {
++  const msg = counterMessage("Bob", {
++    summary: "Ask for X too.",
++    idea: { give: [{ name: "A" }], get: [{ name: "B" }, { name: "X" }], theirGain: 1.2 } as any,
++  });
++  assert.match(msg, /how about my A for your B and X\?/);
++  assert.match(msg, /about 1.2 points a week better/);
++});

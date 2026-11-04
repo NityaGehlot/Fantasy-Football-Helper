@@ -6,6 +6,9 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { getInjuryFile } from '../services/injuryService';
+import { getNewsFile } from '../services/newsService';
+import { latestInjuryNews } from '../services/injuryNews';
+import type { NewsItem } from '../services/newsDiversity';
 import { currentInjury, indexInjuries, injuryLabel, isOutStatus, practiceTable, type InjuryFile } from '../services/injuryFormat';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
 import { radius, type Palette } from '../theme';
@@ -15,6 +18,20 @@ export default function InjuryReportCard({ player }: { player: any }) {
   const styles = useThemedStyles(makeStyles);
   const [file, setFile] = useState<InjuryFile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [news, setNews] = useState<NewsItem | null>(null);
+
+  // The newest injury/practice headline about him (news often comes before official reports).
+  useEffect(() => {
+    let cancelled = false;
+    const key = String(player?.position_for_FFHelper || player?.position || '').toLowerCase();
+    if (!key) return;
+    getNewsFile(key)
+      .then(items => !cancelled && setNews(latestInjuryNews(items, player?.full_name)))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [player?.full_name, player?.position]);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,9 +73,18 @@ export default function InjuryReportCard({ player }: { player: any }) {
         <View style={{ flex: 1 }}>
           <Text style={[styles.statusText, { color: tone }]}>{status ? injuryLabel(status) || status : 'No injury designation'}</Text>
           {!!injury && <Text style={styles.injuryText}>{injury}</Text>}
+          {!!record?.status_note && <Text style={styles.notes}>{record.status_note}</Text>}
           {!!record?.notes && <Text style={styles.notes}>{record.notes}</Text>}
         </View>
       </View>
+
+      {!!news && (
+        <View style={[styles.newsBox, { borderLeftColor: news.impact === 'positive' || news.impact === 'injury_return' ? colors.success : colors.danger }]}>
+          <Text style={styles.newsLabel}>LATEST INJURY NEWS · {[news.source, news.published].filter(Boolean).join(' · ')}</Text>
+          <Text style={styles.newsTitle}>{news.title}</Text>
+          {!!news.summary && <Text style={styles.notes}>{news.summary}</Text>}
+        </View>
+      )}
 
       {rows.length > 0 && (
         <View style={styles.table}>
@@ -77,7 +103,10 @@ export default function InjuryReportCard({ player }: { player: any }) {
               <Text style={[styles.td, { flex: 1.4 }]}>{r.status}</Text>
             </View>
           ))}
-          <Text style={styles.legend}>Full = full practice · Limited = partial · Did not practice = held out</Text>
+          <Text style={styles.legend}>
+            Full = full practice · Limited = partial · Did not practice = held out · No report = no official report that day
+            (teams publish them Wednesday–Friday for Sunday games). "(last game)" = still his status from last week.
+          </Text>
         </View>
       )}
       {status && rows.length === 0 && (
@@ -102,5 +131,8 @@ const makeStyles = (c: Palette) => ({
   th: { fontSize: 11, fontWeight: '800' as const, color: c.textMuted, letterSpacing: 0.5, textTransform: 'uppercase' as const },
   td: { fontSize: 13, color: c.text },
   dot: { width: 8, height: 8, borderRadius: 4 },
+  newsBox: { marginTop: 10, borderLeftWidth: 3, paddingLeft: 10, paddingVertical: 2, gap: 2 },
+  newsLabel: { fontSize: 10, fontWeight: '800' as const, color: c.textMuted, letterSpacing: 0.5 },
+  newsTitle: { fontSize: 13, fontWeight: '700' as const, color: c.text },
   legend: { fontSize: 11, color: c.textSubtle, padding: 10, lineHeight: 16 },
 });

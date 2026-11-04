@@ -3,9 +3,15 @@
 // same lineup math as the trade agent: how your best starting lineup changes, how theirs
 // changes, how even the values are, and the fantasy-playoff schedules involved.
 
-import { evaluateTrade, LeagueTeam, TradeIdea, TradePlayer } from "./tradeEngine";
+import { evaluateTrade, generateTradeIdeas, LeagueTeam, TradeIdea, TradePlayer } from "./tradeEngine";
 import type { SlotName } from "./lineup";
 import { playoffTradeNote } from "./playoffSchedule";
+
+export type CounterOffer = {
+  // What changes compared with their offer, in plain words
+  summary: string;
+  idea: TradeIdea;
+};
 
 export type TradeGrade = {
   grade: "A" | "B" | "C" | "D" | "F";
@@ -13,6 +19,8 @@ export type TradeGrade = {
   headline: string;
   idea: TradeIdea;
   notes: string[];
+  // Better versions of the trade to send back (only when it isn't already good for you)
+  counters: CounterOffer[];
 };
 
 export function gradeFromGain(myGain: number): TradeGrade["grade"] {
@@ -57,7 +65,81 @@ export function gradeTrade(me: LeagueTeam, partner: LeagueTeam, give: TradePlaye
     verdict = "decline";
     headline = `Decline: your lineup would lose about ${Math.abs(idea.myGain).toFixed(1)} points a week.`;
   }
-  return { grade, verdict, headline, idea, notes };
+  return { grade, verdict, headline, idea, notes, counters: verdict === "accept" ? [] : counterOffers(me, partner, give, get, slots, idea) };
+}
+
+const TRADEABLE = new Set(["QB", "RB", "WR", "TE"]);
+const names = (list: TradePlayer[]) => list.map(p => p.name).join(" and ");
+
+function combos<T>(items: T[], size: 1 | 2): T[][] {
+  if (size === 1) return items.map(i => [i]);
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) out.push([items[i], items[j]]);
+  return out;
+}
+
+/**
+ * Counter-offers for a trade that isn't good for you: keep most of what they proposed but
+ * ask for more, give less, or swap one player, so the trade helps your lineup (or, for an
+ * offer that was already OK, helps it by another point a week) without costing their lineup
+ * much more than their own offer did.
+ */
+export function counterOffers(
+  me: LeagueTeam,
+  partner: LeagueTeam,
+  give: TradePlayer[],
+  get: TradePlayer[],
+  slots: SlotName[],
+  original: TradeIdea,
+  limit = 3
+): CounterOffer[] {
+  const top = (team: LeagueTeam) =>
+    team.players.filter(p => TRADEABLE.has(p.position) && p.value > 0).sort((a, b) => b.value - a.value).slice(0, 12);
+  const mine = top(me);
+  const theirs = top(partner);
+  const giveIds = new Set(give.map(p => p.id));
+  const getIds = new Set(get.map(p => p.id));
+  // A bad offer just needs to become a good one for you; an OK one should get clearly better.
+  const target = original.myGain < 0 ? 0.3 : original.myGain + 1;
+  // How much a counter may cost their lineup: 2 points a week, plus however far their own
+  // offer was from even (an offer that helped them a lot, or one they were willing to lose
+  // points on, leaves room to ask for more).
+  const theirFloor = -(2 + Math.abs(original.theirGain));
+  const options: { summary: string; idea: TradeIdea; score: number }[] = [];
+  const consider = (g: TradePlayer[], r: TradePlayer[], summary: string) => {
+    if (g.length === 0 && r.length === 0) return;
+    const idea = evaluateTrade(me, partner, g, r, slots);
+    if (idea.myGain < target || idea.theirGain < theirFloor || idea.fairness < 0.55) return;
+    options.push({ summary, idea, score: idea.myGain + 0.5 * Math.min(idea.theirGain - theirFloor, idea.myGain) + idea.fairness });
+  };
+
+  // 1. Same players from them, but you give something else.
+  for (const size of [1, 2] as const) {
+    for (const g of combos(mine.filter(p => !getIds.has(p.id)), size)) {
+      if (g.length === give.length && g.every(p => giveIds.has(p.id))) continue;
+      consider(g, get, `Give ${names(g)} instead of ${names(give) || "nothing"} for the same players.`);
+    }
+  }
+  // 2. Same players from you, but ask for one more of theirs.
+  for (const extra of theirs.filter(p => !getIds.has(p.id))) {
+    consider(give, [...get, extra], `Ask for ${extra.name} too.`);
+  }
+  // 3. Same players from you, but ask for a different player.
+  for (const r of combos(theirs.filter(p => !getIds.has(p.id)), 1)) {
+    consider(give, r, `Ask for ${names(r)} instead of ${names(get) || "nothing"}.`);
+  }
+
+  const seen = new Set<string>();
+  return options
+    .sort((a, b) => b.score - a.score)
+    .filter(o => {
+      const key = `${o.idea.give.map(p => p.id).sort()}|${o.idea.get.map(p => p.id).sort()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit)
+    .map(({ summary, idea }) => ({ summary, idea }));
 }
 
 export type PendingTrade = {
@@ -91,4 +173,42 @@ export function pendingTradesFor(transactions: any[], rosterId: number, ownerId?
         give: drops.filter(([, r]) => Number(r) === Number(rosterId)).map(([id]) => id),
       } as PendingTrade;
     });
+}
+
+/**
+ * Offers to send for one player on another team: first trades that help both lineups (the
+ * trade agent's rules), then, if none exist, the cheapest fair-value offer for him.
+ */
+export function tradeForPlayer(me: LeagueTeam, owner: LeagueTeam, playerId: string, slots: SlotName[], limit = 3): TradeIdea[] {
+  const target = owner.players.find(p => p.id === playerId);
+  if (!target) return [];
+  // Win-win trades the trade agent finds that include him...
+  const winWin = generateTradeIdeas(me, [owner], slots, { mustGet: [playerId], maxIdeas: 8, perPartner: 8, minGain: -3 });
+  // ...plus simple offers for just him: about his value (95-130%) from your roster.
+  const mine = me.players.filter(p => TRADEABLE.has(p.position) && p.value > 0).sort((a, b) => b.value - a.value).slice(0, 12);
+  const simple: TradeIdea[] = [];
+  for (const size of [1, 2] as const) {
+    for (const g of combos(mine, size)) {
+      const total = g.reduce((t, p) => t + p.value, 0);
+      if (total < target.value * 0.95 || total > target.value * 1.3) continue;
+      simple.push(evaluateTrade(me, owner, g, [target], slots));
+    }
+  }
+  const seen = new Set<string>();
+  return [...winWin, ...simple]
+    .filter(i => {
+      const key = `${i.give.map(p => p.id).sort()}|${i.get.map(p => p.id).sort()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    // Just him first, then offers that don't hurt your lineup, then the best for you.
+    .sort(
+      (a, b) =>
+        Number(a.get.length > 1) - Number(b.get.length > 1) ||
+        Number(b.myGain >= 0) - Number(a.myGain >= 0) ||
+        Number(b.theirGain >= 0) - Number(a.theirGain >= 0) ||
+        b.myGain - a.myGain
+    )
+    .slice(0, limit);
 }

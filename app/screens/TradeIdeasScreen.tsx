@@ -16,6 +16,7 @@ import {
 } from '../services/tradeFormat';
 import { radius, shadowFor, getPositionColor, type Palette } from '../theme';
 import TradeGrader from '../components/TradeGrader';
+import TradeOffers from '../components/TradeOffers';
 
 const GUIDE_DISMISSED_KEY = 'ffh_trade_guide_dismissed_v1';
 
@@ -281,7 +282,7 @@ export default function TradeIdeasScreen() {
   const [showGuide, setShowGuide] = useState(false);
   const [showGrader, setShowGrader] = useState(false);
   const navigation = useNavigation<any>();
-  const { sendChatMessage } = useFantasy();
+  const { sendChatMessage, activeLeagueId } = useFantasy();
 
   useEffect(() => {
     AsyncStorage.getItem(GUIDE_DISMISSED_KEY).then(v => setShowGuide(v !== '1')).catch(() => setShowGuide(true));
@@ -354,6 +355,18 @@ export default function TradeIdeasScreen() {
           ))}
           <Text style={styles.guideLine}>• Tap any number (or its ⓘ) to see what it means.</Text>
         </View>
+      )}
+
+      {activeLeagueId && (
+        <TradeOffers
+          team={myTeam}
+          leagueId={activeLeagueId}
+          onGradeByHand={() => setShowGrader(true)}
+          onAskAI={q => {
+            sendChatMessage(q);
+            navigation.navigate('MainTabs', { screen: 'ChatBot' });
+          }}
+        />
       )}
 
       <TouchableOpacity style={styles.graderBtn} onPress={() => setShowGrader(true)}>

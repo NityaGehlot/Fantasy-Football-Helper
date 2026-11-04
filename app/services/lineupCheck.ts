@@ -4,8 +4,17 @@
 import { getApiBaseUrl } from './apiBaseUrl';
 
 export type CheckPlayer = { id: string; name: string; position: string; team?: string; value: number; injuryStatus?: string };
-export type LineupSwap = { slot: string; start: CheckPlayer; bench: CheckPlayer | null; gain: number };
-export type LineupCheck = { week: number; kickoffs: string[]; currentPoints: number; bestPoints: number; swaps: LineupSwap[]; problems: string[] };
+export type LineupSwap = { slot: string; start: CheckPlayer; bench: CheckPlayer | null; gain: number; from?: string; movesTo?: string };
+export type LineupCheck = {
+  week: number;
+  kickoffs: string[];
+  currentPoints: number;
+  bestPoints: number;
+  swaps: LineupSwap[];
+  problems: string[];
+  // Starting slots that are empty in Sleeper right now
+  emptySlots?: string[];
+};
 
 export async function fetchLineupCheck(leagueId: string, rosterId: number, ownerId?: string): Promise<LineupCheck> {
   const res = await fetch(`${getApiBaseUrl()}/lineup-check`, {

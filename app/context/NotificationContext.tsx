@@ -19,6 +19,7 @@ import { currentInjury } from '../services/injuryFormat';
 import { getLineupAlerts, type GameState } from '../services/lineupAlerts';
 import { fetchIrAdvice } from '../services/irAdvice';
 import { fetchLineupCheck, lineupCheckTimes, LINEUP_CHECK_LEAD_MS } from '../services/lineupCheck';
+import { fetchTradeOffers } from '../services/tradeGrader';
 import { getFavoriteTeamForLeague } from '../services/userService';
 import {
   bigPlayNotifications,
@@ -27,6 +28,7 @@ import {
   notificationsFromState,
   oddsSwingNotification,
   snapshotOf,
+  tradeOfferNotification,
   type AppNotification,
   type LiveSnapshot,
 } from '../services/notifications';
@@ -167,12 +169,29 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   // ---------- One league ----------
   const checkLeague = async (t: WatchedTeam, week: number, injuryIndex: Awaited<ReturnType<typeof getInjuryIndex>> | null) => {
     const base = { leagueId: t.leagueId, leagueName: t.leagueName, week };
-    const [board, ir, check] = await Promise.all([
+    const [board, ir, check, offers] = await Promise.all([
       fetchLiveScoreboard(t.leagueId, t.rosterId, week).catch(() => null),
       fetchIrAdvice(t.leagueId, t.rosterId, t.ownerId).catch(() => null),
       fetchLineupCheck(t.leagueId, t.rosterId, t.ownerId).catch(() => null),
+      fetchTradeOffers(t.leagueId, t.rosterId, t.ownerId).catch(() => null),
     ]);
     const incoming: AppNotification[] = [];
+
+    // Offers other managers sent you, graded.
+    for (const o of offers?.offers ?? []) {
+      if (o.direction !== 'received') continue;
+      incoming.push(
+        tradeOfferNotification(base, {
+          transactionId: o.transactionId,
+          partnerName: o.partnerName,
+          grade: o.result.grade,
+          headline: o.result.headline,
+          give: o.result.idea.give.map(p => p.name),
+          get: o.result.idea.get.map(p => p.name),
+          counters: o.result.counters?.length ?? 0,
+        })
+      );
+    }
 
     let alerts: ReturnType<typeof getLineupAlerts> = [];
     if (board) {
