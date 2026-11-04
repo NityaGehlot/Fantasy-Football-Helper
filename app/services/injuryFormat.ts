@@ -5,8 +5,20 @@ export type InjuryHistoryEntry = {
   date: string;
   day: string;
   practice_status?: string; // DNP / LP / FP
+  // "news" when the practice info came from a beat report, not the official injury report
+  practice_source?: string;
   game_status?: string;
   status?: string;
+};
+
+export type InjuryNews = {
+  title: string;
+  source?: string;
+  published?: string;
+  impact?: string;
+  summary?: string;
+  link?: string;
+  practice?: string; // DNP / LP / FP reported in the headline
 };
 
 export type InjuryRecord = {
@@ -22,6 +34,8 @@ export type InjuryRecord = {
   injury_start_date?: string;
   // Where the status comes from ("Carried over from his last game..." / official report)
   status_note?: string;
+  // Newest injury headline about him (from nfl-data's news files)
+  latest_news?: InjuryNews;
   history?: InjuryHistoryEntry[];
 };
 
@@ -73,7 +87,9 @@ export function practiceTable(history: InjuryHistoryEntry[] = []) {
       date: e.date,
       practice: e.practice_status ?? '',
       // No entry = the team didn't publish a practice report that day (or he wasn't on it).
-      practiceLabel: PRACTICE_LABELS[e.practice_status ?? ''] ?? 'No report',
+      practiceLabel: PRACTICE_LABELS[e.practice_status ?? '']
+        ? `${PRACTICE_LABELS[e.practice_status!]}${e.practice_source === 'news' ? ' (news report)' : ''}`
+        : 'No report',
       // A status with no official game status that day is left over from his last game.
       status: e.game_status
         ? injuryLabel(e.game_status) || e.game_status

@@ -111,11 +111,15 @@ export function buildDropForTargetPrompt(
   question: string,
   target: TradePlayer,
   options: DropOption[],
-  roster: TradePlayer[]
+  roster: TradePlayer[],
+  balance = ""
 ): string {
   const best = options[0];
   const top = options.slice(0, 3).map(
-    (o, i) => `${i + 1}. Drop ${fmt(o.drop)} → lineup change ${o.netGain >= 0 ? "+" : ""}${o.netGain.toFixed(2)} pts/week`
+    (o, i) =>
+      `${i + 1}. Drop ${fmt(o.drop)} → lineup change ${o.netGain >= 0 ? "+" : ""}${o.netGain.toFixed(2)} pts/week${
+        o.notes?.length ? `\n   ${o.notes.join("\n   ")}` : ""
+      }`
   );
   const verdict =
     best && best.netGain > 0
@@ -134,7 +138,10 @@ PRE-COMPUTED VERDICT
 • ${verdict}
 
 YOUR ROSTER
-${rosterBlock(roster)}`;
+${rosterBlock(roster)}
+
+ROSTER BALANCE (players per position vs what this league's lineup needs)
+${balance}`;
 
   return assemble("WAIVER DECISION", data, question, `
 ${DIVIDER}
@@ -146,6 +153,7 @@ ${DIVIDER}
 ▶ WHY
 ${DIVIDER}
 • [2-3 bullets comparing the add and the drop using the pts/g shown]
+• [if the drop is from a position you have too many of, say so; if a ⚠️ warning is listed for the chosen drop, repeat it]
 
 ${DIVIDER}
 ▶ OTHER DROP OPTIONS
@@ -154,11 +162,13 @@ ${DIVIDER}
 `);
 }
 
-export function buildPickupPrompt(question: string, suggestions: PickupSuggestion[], roster: TradePlayer[]): string {
+export function buildPickupPrompt(question: string, suggestions: PickupSuggestion[], roster: TradePlayer[], balance = ""): string {
   const lines = suggestions.length
     ? suggestions.map(
         (s, i) =>
-          `${i + 1}. ADD ${fmt(s.add)} / DROP ${fmt(s.drop)} → lineup change ${s.netGain >= 0 ? "+" : ""}${s.netGain.toFixed(2)} pts/week`
+          `${i + 1}. ADD ${fmt(s.add)} / DROP ${fmt(s.drop)} → lineup change ${s.netGain >= 0 ? "+" : ""}${s.netGain.toFixed(2)} pts/week${
+            s.notes?.length ? `\n   ${s.notes.join("\n   ")}` : ""
+          }`
       )
     : ["No free agent currently projects better than the players on your roster."];
 
@@ -166,7 +176,12 @@ export function buildPickupPrompt(question: string, suggestions: PickupSuggestio
 ${lines.join("\n")}
 
 YOUR ROSTER
-${rosterBlock(roster)}`, question, `
+${rosterBlock(roster)}
+
+ROSTER BALANCE (players per position vs what this league's lineup needs)
+${balance}
+
+Mention any ⚠️ roster-balance warning next to the move it belongs to.`, question, `
 ${DIVIDER}
 ▶ TOP PICKUPS
 ${DIVIDER}

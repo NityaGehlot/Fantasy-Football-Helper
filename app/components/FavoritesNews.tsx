@@ -2,15 +2,16 @@
 // Home section: news about the players and teams you follow, plus a sheet to pick teams.
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Image, Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
 import { favoriteNews, favoriteReason, toggleFavoritePlayer, toggleFavoriteTeam, useFavorites } from '../services/favorites';
 import { getNewsFiles, TEAM_NEWS_FILES } from '../services/newsService';
-import { fetchArticleImages, timeAgo } from '../services/leagueNews';
+import { fetchArticleImages } from '../services/leagueNews';
 import { NFL_TEAMS } from '../services/playerStatus';
 import type { NewsItem } from '../services/newsDiversity';
 import { radius, type Palette } from '../theme';
+import NewsCardRow from './NewsCardRow';
 
 export default function FavoritesNews({ players }: { players: Record<string, any> }) {
   const { colors } = useTheme();
@@ -57,24 +58,14 @@ export default function FavoritesNews({ players }: { players: Record<string, any
         </ScrollView>
       )}
 
-      {followingCount > 0 && (
-        <View style={styles.card}>
-          {items.length === 0 ? (
-            <Text style={styles.empty}>No recent news about the players and teams you follow.</Text>
-          ) : (
-            items.map((a, i) => (
-              <Pressable key={`${a.link}-${i}`} style={styles.row} onPress={() => (a.url || a.link) && Linking.openURL((a.url || a.link)!).catch(() => undefined)}>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={styles.reason}>{favoriteReason(a, fav, players)} · {a.player}</Text>
-                  <Text style={styles.headline} numberOfLines={2}>{a.title}</Text>
-                  <Text style={styles.meta}>{[a.source, a.published ? timeAgo(a.published) : ''].filter(Boolean).join(' · ')}</Text>
-                </View>
-                {!!(a.image || (a.link && images[a.link])) && <Image source={{ uri: a.image || images[a.link!]! }} style={styles.thumb} />}
-              </Pressable>
-            ))
-          )}
-        </View>
-      )}
+      {followingCount > 0 &&
+        (items.length === 0 ? (
+          <Text style={styles.empty}>No recent news about the players and teams you follow.</Text>
+        ) : (
+          <View style={{ marginTop: 10 }}>
+            <NewsCardRow items={items} images={images} extraLabel={a => `${favoriteReason(a, fav, players)} · ${a.player}`} />
+          </View>
+        ))}
 
       <Modal visible={editing} transparent animationType="fade" onRequestClose={() => setEditing(false)}>
         <Pressable style={styles.backdrop} onPress={() => setEditing(false)}>

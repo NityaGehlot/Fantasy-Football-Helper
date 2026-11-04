@@ -13,6 +13,7 @@ import { getTeamsPlaying } from "./schedule";
 import { isOutStatus } from "./playerValues";
 import { buildMatchupContext, matchupAdjustment } from "./matchupContext";
 import { annotatePlayoffs } from "./playoffSchedule";
+import { balanceSummary, positionTargets } from "./positionBalance";
 
 /** Add fantasy-playoff schedule strength to every rostered player and the best free agents. */
 export async function addPlayoffSchedules(ctx: LeagueContext): Promise<void> {
@@ -173,22 +174,26 @@ function handleWaiver(message: string, ctx: LeagueContext, me: LeagueTeam): Advi
     if (named) options = [...options.filter(o => o.drop.id === named.id), ...options.filter(o => o.drop.id !== named.id)];
 
     const best = options[0];
+    const balance = balanceSummary(me.players, positionTargets(ctx.slots));
     const fallback = best
-      ? `Add ${target.name} (${target.value.toFixed(2)} pts/g) and drop ${best.drop.name} (${best.drop.value.toFixed(2)} pts/g). Lineup change: ${pts(best.netGain)} pts/week.\n\nOther drop options:\n${options
+      ? `Add ${target.name} (${target.value.toFixed(2)} pts/g) and drop ${best.drop.name} (${best.drop.value.toFixed(2)} pts/g). Lineup change: ${pts(best.netGain)} pts/week.${
+          best.notes?.length ? `\n${best.notes.join("\n")}` : ""
+        }\n\nOther drop options:\n${options
           .slice(1, 3)
           .map(o => `• ${o.drop.name} (${pts(o.netGain)} pts/week)`)
           .join("\n")}`
       : `Your roster is empty, so just add ${target.name}.`;
-    return { prompt: buildDropForTargetPrompt(message, target, options, me.players), fallback };
+    return { prompt: buildDropForTargetPrompt(message, target, options, me.players, balance), fallback };
   }
 
   const suggestions = suggestPickups(me.players, ctx.freeAgents, ctx.slots, 5);
+  const balance = balanceSummary(me.players, positionTargets(ctx.slots));
   const fallback = suggestions.length
     ? `Top waiver pickups for you:\n${suggestions
         .map(s => `• Add ${s.add.name} (${s.add.value.toFixed(2)}) / drop ${s.drop.name} (${s.drop.value.toFixed(2)}): ${pts(s.netGain)} pts/week`)
         .join("\n")}`
     : "No free agent projects better than the players on your roster right now.";
-  return { prompt: buildPickupPrompt(message, suggestions, me.players), fallback };
+  return { prompt: buildPickupPrompt(message, suggestions, me.players, balance), fallback };
 }
 
 // ---------- Trades ----------

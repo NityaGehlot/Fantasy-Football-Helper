@@ -984,7 +984,7 @@ if (!activeLeagueId) {
             {!mine
               ? 'No one is starting here.'
               : fill
-                ? `Start ${fill.start.name} here (+${fill.start.value.toFixed(1)} pts). Tap for the full lineup check.`
+                ? `Start ${fill.start.name} here (+${fill.start.value.toFixed(2)} pts). Tap for the full lineup check.`
                 : lineupCheck
                   ? `Nobody on your roster can play ${label}. Pick one up from waivers.`
                   : 'This spot scores 0. Tap to see who to put here.'}

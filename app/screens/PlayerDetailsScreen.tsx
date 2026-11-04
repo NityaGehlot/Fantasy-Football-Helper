@@ -11,7 +11,7 @@ import {
   Linking,
 } from "react-native";
 import { getPlayerStatsByWeek, getSeasonWeekStatuses, type WeekStatus } from '../services/nflApi';
-import { getPlayersFromGithub } from '../services/sleeperAPI';
+import { getLeagueUsers, getPlayersFromGithub, getRosters } from '../services/sleeperAPI';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../AppNavigator';
@@ -21,6 +21,9 @@ import { getAvailableStatSeasons, getNewsFiles, getNewsUpdatedAt, TEAM_NEWS_FILE
 import { fetchArticleImages, timeAgo } from '../services/leagueNews';
 import { playedPoints, pointRange } from '../backend/utils/pointRange';
 import { toggleFavoritePlayer, toggleFavoriteTeam, useFavorites } from '../services/favorites';
+import { ownershipMap, type Ownership } from '../services/leagueOwnership';
+import TradeForSheet from '../components/TradeForSheet';
+import NewsCardRow from '../components/NewsCardRow';
 import InjuryReportCard from '../components/InjuryReportCard';
 
 import { useTheme, useLooseThemedStyles } from '../context/ThemeContext';
@@ -63,7 +66,7 @@ export default function PlayerDetailsScreen({ route }: any) {
   type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'MainTabs'>;
   const navigation = useNavigation<NavigationProp>();
   const { player, stats, week, fantasyPoints } = route.params;
-  const { myTeam, sendChatMessage, isChatTyping } = useFantasy();
+  const { myTeam, sendChatMessage, isChatTyping, activeLeagueId } = useFantasy();
   const displayTeam = String(stats?.team || player?.team || 'N/A');
 
   const [allWeeksStats, setAllWeeksStats] = useState<any>({});
@@ -83,6 +86,22 @@ export default function PlayerDetailsScreen({ route }: any) {
   const [teamNews, setTeamNews] = useState<NewsArticle[]>([]);
   const [newsImages, setNewsImages] = useState<Record<string, string | null>>({});
   const favorites = useFavorites();
+  const [showTradeFor, setShowTradeFor] = useState(false);
+  // Who has him in your open league (your team, another team, or nobody).
+  const [owner, setOwner] = useState<Ownership | null | undefined>(undefined);
+  useEffect(() => {
+    setOwner(undefined);
+    if (!activeLeagueId || !player?.player_id) return;
+    let cancelled = false;
+    Promise.all([getRosters(activeLeagueId), getLeagueUsers(activeLeagueId).catch(() => [])])
+      .then(([rosters, users]) => {
+        if (!cancelled) setOwner(ownershipMap(rosters, users, myTeam?.ownerId).get(String(player.player_id)) ?? null);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLeagueId, player?.player_id, myTeam?.ownerId]);
 
 
   const normalizeName = (value?: string) => String(value || "").trim().toLowerCase();
@@ -614,51 +633,10 @@ export default function PlayerDetailsScreen({ route }: any) {
       return <Text style={styles.statLine}>No team news found right now.</Text>;
     }
 
+    // Same cards as "Around the League" on Home, scrolling sideways.
     return (
-      <View>
-        {articles.map((article, index) => (
-          (() => {
-            const impactMeta = getImpactBadgeMeta(article.impact);
-            return (
-          <TouchableOpacity
-            key={`${article.link || article.title}-${index}`}
-            style={styles.newsCard}
-            onPress={() => openArticle(article.url || article.link)}
-            activeOpacity={0.85}
-          >
-            <View style={{ flexDirection: 'row', gap: 10 }}>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={styles.newsTitle}>{article.title || 'Untitled article'}</Text>
-                {!!article.summary && (
-                  <Text numberOfLines={2} style={styles.newsSummary}>{article.summary}</Text>
-                )}
-              </View>
-              {!!(article.image || (article.link && newsImages[article.link])) && (
-                <Image source={{ uri: article.image || newsImages[article.link!]! }} style={styles.newsThumb} resizeMode="cover" />
-              )}
-            </View>
-            <View style={styles.newsMetaRow}>
-              <Text style={styles.newsMetaText}>
-                {[article.source, article.published || 'Unknown date'].filter(Boolean).join(' · ')}
-              </Text>
-              <View
-                style={[
-                  styles.impactBadge,
-                  {
-                    backgroundColor: impactMeta.backgroundColor,
-                    borderColor: impactMeta.borderColor,
-                  },
-                ]}
-              >
-                <Text style={[styles.impactBadgeText, { color: impactMeta.textColor }]}> 
-                  {impactMeta.label}
-                </Text>
-              </View>
-            </View>
-          </TouchableOpacity>
-            );
-          })()
-        ))}
+      <View style={{ marginHorizontal: -20 }}>
+        <NewsCardRow items={articles} images={newsImages} />
       </View>
     );
   };
@@ -1367,18 +1345,51 @@ export default function PlayerDetailsScreen({ route }: any) {
           )}
         </View>
 
-        {['QB', 'RB', 'WR', 'TE', 'K', 'DEF'].includes(basePosition) &&
-          !myTeam?.players.some(p => String(p.playerId) === String(player?.player_id)) && (
-          <TouchableOpacity
-            style={styles.dropAskBtn}
-            disabled={isChatTyping}
-            onPress={() => {
-              sendChatMessage(`Who should I drop to pick up ${player.full_name}?`);
-              navigation.navigate('MainTabs', { screen: 'ChatBot' });
-            }}
-          >
-            <Text style={styles.dropAskText}>Who should I drop to add {player.first_name || 'him'}?</Text>
-          </TouchableOpacity>
+        {/* What to ask the AI depends on where he is in your league: free agent → who to drop,
+            on another team → what to trade for him. */}
+        {['QB', 'RB', 'WR', 'TE', 'K', 'DEF'].includes(basePosition) && !owner?.mine && (
+          owner ? (
+            <View style={{ alignItems: 'center', gap: 6 }}>
+              <Text style={styles.ownerText}>On {owner.teamName} in your league</Text>
+              <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                <TouchableOpacity
+                  style={styles.dropAskBtn}
+                  disabled={isChatTyping}
+                  onPress={() => {
+                    sendChatMessage(`Who should I trade to ${owner.teamName} to get ${player.full_name}?`);
+                    navigation.navigate('MainTabs', { screen: 'ChatBot' });
+                  }}
+                >
+                  <Text style={styles.dropAskText}>Who should I trade for {player.first_name || 'him'}?</Text>
+                </TouchableOpacity>
+                {!!myTeam && !!activeLeagueId && (
+                  <TouchableOpacity style={styles.dropAskBtn} onPress={() => setShowTradeFor(true)}>
+                    <Text style={styles.dropAskText}>Build a trade offer</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={styles.dropAskBtn}
+              disabled={isChatTyping}
+              onPress={() => {
+                sendChatMessage(`Who should I drop to pick up ${player.full_name}?`);
+                navigation.navigate('MainTabs', { screen: 'ChatBot' });
+              }}
+            >
+              <Text style={styles.dropAskText}>Who should I drop to add {player.first_name || 'him'}?</Text>
+            </TouchableOpacity>
+          )
+        )}
+        {!!myTeam && !!activeLeagueId && owner && !owner.mine && (
+          <TradeForSheet
+            visible={showTradeFor}
+            team={myTeam}
+            leagueId={activeLeagueId}
+            player={{ id: String(player.player_id), name: player.full_name }}
+            onClose={() => setShowTradeFor(false)}
+          />
         )}
 
         <Text style={styles.experience}>
@@ -2094,6 +2105,7 @@ const makeStyles = (th: Palette) => ({
   },
 
   rangeLabel: { fontSize: 12, fontWeight: '800', letterSpacing: 0.6 },
+  ownerText: { fontSize: 12, fontWeight: '700', color: th.textMuted },
   followRow: { flexDirection: 'row', gap: 8, marginTop: 8, flexWrap: 'wrap', justifyContent: 'center' },
   followBtn: { borderWidth: 1, borderColor: th.border, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: th.surface },
   followBtnOn: { backgroundColor: th.warningSoft, borderColor: th.warning },

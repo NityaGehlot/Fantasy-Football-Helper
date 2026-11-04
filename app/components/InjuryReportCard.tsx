@@ -55,6 +55,9 @@ export default function InjuryReportCard({ player }: { player: any }) {
   }
 
   const { status, injury, record } = currentInjury(indexInjuries(file), player);
+  // The injury file's own headline (updated every few hours) wins over the one found here.
+  const latest = record?.latest_news ?? news;
+  const practiceNews = record?.latest_news?.practice;
   const rows = practiceTable(record?.history);
   const out = isOutStatus(status);
   const tone = !status ? colors.success : out ? colors.danger : colors.warning;
@@ -73,16 +76,27 @@ export default function InjuryReportCard({ player }: { player: any }) {
         <View style={{ flex: 1 }}>
           <Text style={[styles.statusText, { color: tone }]}>{status ? injuryLabel(status) || status : 'No injury designation'}</Text>
           {!!injury && <Text style={styles.injuryText}>{injury}</Text>}
+          {practiceNews === 'DNP' && (
+            <Text style={[styles.newsFlag, { color: colors.danger }]}>
+              Latest report: not practicing ({[record?.latest_news?.source, record?.latest_news?.published].filter(Boolean).join(', ')})
+            </Text>
+          )}
+          {practiceNews === 'LP' && (
+            <Text style={[styles.newsFlag, { color: colors.warning }]}>Latest report: limited in practice</Text>
+          )}
+          {practiceNews === 'FP' && (
+            <Text style={[styles.newsFlag, { color: colors.success }]}>Latest report: back at full practice</Text>
+          )}
           {!!record?.status_note && <Text style={styles.notes}>{record.status_note}</Text>}
           {!!record?.notes && <Text style={styles.notes}>{record.notes}</Text>}
         </View>
       </View>
 
-      {!!news && (
-        <View style={[styles.newsBox, { borderLeftColor: news.impact === 'positive' || news.impact === 'injury_return' ? colors.success : colors.danger }]}>
-          <Text style={styles.newsLabel}>LATEST INJURY NEWS · {[news.source, news.published].filter(Boolean).join(' · ')}</Text>
-          <Text style={styles.newsTitle}>{news.title}</Text>
-          {!!news.summary && <Text style={styles.notes}>{news.summary}</Text>}
+      {!!latest && (
+        <View style={[styles.newsBox, { borderLeftColor: latest.impact === 'positive' || latest.impact === 'injury_return' ? colors.success : colors.danger }]}>
+          <Text style={styles.newsLabel}>LATEST INJURY NEWS · {[latest.source, latest.published].filter(Boolean).join(' · ')}</Text>
+          <Text style={styles.newsTitle}>{latest.title}</Text>
+          {!!latest.summary && <Text style={styles.notes}>{latest.summary}</Text>}
         </View>
       )}
 
@@ -131,6 +145,7 @@ const makeStyles = (c: Palette) => ({
   th: { fontSize: 11, fontWeight: '800' as const, color: c.textMuted, letterSpacing: 0.5, textTransform: 'uppercase' as const },
   td: { fontSize: 13, color: c.text },
   dot: { width: 8, height: 8, borderRadius: 4 },
+  newsFlag: { fontSize: 13, fontWeight: '800' as const, marginTop: 4 },
   newsBox: { marginTop: 10, borderLeftWidth: 3, paddingLeft: 10, paddingVertical: 2, gap: 2 },
   newsLabel: { fontSize: 10, fontWeight: '800' as const, color: c.textMuted, letterSpacing: 0.5 },
   newsTitle: { fontSize: 13, fontWeight: '700' as const, color: c.text },

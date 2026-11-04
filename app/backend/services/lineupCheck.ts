@@ -6,7 +6,8 @@
 import { optimizeLineup, SlotName, SLOT_ELIGIBILITY } from "./lineup";
 import { getLeagueContext } from "./leagueContext";
 import { getGameStates } from "./schedule";
-import { getMatchups } from "./sleeperServer";
+import { getMatchups, getProjections, getRosters } from "./sleeperServer";
+import { projectionFor } from "./liveMatchup";
 import { weeklyAdjustedPlayers } from "./advisor";
 
 export type CheckPlayer = { id: string; name: string; position: string; team?: string; value: number; injuryStatus?: string };
@@ -35,7 +36,7 @@ export type LineupCheck = {
   emptySlots: string[];
 };
 
-const round = (n: number) => Math.round(n * 10) / 10;
+const round = (n: number) => Math.round(n * 100) / 100;
 
 /**
  * Pure part: the lineup set in Sleeper vs the best lineup, slot by slot.
@@ -70,40 +71,94 @@ export function compareLineups(
   );
   if (bestPoints <= currentPoints && emptySlots.length === 0) return { swaps: [], currentPoints, bestPoints: currentPoints, emptySlots };
 
-  // Compare slot type by slot type, keeping players who are already in the right kind of slot.
+  // Put the best players into slots while keeping as many current starters where they already
+  // are as possible, so the advice is the fewest swaps (e.g. "Vele in for Shakir", not a
+  // three-way shuffle between WR and FLEX that ends in the same lineup).
+  const open = current.filter(c => !c.locked);
+  const chosen = best.flatMap(a => (a.player ? [byId.get(a.player.id)!] : []));
+  const assignment = assignKeepingCurrent(chosen, open.map(c => ({ slot: c.slot, current: c.player?.id ?? null })));
+
   const swaps: LineupSwap[] = [];
-  for (const slot of [...new Set(openSlots)]) {
-    const now = current.filter(c => !c.locked && c.slot === slot).map(c => c.player);
-    const want = best.filter(a => a.slot === slot).map(a => a.player);
-    const wantIds = new Set(want.flatMap(p => (p ? [p.id] : [])));
-    const nowIds = new Set(now.flatMap(p => (p ? [p.id] : [])));
-    const incoming = want.filter((p): p is CheckPlayer => !!p && !nowIds.has(p.id)).map(p => byId.get(p.id)!);
-    // Empty spots get filled first, then the lowest-value player in that kind of slot comes out.
-    const outgoing = now.filter(p => !p || !wantIds.has(p.id)).sort((a, b) => (a ? a.value : -1) - (b ? b.value : -1));
-    incoming.forEach((start, i) => {
-      const bench = outgoing[i] ?? null;
-      swaps.push({ slot, start, bench, gain: round(start.value - (bench?.value ?? 0)) });
-    });
-  }
-  // Label players who just change slots ("move Wilson from FLEX to WR") instead of "bench".
-  const startSlot = new Map(swaps.map(s => [s.start.id, s.slot]));
-  const currentSlot = new Map(current.flatMap(c => (c.player ? [[c.player.id, c.slot] as const] : [])));
-  for (const s of swaps) {
-    if (currentSlot.has(s.start.id)) s.from = currentSlot.get(s.start.id);
-    if (s.bench && startSlot.has(s.bench.id)) s.movesTo = startSlot.get(s.bench.id);
-  }
-  const meaningful = swaps.filter(s => !s.bench || s.gain > 0.05 || s.movesTo || s.from);
-  return { swaps: meaningful.sort((a, b) => b.gain - a.gain), currentPoints, bestPoints: Math.max(bestPoints, currentPoints), emptySlots };
+  const newSlotOf = new Map<string, string>();
+  assignment.forEach((id, i) => id && newSlotOf.set(id, open[i].slot));
+  const oldSlotOf = new Map(open.flatMap(c => (c.player ? [[c.player.id, c.slot] as const] : [])));
+  assignment.forEach((id, i) => {
+    const before = open[i].player;
+    if ((before?.id ?? null) === id) return;
+    if (!id) return; // a slot nobody can fill stays empty (reported as a problem)
+    const start = byId.get(id)!;
+    const bench = before ?? null;
+    const swap: LineupSwap = { slot: open[i].slot, start, bench, gain: round(start.value - (bench?.value ?? 0)) };
+    if (oldSlotOf.has(start.id)) swap.from = oldSlotOf.get(start.id);
+    if (bench && newSlotOf.has(bench.id)) swap.movesTo = newSlotOf.get(bench.id);
+    swaps.push(swap);
+  });
+  return { swaps: swaps.sort((a, b) => b.gain - a.gain), currentPoints, bestPoints: Math.max(bestPoints, currentPoints), emptySlots };
+}
+
+/**
+ * Assign `players` (the best lineup) to `slots`, keeping each slot's current player when he's
+ * still in the best lineup. Returns the player id for each slot (null = empty).
+ */
+export function assignKeepingCurrent(
+  players: CheckPlayer[],
+  slots: { slot: SlotName; current: string | null }[]
+): (string | null)[] {
+  let best: (string | null)[] | null = null;
+  let bestKeeps = -1;
+  const used = new Set<string>();
+  const pick: (string | null)[] = slots.map(() => null);
+
+  // Every chosen player must get a slot; among those arrangements keep the most current starters.
+  const search = (i: number, keeps: number, placed: number) => {
+    const remaining = slots.length - i;
+    if (placed + remaining < players.length) return; // can't fit everyone anymore
+    if (keeps + remaining <= bestKeeps) return; // can't beat the best arrangement found
+    if (i === slots.length) {
+      best = [...pick];
+      bestKeeps = keeps;
+      return;
+    }
+    const { slot, current } = slots[i];
+    // Try the current starter first.
+    const candidates = players
+      .filter(p => !used.has(p.id) && SLOT_ELIGIBILITY[slot].includes(p.position))
+      .sort((a, b) => Number(b.id === current) - Number(a.id === current));
+    for (const p of candidates) {
+      used.add(p.id);
+      pick[i] = p.id;
+      search(i + 1, keeps + (p.id === current ? 1 : 0), placed + 1);
+      used.delete(p.id);
+    }
+    pick[i] = null;
+    search(i + 1, keeps, placed);
+  };
+  search(0, 0, 0);
+  return best ?? slots.map(() => null);
 }
 
 export async function getLineupCheck(leagueId: string, rosterId?: number, ownerId?: string): Promise<LineupCheck> {
   const ctx = await getLeagueContext(leagueId, rosterId, ownerId);
   if (!ctx.me) throw new Error("Your team was not found in this league.");
-  const { week, teamsPlaying, weekly } = await weeklyAdjustedPlayers(ctx, ctx.me);
-  const [matchups, games] = await Promise.all([
+  const { week, teamsPlaying, weekly: adjusted } = await weeklyAdjustedPlayers(ctx, ctx.me);
+  const [matchups, games, projections, rosters] = await Promise.all([
     getMatchups(leagueId, week).catch(() => []),
     getGameStates(ctx.values.season, week).catch(() => null),
+    getProjections(ctx.values.season, week).catch(() => ({} as Record<string, any>)),
+    getRosters(leagueId).catch(() => []),
   ]);
+  // Use Sleeper's own projection for this week (what you see in Sleeper and next to each player
+  // in this app), to the hundredth. Players who are out or on bye stay at 0; our own estimate is
+  // only a fallback for players Sleeper doesn't project. Players in IR spots can't be started.
+  const receptionPoints = Number(ctx.league?.scoring_settings?.rec ?? 1);
+  const reserve = new Set(((rosters ?? []).find((r: any) => Number(r.roster_id) === ctx.me!.rosterId)?.reserve ?? []).map(String));
+  const weekly = adjusted
+    .filter(p => !reserve.has(p.id))
+    .map(p => {
+      if (p.value === 0) return p;
+      const projected = projectionFor(projections[p.id], receptionPoints);
+      return { ...p, value: Math.round((projected ?? p.value) * 100) / 100 };
+    });
   const mine = (matchups ?? []).find((m: any) => Number(m.roster_id) === ctx.me!.rosterId);
   // Keep "0" entries: they are empty starting slots in Sleeper.
   const starterIds: string[] = (mine?.starters ?? []).map(String);

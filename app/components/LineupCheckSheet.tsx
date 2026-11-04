@@ -62,12 +62,12 @@ export default function LineupCheckSheet({
             <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ gap: 10 }}>
               <View style={styles.totals}>
                 <View style={styles.total}>
-                  <Text style={styles.totalValue}>{check.currentPoints.toFixed(1)}</Text>
+                  <Text style={styles.totalValue}>{check.currentPoints.toFixed(2)}</Text>
                   <Text style={styles.totalLabel}>Your lineup now</Text>
                 </View>
                 <Ionicons name="arrow-forward" size={18} color={colors.textMuted} />
                 <View style={styles.total}>
-                  <Text style={[styles.totalValue, { color: gain > 0 ? colors.success : colors.text }]}>{check.bestPoints.toFixed(1)}</Text>
+                  <Text style={[styles.totalValue, { color: gain > 0 ? colors.success : colors.text }]}>{check.bestPoints.toFixed(2)}</Text>
                   <Text style={styles.totalLabel}>Best lineup</Text>
                 </View>
               </View>
@@ -83,18 +83,18 @@ export default function LineupCheckSheet({
                 </View>
               ) : (
                 <>
-                  <Text style={styles.section}>MAKE THESE SWAPS (+{gain.toFixed(1)} PTS)</Text>
+                  <Text style={styles.section}>MAKE THESE SWAPS (+{gain.toFixed(2)} PTS)</Text>
                   {check.swaps.map((s, i) => (
                     <View key={i} style={styles.swap}>
                       <Text style={styles.slot}>{s.slot}</Text>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.start}>
-                          <Ionicons name="arrow-up" size={13} color={colors.success} /> {s.from ? `Move ${s.start.name} here from ${s.from}` : `Start ${s.start.name}`} ({s.start.position}, {s.start.value.toFixed(1)})
+                          <Ionicons name="arrow-up" size={13} color={colors.success} /> {s.from ? `Move ${s.start.name} here from ${s.from}` : `Start ${s.start.name}`} ({s.start.position}, {s.start.value.toFixed(2)})
                         </Text>
                         {s.bench ? (
                           <Text style={styles.bench}>
                             <Ionicons name={s.movesTo ? 'swap-vertical' : 'arrow-down'} size={13} color={s.movesTo ? colors.primary : colors.danger} />{' '}
-                            {s.movesTo ? `${s.bench.name} moves to ${s.movesTo}` : `Bench ${s.bench.name}`} ({s.bench.position}, {s.bench.value.toFixed(1)})
+                            {s.movesTo ? `${s.bench.name} moves to ${s.movesTo}` : `Bench ${s.bench.name}`} ({s.bench.position}, {s.bench.value.toFixed(2)})
                             {s.bench.injuryStatus && s.bench.injuryStatus !== 'ACTIVE' ? ` · ${s.bench.injuryStatus}` : ''}
                           </Text>
                         ) : (
@@ -105,7 +105,7 @@ export default function LineupCheckSheet({
                       {s.movesTo || s.from ? (
                         <Text style={[styles.gain, { color: colors.primary }]}>move</Text>
                       ) : (
-                        <Text style={styles.gain}>+{s.gain.toFixed(1)}</Text>
+                        <Text style={styles.gain}>+{s.gain.toFixed(2)}</Text>
                       )}
                     </View>
                   ))}

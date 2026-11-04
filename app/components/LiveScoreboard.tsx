@@ -15,7 +15,7 @@ function Side({ side, align }: { side: LiveSide; align: 'left' | 'right' }) {
     <View style={{ flex: 1, alignItems: align === 'left' ? 'flex-start' : 'flex-end' }}>
       <Text style={[styles.teamName, { textAlign }]} numberOfLines={1}>{side.teamName}</Text>
       <Text style={styles.score}>{side.points.toFixed(2)}</Text>
-      <Text style={[styles.projected, { textAlign }]}>Proj {side.projectedFinal.toFixed(1)}</Text>
+      <Text style={[styles.projected, { textAlign }]}>Proj {side.projectedFinal.toFixed(2)}</Text>
       <Text style={[styles.status, { textAlign }]}>
         {side.playersInProgress > 0 ? `${side.playersInProgress} playing · ` : ''}
         {side.playersYetToPlay} yet to play

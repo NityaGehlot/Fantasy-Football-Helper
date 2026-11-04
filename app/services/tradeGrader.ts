@@ -44,7 +44,17 @@ export const fetchLeagueTeams = (leagueId: string, rosterId: number, ownerId?: s
   post<{ myRosterId: number; teams: LeagueTeamRoster[]; offers: PendingOffer[] }>('/league-teams', { leagueId, rosterId, ownerId });
 
 export const fetchTradeOffers = (leagueId: string, rosterId: number, ownerId?: string) =>
-  post<{ checkedAt: string; offers: PendingOffer[] }>('/trade-offers', { leagueId, rosterId, ownerId });
+  post<{ checkedAt: string; offers: PendingOffer[]; checked?: OfferCheck }>('/trade-offers', { leagueId, rosterId, ownerId });
+
+/** What the app found in Sleeper's transaction list (shown when no offer appears). */
+export type OfferCheck = { weeks: number[]; transactions: number; trades: number; statuses: Record<string, number>; involvingYou: number };
+
+export function describeOfferCheck(c: OfferCheck | undefined): string {
+  if (!c) return '';
+  const weeks = c.weeks.length > 1 ? `weeks ${c.weeks[0]}–${c.weeks[c.weeks.length - 1]}` : `week ${c.weeks[0]}`;
+  const statuses = Object.entries(c.statuses).map(([s, n]) => `${n} ${s}`).join(', ');
+  return `Checked Sleeper for ${weeks}: ${c.transactions} transaction${c.transactions === 1 ? '' : 's'}, ${c.trades} trade${c.trades === 1 ? '' : 's'}${statuses ? ` (${statuses})` : ''}, ${c.involvingYou} involving you.`;
+}
 
 /** Message to send the other manager with a counter-offer. */
 export function counterMessage(partner: string, counter: CounterOffer): string {

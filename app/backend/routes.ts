@@ -574,9 +574,14 @@ export function registerRoutes(router: Router): void {
       const state = await getNflState().catch(() => null);
       const week = Number(state?.week) || 1;
       // Offers are filed under the week they were made; look at this week, last week and next.
-      const transactions = (
-        await Promise.all([week + 1, week, week - 1].filter(w => w >= 1).map(w => getTransactions(String(leagueId), w).catch(() => [])))
-      ).flat();
+      const weeks = [week - 1, week, week + 1].filter(w => w >= 1);
+      const transactions = (await Promise.all(weeks.map(w => getTransactions(String(leagueId), w).catch(() => [])))).flat();
+      // What Sleeper returned, so the app can show what was checked when no offer appears.
+      const trades = transactions.filter((t: any) => t?.type === "trade");
+      const statuses: Record<string, number> = {};
+      trades.forEach((t: any) => (statuses[String(t?.status ?? "unknown")] = (statuses[String(t?.status ?? "unknown")] ?? 0) + 1));
+      const mineCount = trades.filter((t: any) => (t?.roster_ids ?? []).map(Number).includes(ctx.me!.rosterId)).length;
+      const checked = { weeks, transactions: transactions.length, trades: trades.length, statuses, involvingYou: mineCount };
       const pending = pendingTradesFor(transactions, ctx.me.rosterId, ctx.me.ownerId);
       if (pending.length) await addPlayoffSchedules(ctx);
       const offers = pending.flatMap(t => {
@@ -586,7 +591,7 @@ export function registerRoutes(router: Router): void {
         const get = partner.players.filter(p => t.get.includes(p.id));
         return [{ ...t, partnerName: partner.teamName, result: gradeTrade(ctx.me!, partner, give, get, ctx.slots) }];
       });
-      res.json({ checkedAt: new Date().toISOString(), offers });
+      res.json({ checkedAt: new Date().toISOString(), offers, checked });
     } catch (err: any) {
       console.error("❌ Trade offers failed:", err);
       res.status(500).json({ error: err?.message || "Failed to load trade offers" });

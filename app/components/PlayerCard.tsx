@@ -120,7 +120,7 @@ export default function PlayerCard({ player, stats, statLine = [], points = 0, i
           {statLine.length > 0 && <Text style={styles.statLine} numberOfLines={2}>{statLine.join(' · ')}</Text>}
           <Text style={styles.pointsDense}>
             {(points || 0).toFixed(2)}
-            {projected !== undefined && <Text style={styles.projText}>{`  proj ${projected.toFixed(1)}`}</Text>}
+            {projected !== undefined && <Text style={styles.projText}>{`  proj ${projected.toFixed(2)}`}</Text>}
           </Text>
         </View>
       </View>
@@ -159,7 +159,7 @@ export default function PlayerCard({ player, stats, statLine = [], points = 0, i
 
       <View style={styles.points}>
         <Text style={styles.pointsText}>{(points || 0).toFixed(2)}</Text>
-        {projected !== undefined && <Text style={styles.projText}>proj {projected.toFixed(1)}</Text>}
+        {projected !== undefined && <Text style={styles.projText}>proj {projected.toFixed(2)}</Text>}
       </View>
     </View>
   );

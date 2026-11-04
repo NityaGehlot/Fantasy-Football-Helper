@@ -40,7 +40,13 @@ export function extractShareImage(html: string, pageUrl: string): string | null 
     }
     return null;
   };
-  const raw = find(["og:image:secure_url", "og:image", "og:image:url", "twitter:image", "twitter:image:src"]);
+  // Fallbacks: <link rel="image_src">, itemprop="image", then the image in the page's JSON-LD.
+  const raw =
+    find(["og:image:secure_url", "og:image", "og:image:url", "twitter:image", "twitter:image:src"]) ??
+    html.match(/<link[^>]+rel=["']image_src["'][^>]*href=["']([^"']+)["']/i)?.[1] ??
+    html.match(/itemprop=["']image["'][^>]*(?:content|src)=["']([^"']+)["']/i)?.[1] ??
+    html.match(/"image"\s*:\s*(?:\{[^}]*?"url"\s*:\s*)?\[?\s*"(https?:[^"]+)"/)?.[1]?.replace(/\\\//g, "/") ??
+    null;
   if (!raw) return null;
   try {
     const abs = new URL(raw, pageUrl);
@@ -100,12 +106,21 @@ async function resolveGoogleNewsLink(url: string): Promise<string | null> {
   return res ? parseBatchResponse(res.text) : null;
 }
 
+/** YouTube links: the video's thumbnail. */
+export function youtubeThumbnail(url: string): string | null {
+  const id = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|shorts\/|embed\/))([A-Za-z0-9_-]{11})/)?.[1];
+  return id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : null;
+}
+
 /** The share image for one article link, or null. Cached for a day. */
 export async function imageForArticle(link: string): Promise<string | null> {
   if (!/^https?:\/\//i.test(link)) return null;
+  const yt = youtubeThumbnail(link);
+  if (yt) return yt;
   return cache.get(`img:${link}`, 24 * HOUR, async () => {
     const articleUrl = isGoogleNewsLink(link) ? await resolveGoogleNewsLink(link) : link;
     if (!articleUrl) return null;
+    if (youtubeThumbnail(articleUrl)) return youtubeThumbnail(articleUrl);
     const page = await getText(articleUrl);
     return page ? extractShareImage(page.text, page.finalUrl) : null;
   });
