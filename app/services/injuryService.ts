@@ -39,7 +39,8 @@ export async function getInjuryHistory(season: number, week: number): Promise<In
         if (res.ok) return (await res.json()) as InjuryHistoryFile;
         if (res.status !== 404) throw new Error('Injury history unavailable');
       }
-      return null;
+      // Not saved (yet): don't cache that, so it shows up once the backfill has run.
+      throw new Error('Injury history not saved for this week');
     }, { persist: true });
   } catch {
     return null;

@@ -25,9 +25,14 @@ export type ProjectionFile = {
 };
 
 const BASE = 'https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/projections';
-const cache = createCache({ storage: AsyncStorage, prefix: 'ffh_proj_v1:' });
+const cache = createCache({ storage: AsyncStorage, prefix: 'ffh_proj_v2:' });
 
-/** One week's projections (null when that week hasn't been saved). Cached for 2 hours. */
+class NotSavedYet extends Error {}
+
+/**
+ * One week's projections (null when that week hasn't been saved yet). Found files are cached for
+ * 2 hours; "not saved yet" is never cached, so a week shows up as soon as the workflow saves it.
+ */
 export async function getWeekProjections(season: number, week: number): Promise<ProjectionFile | null> {
   try {
     return await cache.get(
@@ -35,9 +40,11 @@ export async function getWeekProjections(season: number, week: number): Promise<
       2 * HOUR,
       async () => {
         const res = await fetch(`${BASE}/${season}/week${String(week).padStart(2, '0')}.json`);
-        if (res.status === 404) return null;
+        if (res.status === 404) throw new NotSavedYet();
         if (!res.ok) throw new Error('Projections unavailable');
-        return (await res.json()) as ProjectionFile;
+        const file = (await res.json()) as ProjectionFile;
+        if (!file?.players || Object.keys(file.players).length === 0) throw new NotSavedYet();
+        return file;
       },
       { persist: true }
     );
