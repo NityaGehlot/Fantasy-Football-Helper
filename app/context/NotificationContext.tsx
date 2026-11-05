@@ -27,6 +27,7 @@ import {
   lineupCheckNotification,
   mergeNotifications,
   notificationsFromState,
+  pruneResolved,
   leagueMoveNotification,
   oddsSwingNotification,
   snapshotOf,
@@ -129,6 +130,15 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(listKey(uid), JSON.stringify(listRef.current)).catch(() => undefined);
     AsyncStorage.setItem(readKey(uid), JSON.stringify(readRef.current.slice(-400))).catch(() => undefined);
     AsyncStorage.setItem(dismissedKey(uid), JSON.stringify(dismissedRef.current.slice(-400))).catch(() => undefined);
+  };
+
+  // Drop notifications that stopped being true (e.g. the open roster spot was filled).
+  const pruneLeague = (leagueId: string, state: { openSpots: number | null }) => {
+    const next = pruneResolved(listRef.current, leagueId, state);
+    if (next.length === listRef.current.length) return;
+    listRef.current = next;
+    setNotifications(next);
+    save();
   };
 
   const addNotifications = (incoming: AppNotification[]) => {
@@ -239,6 +249,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       };
     }
 
+    if (ir?.openSpots) pruneLeague(t.leagueId, { openSpots: ir.openSpots.open });
     const open = ir ? Math.max(0, ir.irSlots - ir.irSlotsUsed) : 0;
     incoming.push(
       ...notificationsFromState({

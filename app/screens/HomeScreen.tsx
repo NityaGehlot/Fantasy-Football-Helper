@@ -117,7 +117,7 @@ export default function HomeScreen() {
       <View style={styles.sectionHeader}>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Trending on Sleeper</Text>
-          <Text style={styles.subtitle}>Most {isAdd ? 'added' : 'dropped'} players in the last 24 hours</Text>
+          <Text style={styles.subtitle}>Most {isAdd ? 'added' : 'dropped'} players in the last 24 hours · live from Sleeper, updates every 15 min</Text>
         </View>
         <View style={styles.segment}>
           {(['add', 'drop'] as TrendType[]).map(t => (

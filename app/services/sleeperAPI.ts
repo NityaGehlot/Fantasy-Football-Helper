@@ -21,7 +21,8 @@ const TTL = {
   players: 24 * HOUR, // Sleeper asks apps to fetch /players/nfl at most once per day
   nflState: 15 * MINUTE,
   leagueHistory: 24 * HOUR,
-  trending: 30 * MINUTE,
+  // Live from Sleeper (its trending list changes all day); the GitHub copy is a daily fallback.
+  trending: 15 * MINUTE,
 };
 
 export type FetchOptions = { force?: boolean };
@@ -137,7 +138,26 @@ export async function getPlayerWeekStats(playerId: string, season: number, week:
   );
 }
 
+/**
+ * Most added / dropped players in the last 24 hours. Read live from Sleeper's trending endpoint
+ * (refreshed every 15 minutes here; Sleeper updates it continuously), with each player's name,
+ * position and team filled in from the player file. Falls back to nfl-data's daily copy if
+ * Sleeper can't be reached.
+ */
 export async function getTrendingPlayers(type: TrendType = 'add', limit: number = 25) {
+  const live = await cache
+    .get(`trending:live:${type}`, TTL.trending, () =>
+      fetchJson(`${SLEEPER_BASE}/players/nfl/trending/${type}?lookback_hours=24&limit=${Math.max(limit, 25)}`, `Failed to fetch trending ${type}s`)
+    )
+    .catch(() => null);
+  const liveRows = normalizeTrendingRows(live);
+  if (liveRows.length) {
+    const index = await getPlayersFromGithub().catch(() => ({} as Record<string, any>));
+    return withPlayerDetails(liveRows, index)
+      .sort((a, b) => Number(b.count) - Number(a.count))
+      .slice(0, limit);
+  }
+
   const fileName = type === 'add' ? 'trending_adds.json' : 'trending_drops.json';
   const source = await cache.get(`trending:${type}`, TTL.trending, () =>
     fetchJson(`${TRENDING_BASE_URL}/${fileName}`, `Failed to fetch trending ${type}s from GitHub`)
@@ -146,6 +166,11 @@ export async function getTrendingPlayers(type: TrendType = 'add', limit: number 
   return normalizeTrendingRows(source)
     .sort((a, b) => Number(b.count) - Number(a.count))
     .slice(0, limit);
+}
+
+/** Sleeper's { player_id, count } rows + the player's details (name, position, team...). */
+export function withPlayerDetails(rows: { player_id: string; count: number }[], index: Record<string, any>) {
+  return rows.map(r => ({ ...(index[r.player_id] ?? {}), ...r, player_id: r.player_id, count: r.count }));
 }
 
 export async function getNFLState(): Promise<{

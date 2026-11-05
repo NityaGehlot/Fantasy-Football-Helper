@@ -30,6 +30,7 @@ import { useTheme, useLooseThemedStyles } from '../context/ThemeContext';
 import { positionColors, type Palette } from '../theme';
 import { getPlayerRanks, ordinal, type PlayerRank } from '../services/playerRanks';
 import { gamesSummary } from '../services/gamesPlayed';
+import { norm as teamNewsKey, pickTeamNews, type Teammate } from '../services/teamNews';
 
 type NewsArticle = {
   title: string;
@@ -513,27 +514,31 @@ export default function PlayerDetailsScreen({ route }: any) {
           normalizeName(article.player) === currentPlayerName
         );
 
-        let onlyTeamNews: NewsArticle[] = [];
+        let pickedTeam: NewsArticle[] = [];
 
         if (currentTeam) {
           const sleeperPlayers = await getPlayersFromGithub();
-          const teamNames = new Set<string>(
+          // Teammates (not him), with their position and depth chart spot.
+          const teammates = new Map<string, Teammate>(
             Object.values(sleeperPlayers || {})
-              .filter((p: any) => p?.team === currentTeam && p?.full_name)
-              .map((p: any) => normalizeName(p.full_name))
+              .filter((p: any) => p?.team === currentTeam && p?.full_name && normalizeName(p.full_name) !== currentPlayerName)
+              .map((p: any) => [
+                normalizeName(p.full_name),
+                { name: p.full_name, position: p.position_for_FFHelper || p.position_listed_on_sleeper || p.position, depthOrder: p.depth_chart_order ?? null },
+              ])
           );
-
-          // Team news should exclude the current player and focus on teammates.
-          teamNames.delete(currentPlayerName);
-
-          onlyTeamNews = newsList.filter((article) =>
-            teamNames.has(normalizeName(article.player))
-          );
+          const onlyTeamNews = newsList.filter(article => teammates.has(normalizeName(article.player)));
+          // About 10 stories: the ones that matter most for him (his name in the headline, his
+          // QB, players at his spot) or big team news (injuries, returns, trades, signings).
+          pickedTeam = pickTeamNews(onlyTeamNews, {
+            playerName: player?.full_name ?? '',
+            position: basePosition,
+            teammates: new Map([...teammates.values()].map(t => [teamNewsKey(t.name), t])),
+          }, 10) as NewsArticle[];
         }
 
-        // Up to 3 articles each, covering different stories (and different teammates).
+        // His own news: up to 3 articles covering different stories.
         const pickedPlayer = selectDiverseNews(onlyPlayerNews, 3) as NewsArticle[];
-        const pickedTeam = selectDiverseNews(onlyTeamNews, 3, { onePerPlayer: true }) as NewsArticle[];
         setPlayerNews(pickedPlayer);
         setTeamNews(pickedTeam);
         // Each article's picture (or the player's headshot) loads in after the text.
@@ -1335,7 +1340,7 @@ export default function PlayerDetailsScreen({ route }: any) {
       {/* ========================= */}
 
       <View style={styles.header}>
-        <View style={[styles.headshotRing, { borderColor: positionColors[basePosition] ?? th.border }]}>
+        <View style={styles.headshotWrap}>
           <Image
             source={{
               uri:
@@ -1349,6 +1354,7 @@ export default function PlayerDetailsScreen({ route }: any) {
 
         <Text style={styles.playerName}>{playerName}</Text>
 
+        {/* Position, team and this season's fantasy rank (like Sleeper) on one line */}
         <View style={styles.infoRow}>
           {!!(basePosition || player.position) && (
             <View style={[styles.posPill, { backgroundColor: positionColors[basePosition] ?? th.primary }]}>
@@ -1356,25 +1362,18 @@ export default function PlayerDetailsScreen({ route }: any) {
             </View>
           )}
           <Text style={styles.playerInfo}>{displayTeam}</Text>
+          {!!rank && (
+            <>
+              <View style={styles.metaDot} />
+              <View style={styles.rankPill} accessibilityLabel={`${ordinal(rank.position)} of ${rank.positionCount} ${rank.pos}s this season`}>
+                <Text style={styles.rankPillText}>{rank.pos}{rank.position}</Text>
+              </View>
+              <View style={styles.rankPill} accessibilityLabel={`Number ${rank.overall} overall this season`}>
+                <Text style={styles.rankPillText}>#{rank.overall} overall</Text>
+              </View>
+            </>
+          )}
         </View>
-
-        {/* Fantasy rank this season, like Sleeper: at his position and overall */}
-        {!!rank && (
-          <View style={styles.rankRow}>
-            <View style={styles.rankChip}>
-              <Text style={styles.rankValue}>{rank.pos}{rank.position}</Text>
-              <Text style={styles.rankCaption}>{ordinal(rank.position)} of {rank.positionCount} {rank.pos}s</Text>
-            </View>
-            <View style={styles.rankChip}>
-              <Text style={styles.rankValue}>#{rank.overall}</Text>
-              <Text style={styles.rankCaption}>overall</Text>
-            </View>
-            <View style={styles.rankChip}>
-              <Text style={styles.rankValue}>{rank.points.toFixed(2)}</Text>
-              <Text style={styles.rankCaption}>fantasy pts{rank.games ? ` · ${rank.games} g` : ''}</Text>
-            </View>
-          </View>
-        )}
 
         {/* Follow the player (news on Home) and his team */}
         <View style={styles.followRow}>
@@ -1491,25 +1490,52 @@ export default function PlayerDetailsScreen({ route }: any) {
       {/* WEEKLY RANGE: floor / typical / ceiling */}
       {['QB', 'RB', 'WR', 'TE', 'K'].includes(basePosition) && range.games >= 3 && statsSeason === selectedSeason && !loadingPlayerStats && (
         <View style={styles.section}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Text style={styles.sectionTitle}>Weekly range · {selectedSeason}</Text>
-            <Text style={[styles.rangeLabel, { color: range.label === 'safe' ? th.success : range.label === 'boom/bust' ? th.warning : th.primary }]}>
-              {range.label.toUpperCase()}
-            </Text>
-          </View>
-          <View style={styles.rangeRow}>
-            {[['Bad week', range.floor], ['Typical', range.median], ['Good week', range.ceiling]].map(([label, value]) => (
-              <View key={String(label)} style={styles.rangeBox}>
-                <Text style={styles.rangeValue}>{Number(value).toFixed(1)}</Text>
-                <Text style={styles.rangeCaption}>{label}</Text>
-              </View>
-            ))}
-          </View>
-          <Text style={styles.statLine}>
-            {isCurrentSeason
-              ? range.summary
-              : range.summary.replace(/last \d+ games/, `${range.games} games in ${selectedSeason}`)}
-          </Text>
+          {(() => {
+            const tone = range.label === 'safe' ? th.success : range.label === 'boom/bust' ? th.warning : th.primary;
+            const toneSoft = range.label === 'safe' ? th.successSoft : range.label === 'boom/bust' ? th.warningSoft : th.primarySoft;
+            // The bar runs from 0 to a bit past his good week, so the three marks spread out.
+            const max = Math.max(range.ceiling * 1.15, 1);
+            const pct = (v: number) => `${Math.max(0, Math.min(100, (v / max) * 100))}%` as const;
+            const games = isCurrentSeason ? `his last ${range.games} games` : `his ${range.games} games in ${selectedSeason}`;
+            const meaning =
+              range.label === 'safe'
+                ? 'Safe: his weeks look alike, so you know what you\'ll get. Best when you\'re favored to win.'
+                : range.label === 'boom/bust'
+                  ? 'Boom or bust: big weeks and duds. Best when you\'re the underdog and need a big week.'
+                  : 'Steady: a reliable floor with some upside. A solid start most weeks.';
+            return (
+              <>
+                <View style={styles.rangeHeader}>
+                  <Text style={[styles.sectionTitle, { marginBottom: 0 }]}>Weekly range</Text>
+                  <View style={[styles.rangeTag, { backgroundColor: toneSoft }]}>
+                    <Text style={[styles.rangeTagText, { color: tone }]}>{range.label === 'boom/bust' ? 'BOOM / BUST' : range.label.toUpperCase()}</Text>
+                  </View>
+                </View>
+                <Text style={styles.rangeIntro}>What a bad, typical and good week look like for him, from {games}.</Text>
+
+                {/* The bar: his usual range (bad week to good week), with a typical week marked */}
+                <View style={styles.rangeTrack}>
+                  <View style={[styles.rangeBand, { left: pct(range.floor), width: `${Math.max(2, ((range.ceiling - range.floor) / max) * 100)}%`, backgroundColor: tone }]} />
+                  <View style={[styles.rangeMarker, { left: pct(range.median), borderColor: tone }]} />
+                </View>
+                <View style={styles.rangeNumbers}>
+                  {([['Bad week', range.floor, th.textMuted], ['Typical', range.median, tone], ['Good week', range.ceiling, th.textMuted]] as const).map(([label, value, color]) => (
+                    <View key={label} style={styles.rangeNumber}>
+                      <Text style={[styles.rangeValue, { color: label === 'Typical' ? color : th.text }]}>{Number(value).toFixed(1)}</Text>
+                      <Text style={styles.rangeCaption}>{label}</Text>
+                    </View>
+                  ))}
+                </View>
+
+                <View style={[styles.rangeExplain, { borderLeftColor: tone }]}>
+                  <Text style={styles.rangeExplainText}>{meaning}</Text>
+                  <Text style={styles.rangeFootnote}>
+                    Bad week = 1 in 5 of his games were worse. Good week = 1 in 5 were better. Typical = his middle score.
+                  </Text>
+                </View>
+              </>
+            );
+          })()}
         </View>
       )}
 
@@ -1928,10 +1954,7 @@ const makeStyles = (th: Palette) => ({
     backgroundColor: th.surface,
   },
 
-  headshotRing: {
-    borderWidth: 3,
-    borderRadius: 60,
-    padding: 3,
+  headshotWrap: {
     marginBottom: 10,
   },
 
@@ -1945,7 +1968,9 @@ const makeStyles = (th: Palette) => ({
   infoRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
     marginTop: 6,
   },
   posPill: {
@@ -1959,37 +1984,23 @@ const makeStyles = (th: Palette) => ({
     fontSize: 12,
     letterSpacing: 0.5,
   },
-  rankRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 14,
-    alignSelf: 'stretch',
+  rankPill: {
+    backgroundColor: th.primarySoft,
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
   },
-  rankChip: {
-    flex: 1,
-    alignItems: 'center',
-    backgroundColor: th.surfaceMuted,
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-  },
-  rankValue: {
-    color: th.text,
-    fontSize: 17,
+  rankPillText: {
+    color: th.primary,
+    fontSize: 12,
     fontWeight: '800',
-  },
-  rankCaption: {
-    color: th.textMuted,
-    fontSize: 11,
-    marginTop: 2,
-    textAlign: 'center',
   },
   metaDot: {
     width: 4,
     height: 4,
     borderRadius: 2,
     backgroundColor: th.textSubtle,
-    marginHorizontal: 10,
+    marginHorizontal: 4,
   },
 
   dropAskBtn: {
@@ -2267,17 +2278,26 @@ const makeStyles = (th: Palette) => ({
     marginBottom: 10,
   },
 
-  rangeLabel: { fontSize: 12, fontWeight: '800', letterSpacing: 0.6 },
   ownerText: { fontSize: 12, fontWeight: '700', color: th.textMuted },
   followRow: { flexDirection: 'row', gap: 8, marginTop: 8, flexWrap: 'wrap', justifyContent: 'center' },
   followBtn: { borderWidth: 1, borderColor: th.border, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: th.surface },
   followBtnOn: { backgroundColor: th.warningSoft, borderColor: th.warning },
   followText: { fontSize: 13, fontWeight: '700', color: th.text },
   followTextOn: { color: th.warning },
-  rangeRow: { flexDirection: 'row', gap: 8, marginVertical: 8 },
-  rangeBox: { flex: 1, backgroundColor: th.surfaceMuted, borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
+  rangeHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  rangeTag: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 3 },
+  rangeTagText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.6 },
+  rangeIntro: { fontSize: 13, color: th.textMuted, marginTop: 6, lineHeight: 18 },
+  rangeTrack: { height: 12, borderRadius: 6, backgroundColor: th.surfaceMuted, marginTop: 16, position: 'relative' },
+  rangeBand: { position: 'absolute', top: 0, bottom: 0, borderRadius: 6, opacity: 0.35 },
+  rangeMarker: { position: 'absolute', top: -4, width: 20, height: 20, marginLeft: -10, borderRadius: 10, borderWidth: 4, backgroundColor: th.surface },
+  rangeNumbers: { flexDirection: 'row', marginTop: 12 },
+  rangeNumber: { flex: 1, alignItems: 'center' },
   rangeValue: { fontSize: 20, fontWeight: '800', color: th.text },
   rangeCaption: { fontSize: 11, color: th.textMuted, marginTop: 2 },
+  rangeExplain: { marginTop: 12, borderLeftWidth: 3, paddingLeft: 10, gap: 4 },
+  rangeExplainText: { fontSize: 13, color: th.text, lineHeight: 19, fontWeight: '600' },
+  rangeFootnote: { fontSize: 11, color: th.textMuted, lineHeight: 16 },
 
   newsThumb: {
     width: 76,

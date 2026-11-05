@@ -157,6 +157,8 @@ export function relevantDefenseRank(position: string, ctx: MatchupContext | null
  * Matchup: up to ±10% (32nd-ranked = easiest defense = +10%). Weather: 5% per point.
  * Injuries around him: 6% per point. Capped to 70%-130% of his usual output.
  */
+const STATUS_WORD: Record<string, string> = { OUT: "out", DOUBTFUL: "doubtful", QUESTIONABLE: "questionable", IR: "on IR", PUP: "on the PUP list" };
+
 export type MatchupParts = {
   // Each as a fraction of his normal output (+0.06 = 6% more this week)
   defense: number;
@@ -202,7 +204,7 @@ export function matchupAdjustment(
     .map(n =>
       n.source === "self"
         ? `His own injury: ${n.reason}`
-        : `${n.source === "teammate" ? "Teammate" : "Opponent"} ${n.name} (${n.position}) is ${n.status.toLowerCase()}: ${n.reason} (${n.weight > 0 ? "+" : ""}${Math.round(n.weight * 6)}%)`
+        : `${n.source === "teammate" ? "Teammate" : "Opponent"} ${n.name} (${n.position}) is ${STATUS_WORD[n.status] ?? n.status.toLowerCase()}: ${n.reason} (${n.weight > 0 ? "+" : ""}${Math.round(n.weight * 6)}%)`
     );
   parts.push(...injuryNotes.filter(n => !n.startsWith("His own")));
   const m = 1 + components.defense + components.weather + components.injury;

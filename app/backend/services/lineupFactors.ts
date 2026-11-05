@@ -50,7 +50,9 @@ export function decide(
   const pos = String(position).toUpperCase();
   const reasons: string[] = [];
   let defense = components?.defense ?? 0;
-  if (components && components.defenseRank !== null) {
+  // Within 2% of average: an average defense, not worth mentioning.
+  if (components && Math.abs(defense) < 0.02) defense = 0;
+  if (components && components.defenseRank !== null && defense !== 0) {
     const of = `${components.defenseRank} of ${components.defenseTeams}`;
     if (defense < 0) {
       const scale = tier === "elite" ? 0.35 : tier === "depth" ? 1.25 : 1;

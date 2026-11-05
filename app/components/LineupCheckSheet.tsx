@@ -62,19 +62,19 @@ export default function LineupCheckSheet({
             <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ gap: 10 }}>
               <View style={styles.totals}>
                 <View style={styles.total}>
-                  <Text style={styles.totalValue}>{(check.currentProjected ?? check.currentPoints).toFixed(2)}</Text>
+                  <Text style={styles.totalValue}>{check.currentPoints.toFixed(2)}</Text>
                   <Text style={styles.totalLabel}>Your lineup now</Text>
                 </View>
                 <Ionicons name="arrow-forward" size={18} color={colors.textMuted} />
                 <View style={styles.total}>
-                  <Text style={[styles.totalValue, { color: gain > 0 ? colors.success : colors.text }]}>{(check.bestProjected ?? check.bestPoints).toFixed(2)}</Text>
+                  <Text style={[styles.totalValue, { color: gain > 0 ? colors.success : colors.text }]}>{check.bestPoints.toFixed(2)}</Text>
                   <Text style={styles.totalLabel}>Best lineup</Text>
                 </View>
               </View>
               <Text style={styles.note}>
-                Sleeper's projections. Who starts also weighs the defense each player faces (less for the best
-                players at their position), injuries on both teams, weather and inactive players. Players whose game
-                already started are locked and left alone.
+                Totals are Sleeper's projections adjusted for this week: the defense each player faces (less for
+                the best players at their position), injuries on both teams, weather and inactive players. Each
+                player's number below is Sleeper's own projection. Players whose game already started are locked.
               </Text>
 
               {check.swaps.length === 0 ? (

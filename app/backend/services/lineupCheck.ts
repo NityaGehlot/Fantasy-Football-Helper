@@ -81,6 +81,7 @@ export function slotLabels(slots: string[]): string[] {
 }
 
 const round = (n: number) => Math.round(n * 100) / 100;
+const KEEP_MARGIN = 0.25;
 
 /**
  * Pure part: the lineup set in Sleeper vs the best lineup, slot by slot.
@@ -228,6 +229,10 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
   // Sleeper's starters follow every starting spot in roster_positions; pair them up so a slot type
   // this app doesn't model can't shift players into the wrong spots. "0" = an empty slot.
   const { slots, ids: starterIds } = alignStarters(ctx.league?.roster_positions, mine?.starters ?? []);
+  // A swap has to be clearly better to be worth making: current starters keep their spot unless
+  // someone beats them by more than KEEP_MARGIN (no "swap for +0.05").
+  const startingNow = new Set(starterIds.filter(id => id && id !== "0"));
+  for (const p of weekly) if (startingNow.has(p.id) && p.value > 0) p.value = round(p.value + KEEP_MARGIN);
 
   const locked = new Set<string>();
   const kickoffs = new Set<string>();

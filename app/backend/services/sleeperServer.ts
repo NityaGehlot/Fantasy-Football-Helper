@@ -23,7 +23,8 @@ export const getLeagueUsers = (leagueId: string) =>
   cache.get(`users:${leagueId}`, 6 * HOUR, () => fetchJson(`${SLEEPER_BASE}/league/${leagueId}/users`));
 
 export const getRosters = (leagueId: string) =>
-  cache.get(`rosters:${leagueId}`, 5 * MINUTE, () => fetchJson(`${SLEEPER_BASE}/league/${leagueId}/rosters`));
+  // Short: adds, drops and trades should show up within a minute.
+  cache.get(`rosters:${leagueId}`, 1 * MINUTE, () => fetchJson(`${SLEEPER_BASE}/league/${leagueId}/rosters`));
 
 // Full player database (~5MB). Sleeper asks for this to be fetched at most once per day.
 export const getAllPlayers = (): Promise<Record<string, any>> =>

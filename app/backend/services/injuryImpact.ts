@@ -47,6 +47,7 @@ export function positionGroup(position: string): Group {
 }
 
 const OUT_LIKE = new Set(["OUT", "IR", "INJURED RESERVE", "PUP", "SUS", "SUSPENDED", "NA", "NOT_ACTIVE", "DOUBTFUL"]);
+const LONG_TERM = new Set(["IR", "INJURED RESERVE", "PUP", "SUS", "SUSPENDED", "NA", "NOT_ACTIVE"]);
 
 /** How likely he is to miss the game: 1 for Out/IR/Doubtful, 0.5 for Questionable, 0 otherwise. */
 export function missChance(status: string): number {
@@ -188,6 +189,9 @@ export function injuryImpacts({
   const add = (source: "teammate" | "opponent", p: InjuredPlayer, rule: Rule | undefined) => {
     const chance = missChance(p.status);
     if (!rule || chance === 0 || !isStarter(p)) return;
+    // Long-term absences (IR, PUP, suspensions) are already part of how the team plays and how the
+    // projections see it; only this week's designations (Out / Doubtful / Questionable) change things.
+    if (LONG_TERM.has(String(p.status ?? "").toUpperCase().trim())) return;
     const weight = round1(rule.weight * chance);
     notes.push({
       source,

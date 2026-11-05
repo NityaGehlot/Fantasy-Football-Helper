@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -49,6 +49,7 @@ const FLEX_NAMES: Record<string, string> = { SUPER_FLEX: 'SUPER FLEX', REC_FLEX:
 import { parseLeagueId } from '../services/leagueInput';
 import { fetchIrAdvice, irStatusWord, type IrAdvice } from '../services/irAdvice';
 import LeagueMovesCard from '../components/LeagueMovesCard';
+import { countSpots, rosterSignature, samePlayers } from '../services/rosterSpots';
 import { Menu } from 'react-native-paper';
 
 const MAX_FANTASY_WEEK_VISIBLE = 18;
@@ -111,6 +112,10 @@ export default function FantasyScreen() {
   const [nflState, setNflState] = useState<{ season?: string; week?: number; season_type?: string } | null>(null);
   const [espnWeekStatus, setEspnWeekStatus] = useState<WeekStatus | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
+  // Bumped whenever Sleeper shows a roster change (add, drop, trade, lineup move), so the IR /
+  // open-spot advice and the lineup check are recomputed right away.
+  const [rosterVersion, setRosterVersion] = useState(0);
+  const rosterSigRef = useRef('');
   const [teamsPlaying, setTeamsPlaying] = useState<Set<string> | null>(null);
   const [liveBoard, setLiveBoard] = useState<LiveBoard | null>(null);
   const [liveLoading, setLiveLoading] = useState(false);
@@ -449,6 +454,45 @@ useEffect(() => {
   // IR advice for your own team in the current season: who to move to IR and who to add.
   const irRosterId = rosters.find(r => r.owner_id === myTeam?.ownerId)?.roster_id;
   const irEligible = !!selectedSeasonLeagueId && irRosterId !== undefined && !!liveSeason && liveSeason === Number(nflState?.season);
+
+  // Keep rosters in sync with Sleeper: check every minute (and right away) for adds, drops,
+  // trades and lineup changes. Rosters and the week's matchup are refetched together, and when
+  // they disagree (one is stale), both are fetched again fresh.
+  useEffect(() => {
+    if (!irEligible || !selectedSeasonLeagueId) return;
+    let cancelled = false;
+    const leagueId = selectedSeasonLeagueId;
+    const sync = async () => {
+      try {
+        let [r, m] = await Promise.all([getRosters(leagueId, { force: true }), getMatchups(leagueId, selectedWeek, { force: true })]);
+        const mine = (r ?? []).find((x: any) => x.owner_id === myTeam?.ownerId);
+        const mineM = (m ?? []).find((x: any) => x.roster_id === mine?.roster_id);
+        if (mine && mineM && !samePlayers(mine.players, mineM.players)) {
+          [r, m] = await Promise.all([getRosters(leagueId, { force: true }), getMatchups(leagueId, selectedWeek, { force: true })]);
+        }
+        if (cancelled || !Array.isArray(r)) return;
+        const sig = rosterSignature(r) + '#' + rosterSignature((m ?? []) as any);
+        if (sig === rosterSigRef.current) return;
+        const first = rosterSigRef.current === '';
+        rosterSigRef.current = sig;
+        if (first) return; // the screen just loaded this data
+        setRosters(r);
+        if (Array.isArray(m)) {
+          setMatchups(m);
+          setWeekMatchups(m);
+        }
+        setRosterVersion(v => v + 1);
+      } catch {
+        // offline or Sleeper unavailable: try again next minute
+      }
+    };
+    sync();
+    const timer = setInterval(sync, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [irEligible, selectedSeasonLeagueId, selectedWeek, myTeam?.ownerId]);
   useEffect(() => {
     setIrAdvice(null);
     if (!irEligible) return;
@@ -459,7 +503,7 @@ useEffect(() => {
     return () => {
       cancelled = true;
     };
-  }, [irEligible, selectedSeasonLeagueId, irRosterId, refreshNonce]);
+  }, [irEligible, selectedSeasonLeagueId, irRosterId, refreshNonce, rosterVersion]);
 
   // When your lineup has an empty starting spot, load the lineup check so the empty row can say
   // who to put there.
@@ -475,7 +519,7 @@ useEffect(() => {
     return () => {
       cancelled = true;
     };
-  }, [irEligible, hasEmptyStarter, activeLeagueId, irRosterId, refreshNonce]);
+  }, [irEligible, hasEmptyStarter, activeLeagueId, irRosterId, refreshNonce, rosterVersion]);
 
   const handleRefresh = async () => {
     if (!selectedSeasonLeagueId) return;
@@ -878,18 +922,16 @@ if (!activeLeagueId) {
     );
     const benchPlayers = sorted.filter(p => !sIds.includes(p.player_id) && !reserveIds.includes(String(p.player_id)));
     const ir = reserveIds.map(id => ({ ...players[id], player_id: id }));
-    // Empty bench spots: the league's BN spots minus the players on the bench. Uses Sleeper's
-    // roster (current players; IR and taxi spots don't count) for the current week, the week's
-    // matchup otherwise.
-    const benchSpots = (league?.roster_positions ?? []).filter((x: string) => String(x).toUpperCase() === 'BN').length;
-    const taxiIds = new Set<string>((sideRoster?.taxi ?? []).map(String));
-    // (weekStatus is computed further down, so use the same facts directly: a current-season
-    // league and Sleeper's current week.)
-    const currentWeek = irEligible && Number(selectedWeek) === Number(nflState?.week) && Array.isArray(sideRoster?.players);
-    const benchCount = currentWeek
-      ? (sideRoster!.players as any[]).map(String).filter(id => !sIds.map(String).includes(id) && !reserveIds.includes(id) && !taxiIds.has(id)).length
-      : benchPlayers.length;
-    const openBench = Math.max(0, benchSpots - benchCount);
+    // Empty bench spots, counted from this week's matchup alone (its players and starters come
+    // from the same Sleeper response), so a just-added player can't look like an empty spot.
+    const spots = countSpots({
+      rosterPositions: league?.roster_positions,
+      players: matchup?.players ?? sideRoster?.players ?? [],
+      starters: sIds,
+      reserve: reserveIds,
+      taxi: sideRoster?.taxi ?? [],
+    });
+    const openBench = spots.openBench;
     const bench = [
       ...benchPlayers,
       ...Array.from({ length: openBench }, (_, i) => ({ player_id: `bench-empty-${i}`, emptyBench: true })),
@@ -921,7 +963,18 @@ if (!activeLeagueId) {
     const owner = users.find(u => u.user_id === roster?.owner_id);
     const liveSide = [liveBoard?.me, liveBoard?.opponent].find(s => s && s.rosterId === matchup?.roster_id);
     const total = liveSide?.points ?? (matchup?.starters_points || []).reduce((a: number, b: number) => a + b, 0);
-    return { matchup, starterIds: sIds, starters, bench, ir, openBench, name: owner ? getTeamName(owner) : 'Unknown', total };
+    return {
+      matchup,
+      starterIds: sIds,
+      starters,
+      bench,
+      ir,
+      openBench,
+      emptyStarters: spots.emptyStarters,
+      spotsSize: spots.size,
+      name: owner ? getTeamName(owner) : 'Unknown',
+      total,
+    };
   };
 
   const opponentMatchup = myWeekMatchup
@@ -1428,8 +1481,10 @@ if (!activeLeagueId) {
       })()}
 
       {/* OPEN ROSTER SPOTS (bench included): who to pick up, based on what the team needs */}
-      {isViewingMyTeam && !!irAdvice?.openSpots?.open && (() => {
-        const spots = irAdvice.openSpots!;
+      {isViewingMyTeam && !!irAdvice?.openSpots?.open && mySide.openBench + mySide.emptyStarters > 0 && (() => {
+        // The count shown is the app's own (from the latest Sleeper data); pickups come from the
+        // backend's advice.
+        const spots = { ...irAdvice.openSpots!, open: mySide.openBench + mySide.emptyStarters, used: mySide.spotsSize - mySide.openBench - mySide.emptyStarters, size: mySide.spotsSize };
         const needText = spots.needs.length ? ` You're short at ${spots.needs.join(', ')}.` : '';
         return (
           <View style={styles.openCard}>

@@ -293,6 +293,15 @@ export function leagueMoveNotification(
   });
 }
 
+/**
+ * Notifications that no longer apply: "open roster spot" for a league whose roster is full again
+ * (after a pickup or trade). Returns the list without them.
+ */
+export function pruneResolved(list: AppNotification[], leagueId: string, state: { openSpots: number | null }): AppNotification[] {
+  if (state.openSpots === null || state.openSpots > 0) return list;
+  return list.filter(n => !n.id.startsWith(`open:${leagueId}:`));
+}
+
 /** Add new notifications to the saved list (newest first), skipping ids already seen. */
 export function mergeNotifications(
   existing: AppNotification[],
