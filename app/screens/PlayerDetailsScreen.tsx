@@ -31,6 +31,8 @@ import { positionColors, type Palette } from '../theme';
 import { getPlayerRanks, ordinal, type PlayerRank } from '../services/playerRanks';
 import { gamesSummary } from '../services/gamesPlayed';
 import { norm as teamNewsKey, pickTeamNews, type Teammate } from '../services/teamNews';
+import { getWeekProjections, projectedPoints, projectedStatLine, scoringLabel, type ProjectionEntry } from '../services/projections';
+import { getLeague } from '../services/sleeperAPI';
 
 type NewsArticle = {
   title: string;
@@ -94,6 +96,11 @@ export default function PlayerDetailsScreen({ route }: any) {
   const [owner, setOwner] = useState<Ownership | null | undefined>(undefined);
   // Fantasy rank this season (overall / at his position) with your league's scoring
   const [rank, setRank] = useState<PlayerRank | null>(null);
+  // Projected points for weeks not played yet (week -> entry), from nfl-data's saved projections.
+  // 'bye' when that week's file has no one from his team.
+  const [projections, setProjections] = useState<Record<number, ProjectionEntry | 'bye' | null>>({});
+  // Points per catch in your league (1 = PPR, 0.5 = half, 0 = standard) to pick the right projection
+  const [receptionPoints, setReceptionPoints] = useState(1);
   // The season `allWeeksStats` holds, so the weekly range never shows another season's numbers
   const [statsSeason, setStatsSeason] = useState<number | null>(null);
   useEffect(() => {
@@ -1318,6 +1325,67 @@ export default function PlayerDetailsScreen({ route }: any) {
     );
   };
 
+  // Projections for the weeks of this season that haven't been played (or are in progress).
+  useEffect(() => {
+    let cancelled = false;
+    setProjections({});
+    const id = String(player?.player_id ?? '');
+    const weeks = Object.entries(weekStatuses)
+      .filter(([w, st]) => (st === 'upcoming' || st === 'in_progress') && Number(w) <= 18)
+      .map(([w]) => Number(w));
+    if (!id || !weeks.length) return;
+    const team = displayTeam.toUpperCase();
+    const onTeam = !!team && !['FA', 'N/A'].includes(team);
+    Promise.all(
+      weeks.map(w =>
+        getWeekProjections(selectedSeason, w).then(f => {
+          const entry = f?.players?.[id];
+          if (entry) return [w, entry] as const;
+          // A saved week leaves out teams on bye, so no one from his team means his bye week.
+          const teamPlays = Object.values(f?.players ?? {}).some(p => String(p.team ?? '').toUpperCase() === team);
+          return [w, f && onTeam && !teamPlays ? 'bye' : null] as const;
+        })
+      )
+    ).then(pairs => {
+      if (!cancelled) setProjections(Object.fromEntries(pairs));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [player?.player_id, selectedSeason, weekStatuses, displayTeam]);
+
+  useEffect(() => {
+    if (!activeLeagueId) return;
+    getLeague(activeLeagueId)
+      .then((l: any) => setReceptionPoints(Number(l?.scoring_settings?.rec ?? 1)))
+      .catch(() => undefined);
+  }, [activeLeagueId]);
+
+  // Shown for an upcoming week with no saved projection for him.
+  const noProjectionText = ['FA', 'N/A'].includes(displayTeam.toUpperCase())
+    ? 'No projection: not on a team'
+    : 'No projection yet';
+
+  // "Projected 8.20 pts (PPR) · vs WAS" and the projected stat line, for a week not played yet.
+  const renderProjection = (w: number, fallback: string) => {
+    const pj = projections[w];
+    if (pj === 'bye') return <Text style={styles.statLine}>Bye week</Text>;
+    if (!pj) return <Text style={styles.statLine}>{fallback}</Text>;
+    const pos = basePosition || pj.pos;
+    return (
+      <View style={styles.projBox}>
+        <View style={styles.projRow}>
+          <Text style={styles.projPoints}>{projectedPoints(pj, receptionPoints).toFixed(2)}</Text>
+          <Text style={styles.projLabel}>projected pts ({scoringLabel(receptionPoints)}){pj.opp ? ` · vs ${pj.opp}` : ''}</Text>
+        </View>
+        {projectedStatLine(pos, pj.stats).map((line, i) => (
+          <Text key={i} style={styles.projStat}>{line}</Text>
+        ))}
+        <Text style={styles.projNote}>Sleeper's projection, saved every few hours</Text>
+      </View>
+    );
+  };
+
   useEffect(() => {
     let cancelled = false;
     setRank(null);
@@ -1577,7 +1645,7 @@ export default function PlayerDetailsScreen({ route }: any) {
           {loadingPlayerStats ? (
             <Text style={styles.statLine}>Loading Stats...</Text>
           ) : weekStatuses[week] === 'upcoming' ? (
-            <Text style={styles.statLine}>Week hasn't occurred yet</Text>
+            renderProjection(week, noProjectionText)
           ) : allWeeksStats[week] ? (() => {
           const currentStats = allWeeksStats[week];
           const teamStatusRaw = currentStats
@@ -1663,10 +1731,10 @@ export default function PlayerDetailsScreen({ route }: any) {
               )}
             </>
           );
-        })() : (
-          <Text style={styles.statLine}>
-            {weekStatuses[week] === 'in_progress' ? 'Week in progress — no stats yet' : 'No stats available'}
-          </Text>
+        })() : weekStatuses[week] === 'in_progress' ? (
+          renderProjection(week, 'Week in progress — no stats yet')
+        ) : (
+          <Text style={styles.statLine}>No stats available</Text>
         )}
         </View>
       )}
@@ -1809,7 +1877,7 @@ export default function PlayerDetailsScreen({ route }: any) {
                       {statusLabel}: {injuryType || "Unknown injury"}
                     </Text>
                   )}
-                  <Text style={styles.statLine}>Week hasn't occurred yet</Text>
+                  {renderProjection(w, noProjectionText)}
                 </View>
               );
             }
@@ -1915,10 +1983,10 @@ export default function PlayerDetailsScreen({ route }: any) {
                           </View>
                         );
                     }
-                    return (
-                      <Text style={styles.statLine}>
-                        {weekStatus === 'in_progress' ? 'Week in progress — no stats yet' : 'No stats recorded'}
-                      </Text>
+                    return weekStatus === 'in_progress' ? (
+                      renderProjection(w, 'Week in progress — no stats yet')
+                    ) : (
+                      <Text style={styles.statLine}>No stats recorded</Text>
                     );
                   })()
                 )}
@@ -2232,6 +2300,12 @@ const makeStyles = (th: Palette) => ({
     marginTop: 2,
     textAlign: 'center',
   },
+  projBox: { gap: 3 },
+  projRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' },
+  projPoints: { fontSize: 20, fontWeight: '800', color: th.primary },
+  projLabel: { fontSize: 13, color: th.textMuted, fontWeight: '600' },
+  projStat: { fontSize: 14, color: th.text },
+  projNote: { fontSize: 11, color: th.textSubtle, marginTop: 2 },
   pctWrap: {
     alignSelf: 'stretch',
     marginTop: 6,
