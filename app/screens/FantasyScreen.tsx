@@ -1178,7 +1178,16 @@ if (!activeLeagueId) {
         {(left.ir.length > 0 || right.ir.length > 0) && (
           <>
             <Text style={styles.sectionLabel}>INJURED RESERVE</Text>
-            <View style={styles.listCard}>{pairRows(left.ir, right.ir, false)}</View>
+            {/* Each team gets its own card, so one team's IR doesn't stretch across the other's side */}
+            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start' }}>
+              {[left, right].map((side, i) => (
+                <View key={i} style={{ flex: 1 }}>
+                  {side.ir.length > 0 && (
+                    <View style={styles.listCard}>{side.ir.map(p => renderPlayer(side, p, false, true))}</View>
+                  )}
+                </View>
+              ))}
+            </View>
           </>
         )}
       </View>
@@ -1237,6 +1246,7 @@ if (!activeLeagueId) {
   const canSetMyTeam = !!viewedTeamId && myTeam?.ownerId !== viewedTeamId;
 
   return (
+    <View style={styles.container}>
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.headerRow}>
         <View style={{ flex: 1, minWidth: 0 }}>
@@ -1280,9 +1290,8 @@ if (!activeLeagueId) {
             />
           </Menu>
         </View>
-        <TouchableOpacity style={styles.iconBtn} onPress={handleRefresh} accessibilityLabel="Refresh league data">
-          <Ionicons name="refresh" size={18} color={colors.primary} />
-        </TouchableOpacity>
+        {/* Keeps room for the floating refresh button below */}
+        <View style={styles.iconBtnSpacer} />
       </View>
 
       {/* CONTROLS: team, season, week */}
@@ -1566,6 +1575,12 @@ if (!activeLeagueId) {
         <LeagueMovesCard leagueId={selectedSeasonLeagueId} rosterId={irRosterId !== undefined ? Number(irRosterId) : null} />
       )}
     </ScrollView>
+
+    {/* Refresh floats over the top-right corner so it's there wherever you scroll */}
+    <TouchableOpacity style={[styles.iconBtn, styles.refreshFloat]} onPress={handleRefresh} accessibilityLabel="Refresh league data">
+      <Ionicons name="refresh" size={18} color={colors.primary} />
+    </TouchableOpacity>
+    </View>
   );
 }
 
@@ -1589,6 +1604,9 @@ const makeStyles = (c: Palette) => ({
   leagueSwitch: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 4, alignSelf: 'flex-start' as const, maxWidth: '100%' as const },
   addError: { color: c.danger, fontSize: 12, textAlign: 'center' as const },
   iconBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: c.primarySoft, alignItems: 'center' as const, justifyContent: 'center' as const },
+  iconBtnSpacer: { width: 38, height: 38 },
+  // Lines up with where the button sat in the header row: content padding 16, centered on the ~46px league title
+  refreshFloat: { position: 'absolute' as const, top: 16 + 4, right: 16, borderWidth: 1, borderColor: c.border, ...shadowFor(c) },
 
   controlsCard: { backgroundColor: c.surface, borderRadius: radius.lg, padding: 14, borderWidth: 1, borderColor: c.border, gap: 6 },
   controlLabel: { fontSize: 10, fontWeight: '800' as const, color: c.textSubtle, letterSpacing: 0.8, marginBottom: 4 },
