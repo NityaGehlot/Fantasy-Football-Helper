@@ -1158,8 +1158,6 @@ export default function PlayerDetailsScreen({ route }: any) {
 
     if (s) {
       rows.push({ label: 'Games', value: String(s.games) });
-      // Weeks his team played without him (injury / inactive): not counted as games or in averages.
-      if (Number(s.games_missed) > 0) rows.push({ label: 'Missed', value: String(s.games_missed) });
       if (Number(s.eliminated_weeks) > 0) rows.push({ label: 'Eliminated Weeks', value: String(s.eliminated_weeks) });
       if (!isIndividualDefensiveSeasonView) {
         rows.push({
@@ -1511,27 +1509,44 @@ export default function PlayerDetailsScreen({ route }: any) {
                     <Text style={[styles.rangeTagText, { color: tone }]}>{range.label === 'boom/bust' ? 'BOOM / BUST' : range.label.toUpperCase()}</Text>
                   </View>
                 </View>
-                <Text style={styles.rangeIntro}>What a bad, typical and good week look like for him, from {games}.</Text>
+                <Text style={styles.rangeIntro}>How many fantasy points he scores in a normal week, based on {games}.</Text>
+
+                {/* Headline: the middle half of his weeks */}
+                <Text style={styles.rangeHeadline}>
+                  <Text style={{ color: tone }}>{range.floor.toFixed(1)} – {range.ceiling.toFixed(1)}</Text> pts in half his weeks
+                </Text>
 
                 {/* The bar: his usual range (bad week to good week), with a typical week marked */}
                 <View style={styles.rangeTrack}>
                   <View style={[styles.rangeBand, { left: pct(range.floor), width: `${Math.max(2, ((range.ceiling - range.floor) / max) * 100)}%`, backgroundColor: tone }]} />
                   <View style={[styles.rangeMarker, { left: pct(range.median), borderColor: tone }]} />
                 </View>
-                <View style={styles.rangeNumbers}>
-                  {([['Bad week', range.floor, th.textMuted], ['Typical', range.median, tone], ['Good week', range.ceiling, th.textMuted]] as const).map(([label, value, color]) => (
-                    <View key={label} style={styles.rangeNumber}>
-                      <Text style={[styles.rangeValue, { color: label === 'Typical' ? color : th.text }]}>{Number(value).toFixed(1)}</Text>
-                      <Text style={styles.rangeCaption}>{label}</Text>
-                    </View>
-                  ))}
+                <View style={styles.rangeScale}>
+                  <Text style={styles.rangeScaleText}>0 pts</Text>
+                  <Text style={styles.rangeScaleText}>{Math.round(max)} pts</Text>
                 </View>
 
-                <View style={[styles.rangeExplain, { borderLeftColor: tone }]}>
+                {/* Each number with what it means */}
+                <View style={styles.rangeTiles}>
+                  {([
+                    ['Bad week', range.floor, '1 in 4 of his weeks were lower'],
+                    ['Typical', range.median, 'Half his weeks were higher, half lower'],
+                    ['Good week', range.ceiling, '1 in 4 of his weeks were higher'],
+                  ] as const).map(([label, value, hint]) => {
+                    const typical = label === 'Typical';
+                    return (
+                      <View key={label} style={[styles.rangeTile, typical && { backgroundColor: toneSoft, borderColor: tone }]}>
+                        <Text style={[styles.rangeCaption, typical && { color: tone }]}>{label.toUpperCase()}</Text>
+                        <Text style={[styles.rangeValue, typical && { color: tone }]}>{Number(value).toFixed(1)}</Text>
+                        <Text style={styles.rangeHint}>{hint}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                <View style={[styles.rangeExplain, { backgroundColor: toneSoft }]}>
+                  <Text style={[styles.rangeExplainTitle, { color: tone }]}>What this means</Text>
                   <Text style={styles.rangeExplainText}>{meaning}</Text>
-                  <Text style={styles.rangeFootnote}>
-                    Bad week = 1 in 5 of his games were worse. Good week = 1 in 5 were better. Typical = his middle score.
-                  </Text>
                 </View>
               </>
             );
@@ -2194,6 +2209,8 @@ const makeStyles = (th: Palette) => ({
   seasonCell: {
     width: '33.3%',
     alignItems: 'center',
+    // Rows grow to the tallest cell (e.g. Completions with its bar), so center the shorter ones
+    justifyContent: 'center',
     paddingVertical: 10,
     paddingHorizontal: 4,
     marginBottom: 6,
@@ -2288,16 +2305,20 @@ const makeStyles = (th: Palette) => ({
   rangeTag: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 3 },
   rangeTagText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.6 },
   rangeIntro: { fontSize: 13, color: th.textMuted, marginTop: 6, lineHeight: 18 },
-  rangeTrack: { height: 12, borderRadius: 6, backgroundColor: th.surfaceMuted, marginTop: 16, position: 'relative' },
+  rangeHeadline: { fontSize: 22, fontWeight: '800', color: th.text, marginTop: 12 },
+  rangeTrack: { height: 12, borderRadius: 6, backgroundColor: th.surfaceMuted, marginTop: 14, position: 'relative' },
   rangeBand: { position: 'absolute', top: 0, bottom: 0, borderRadius: 6, opacity: 0.35 },
   rangeMarker: { position: 'absolute', top: -4, width: 20, height: 20, marginLeft: -10, borderRadius: 10, borderWidth: 4, backgroundColor: th.surface },
-  rangeNumbers: { flexDirection: 'row', marginTop: 12 },
-  rangeNumber: { flex: 1, alignItems: 'center' },
-  rangeValue: { fontSize: 20, fontWeight: '800', color: th.text },
-  rangeCaption: { fontSize: 11, color: th.textMuted, marginTop: 2 },
-  rangeExplain: { marginTop: 12, borderLeftWidth: 3, paddingLeft: 10, gap: 4 },
+  rangeScale: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
+  rangeScaleText: { fontSize: 11, color: th.textSubtle, fontWeight: '600' },
+  rangeTiles: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  rangeTile: { flex: 1, alignItems: 'center', paddingVertical: 10, paddingHorizontal: 6, borderRadius: 12, borderWidth: 1, borderColor: th.border, backgroundColor: th.surfaceMuted },
+  rangeValue: { fontSize: 20, fontWeight: '800', color: th.text, marginTop: 2 },
+  rangeCaption: { fontSize: 10, fontWeight: '800', letterSpacing: 0.6, color: th.textMuted },
+  rangeHint: { fontSize: 10, color: th.textMuted, textAlign: 'center', marginTop: 4, lineHeight: 13 },
+  rangeExplain: { marginTop: 12, borderRadius: 12, padding: 12, gap: 4 },
+  rangeExplainTitle: { fontSize: 12, fontWeight: '800', letterSpacing: 0.3 },
   rangeExplainText: { fontSize: 13, color: th.text, lineHeight: 19, fontWeight: '600' },
-  rangeFootnote: { fontSize: 11, color: th.textMuted, lineHeight: 16 },
 
   newsThumb: {
     width: 76,

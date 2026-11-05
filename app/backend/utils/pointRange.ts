@@ -1,12 +1,12 @@
 // app/backend/utils/pointRange.ts
-// Floor and ceiling from a player's game log: what a bad week and a good week look like.
+// Floor and ceiling from a player's game log: the middle half of his weeks (a bad week to a good week).
 // Pure code with no Node imports, so the app screens use it too.
 
 export type PointRange = {
   games: number;
-  floor: number; // a bad week (20th percentile)
+  floor: number; // a bad week (25th percentile)
   median: number;
-  ceiling: number; // a good week (80th percentile)
+  ceiling: number; // a good week (75th percentile)
   label: "safe" | "steady" | "boom/bust" | "not enough games";
   // One-line explanation for screens and AI prompts
   summary: string;
@@ -29,15 +29,18 @@ export function percentile(sorted: number[], p: number): number {
 export function pointRange(points: number[], lastN = 10): PointRange {
   const recent = points.filter(p => Number.isFinite(p)).slice(-lastN);
   const sorted = [...recent].sort((a, b) => a - b);
-  const floor = round1(percentile(sorted, 0.2));
+  // The middle half of his games. 20th/80th made the range too wide to be useful, and with only
+  // a few games those cutoffs land almost on his single worst and best game.
+  const floor = round1(percentile(sorted, 0.25));
   const median = round1(percentile(sorted, 0.5));
-  const ceiling = round1(percentile(sorted, 0.8));
+  const ceiling = round1(percentile(sorted, 0.75));
   if (recent.length < 3) {
     return { games: recent.length, floor, median, ceiling, label: "not enough games", summary: "Not enough games yet to show a range." };
   }
   // How wide the range is compared with a normal week.
+  // (Cutoffs scaled for the narrower middle-half range, so labels stay about the same.)
   const spread = (ceiling - floor) / Math.max(median, 4);
-  const label: PointRange["label"] = spread <= 0.6 ? "safe" : spread >= 1.2 ? "boom/bust" : "steady";
+  const label: PointRange["label"] = spread <= 0.5 ? "safe" : spread >= 1 ? "boom/bust" : "steady";
   const meaning =
     label === "safe"
       ? "a safe, predictable start"
@@ -50,7 +53,7 @@ export function pointRange(points: number[], lastN = 10): PointRange {
     median,
     ceiling,
     label,
-    summary: `Usually ${floor}–${ceiling} pts (bad week ${floor}, good week ${ceiling}, last ${recent.length} games): ${meaning}.`,
+    summary: `Half his weeks ${floor}–${ceiling} pts (bad week ${floor}, good week ${ceiling}, last ${recent.length} games): ${meaning}.`,
   };
 }
 
