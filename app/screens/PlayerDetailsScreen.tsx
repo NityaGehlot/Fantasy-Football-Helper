@@ -1386,7 +1386,7 @@ export default function PlayerDetailsScreen({ route }: any) {
               </Text>
             </TouchableOpacity>
           )}
-          {!!displayTeam && displayTeam !== 'FA' && basePosition !== 'DEF' && (
+          {!!displayTeam && !['FA', 'N/A'].includes(displayTeam.toUpperCase()) && basePosition !== 'DEF' && (
             <TouchableOpacity
               style={[styles.followBtn, favorites.teams.includes(String(displayTeam).toUpperCase()) && styles.followBtnOn]}
               onPress={() => toggleFavoriteTeam(String(displayTeam))}
