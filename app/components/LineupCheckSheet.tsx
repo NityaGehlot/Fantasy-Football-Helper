@@ -3,7 +3,8 @@
 // already adjusted for matchups, weather, injuries and inactive players), and the swaps to make.
 
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { sleeperLeagueUrl } from '../services/externalLinks';
 import { Ionicons } from '@expo/vector-icons';
 import type { MyFantasyTeam } from '../context/FantasyContext';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
@@ -116,6 +117,10 @@ export default function LineupCheckSheet({
                   {SLEEPER_SWAP_STEPS.map((step, i) => (
                     <Text key={i} style={styles.step}>{i + 1}. {step}</Text>
                   ))}
+                  <Pressable style={styles.sleeperBtn} onPress={() => Linking.openURL(sleeperLeagueUrl(leagueId)).catch(() => undefined)}>
+                    <Ionicons name="open-outline" size={14} color={colors.onPrimary} />
+                    <Text style={styles.sleeperBtnText}>Open your league in Sleeper</Text>
+                  </Pressable>
                 </>
               )}
 
@@ -174,6 +179,8 @@ const makeStyles = (c: Palette) => ({
   reason: { fontSize: 12, color: c.textMuted, marginTop: 3, fontStyle: 'italic' as const, lineHeight: 16 },
   gain: { fontWeight: '800' as const, color: c.success },
   step: { fontSize: 13, color: c.text, lineHeight: 18 },
+  sleeperBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const, gap: 6, backgroundColor: c.primary, borderRadius: radius.md, paddingVertical: 10, marginTop: 4 },
+  sleeperBtnText: { color: c.onPrimary, fontWeight: '800' as const, fontSize: 13 },
   problem: { fontSize: 13, color: c.danger, lineHeight: 18 },
   askBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6, paddingVertical: 6 },
   askText: { color: c.primary, fontWeight: '700' as const, fontSize: 13 },

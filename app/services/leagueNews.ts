@@ -15,6 +15,8 @@ export type LeagueNewsArticle = {
   description: string;
   published: string;
   image: string | null;
+  // A video; the image is its cover
+  video?: boolean;
   link: string | null;
   category: LeagueNewsCategory;
   label: string;

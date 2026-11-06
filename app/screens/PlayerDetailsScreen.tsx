@@ -33,6 +33,9 @@ import { gamesSummary } from '../services/gamesPlayed';
 import { norm as teamNewsKey, pickTeamNews, type Teammate } from '../services/teamNews';
 import { getWeekProjections, projectedPoints, projectedStatLine, scoringLabel, type ProjectionEntry } from '../services/projections';
 import { getLeague } from '../services/sleeperAPI';
+import { Ionicons } from '@expo/vector-icons';
+import { fetchWaiverAdvice, type WaiverAdvice } from '../services/waiverAdvice';
+import { teamSearchName, xSearchUrl } from '../services/externalLinks';
 
 type NewsArticle = {
   title: string;
@@ -94,6 +97,8 @@ export default function PlayerDetailsScreen({ route }: any) {
   const [showTradeFor, setShowTradeFor] = useState(false);
   // Who has him in your open league (your team, another team, or nobody).
   const [owner, setOwner] = useState<Ownership | null | undefined>(undefined);
+  // For a free agent in your league: FAAB bid or whether to use your waiver priority on him
+  const [waiver, setWaiver] = useState<WaiverAdvice | null>(null);
   // Fantasy rank this season (overall / at his position) with your league's scoring
   const [rank, setRank] = useState<PlayerRank | null>(null);
   // Projected points for weeks not played yet (week -> entry), from nfl-data's saved projections.
@@ -1386,6 +1391,19 @@ export default function PlayerDetailsScreen({ route }: any) {
     );
   };
 
+  // Waiver advice once we know he's a free agent in your league.
+  useEffect(() => {
+    let cancelled = false;
+    setWaiver(null);
+    if (owner !== null || !myTeam || !activeLeagueId || !player?.player_id) return;
+    fetchWaiverAdvice(activeLeagueId, myTeam.rosterId, myTeam.ownerId, String(player.player_id))
+      .then(a => !cancelled && setWaiver(a))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [owner, myTeam?.rosterId, activeLeagueId, player?.player_id]);
+
   useEffect(() => {
     let cancelled = false;
     setRank(null);
@@ -1491,16 +1509,39 @@ export default function PlayerDetailsScreen({ route }: any) {
               </View>
             </View>
           ) : (
-            <TouchableOpacity
-              style={styles.dropAskBtn}
-              disabled={isChatTyping}
-              onPress={() => {
-                sendChatMessage(`Who should I drop to pick up ${playerName}?`);
-                navigation.navigate('MainTabs', { screen: 'ChatBot' });
-              }}
-            >
-              <Text style={styles.dropAskText}>Who should I drop to add {shortName}?</Text>
-            </TouchableOpacity>
+            <View style={{ alignItems: 'center', gap: 8, alignSelf: 'stretch' }}>
+              <TouchableOpacity
+                style={styles.dropAskBtn}
+                disabled={isChatTyping}
+                onPress={() => {
+                  sendChatMessage(`Who should I drop to pick up ${playerName}?`);
+                  navigation.navigate('MainTabs', { screen: 'ChatBot' });
+                }}
+              >
+                <Text style={styles.dropAskText}>Who should I drop to add {shortName}?</Text>
+              </TouchableOpacity>
+              {/* Waiver advice: a FAAB bid, or whether he's worth your waiver priority */}
+              {!!waiver && !waiver.rostered && !!waiver.summary && (
+                <View style={styles.waiverBox}>
+                  <View style={styles.waiverHead}>
+                    <Ionicons name={waiver.type === 'faab' ? 'cash-outline' : 'list-outline'} size={14} color={th.primary} />
+                    <Text style={styles.waiverTitle}>
+                      {waiver.type === 'faab'
+                        ? `Suggested bid: $${waiver.likely}`
+                        : waiver.useClaim
+                          ? 'Worth a waiver claim'
+                          : 'Not worth your waiver claim'}
+                    </Text>
+                    {waiver.type === 'faab' ? (
+                      <Text style={styles.waiverMeta}>${waiver.low}-${waiver.high} · ${waiver.remaining} left</Text>
+                    ) : waiver.position ? (
+                      <Text style={styles.waiverMeta}>You're #{waiver.position} of {waiver.teams}</Text>
+                    ) : null}
+                  </View>
+                  <Text style={styles.waiverText}>{waiver.summary}</Text>
+                </View>
+              )}
+            </View>
           )
         )}
         {!!myTeam && !!activeLeagueId && owner && !owner.mine && (
@@ -1800,6 +1841,18 @@ export default function PlayerDetailsScreen({ route }: any) {
           </TouchableOpacity>
         </View>
         {newsTab === 'player' ? renderNewsCards(playerNews) : renderNewsCards(teamNews)}
+        {/* Live posts about him on X (X's API can't be read for free, so this opens X's own search) */}
+        {!!playerName && (
+          <TouchableOpacity
+            style={styles.xBtn}
+            onPress={() => Linking.openURL(xSearchUrl(newsTab === 'team' ? teamSearchName(displayTeam, playerName) : playerName)).catch(() => undefined)}
+            accessibilityLabel={`Latest posts on X about ${newsTab === 'team' ? displayTeam : playerName}`}
+          >
+            <Text style={styles.xLogo}>𝕏</Text>
+            <Text style={styles.xText}>Latest on X about {newsTab === 'team' ? displayTeam : playerName}</Text>
+            <Ionicons name="open-outline" size={14} color={th.textMuted} />
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* ========================= */}
@@ -2300,6 +2353,14 @@ const makeStyles = (th: Palette) => ({
     marginTop: 2,
     textAlign: 'center',
   },
+  xBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: th.border, backgroundColor: th.surfaceMuted },
+  xLogo: { fontSize: 16, fontWeight: '900', color: th.text },
+  xText: { flex: 1, fontSize: 13, fontWeight: '700', color: th.text },
+  waiverBox: { alignSelf: 'stretch', backgroundColor: th.surfaceMuted, borderRadius: 12, padding: 10, gap: 4 },
+  waiverHead: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  waiverTitle: { flex: 1, fontSize: 14, fontWeight: '800', color: th.text },
+  waiverMeta: { fontSize: 12, fontWeight: '700', color: th.textMuted },
+  waiverText: { fontSize: 12, color: th.textMuted, lineHeight: 17 },
   projBox: { gap: 3 },
   projRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' },
   projPoints: { fontSize: 20, fontWeight: '800', color: th.primary },

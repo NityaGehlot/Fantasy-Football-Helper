@@ -6,6 +6,7 @@ import { View, Text, ScrollView, TouchableOpacity, Image, Linking, ActivityIndic
 import { Ionicons } from '@expo/vector-icons';
 import { articlesForFilter, fillMissingImages, getLeagueNews, timeAgo, type LeagueNewsCategory, type LeagueNewsFeed } from '../services/leagueNews';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
+import { isVideoArticle } from '../services/newsDiversity';
 import { radius, shadowFor, type Palette } from '../theme';
 
 const FILTERS: { key: string; label: string; categories: LeagueNewsCategory[] | null }[] = [
@@ -97,7 +98,12 @@ export default function LeagueNewsCarousel() {
                   <Image source={{ uri: a.image }} style={styles.image} resizeMode="cover" />
                 ) : (
                   <View style={[styles.image, styles.imagePlaceholder, { backgroundColor: `${cat.color}22` }]}>
-                    <Ionicons name={cat.icon} size={34} color={cat.color} />
+                    <Ionicons name={isVideoArticle(a as any) ? 'videocam' : cat.icon} size={34} color={cat.color} />
+                  </View>
+                )}
+                {isVideoArticle(a as any) && (
+                  <View style={styles.play} pointerEvents="none" accessibilityLabel="Video">
+                    <Ionicons name="play" size={22} color="#fff" style={{ marginLeft: 3 }} />
                   </View>
                 )}
                 <View style={[styles.pill, { backgroundColor: cat.color }]}>
@@ -134,6 +140,20 @@ const makeStyles = (c: Palette) => ({
   card: { width: 260, backgroundColor: c.surface, borderRadius: radius.lg, overflow: 'hidden' as const, borderWidth: 1, borderColor: c.border, ...shadowFor(c) },
   image: { width: '100%' as const, height: 140, backgroundColor: c.surfaceMuted },
   imagePlaceholder: { alignItems: 'center' as const, justifyContent: 'center' as const },
+  play: {
+    position: 'absolute' as const,
+    top: 70 - 22,
+    left: '50%' as const,
+    marginLeft: -22,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.85)',
+  },
   pill: { position: 'absolute' as const, top: 10, left: 10, flexDirection: 'row' as const, alignItems: 'center' as const, gap: 4, borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 3 },
   pillText: { color: '#fff', fontSize: 11, fontWeight: '800' as const },
   body: { padding: 12, gap: 4 },

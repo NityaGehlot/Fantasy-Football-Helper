@@ -14,7 +14,15 @@ export type NewsItem = {
   // Real article address and its cover image (filled in by nfl-data's news job)
   url?: string;
   image?: string;
+  // The link is a video (nfl-data marks these; the image is the video's cover)
+  video?: boolean;
 };
+
+const VIDEO_LINK = /youtu\.be\/|youtube\.com\/|vimeo\.com\/|\/videos?\/|\/watch\/|espn\.com\/video\/|nfl\.com\/videos\//i;
+
+/** Is this article a video? (marked by nfl-data, or a known video link) */
+export const isVideoArticle = (a: { video?: boolean; url?: string; link?: string }) =>
+  !!a.video || VIDEO_LINK.test(String(a.url || a.link || ''));
 
 const STOPWORDS = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with', 'vs', 'at', 'is', 'his', 'he', 'as', 'after', 'from', 'by', 'be', 'will', 'week', 'nfl', 's']);
 

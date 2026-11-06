@@ -39,6 +39,8 @@ import { handleAdvisorQuestion, AdvisorResult, addPlayoffSchedules } from "./ser
 import { playoffTradeNote } from "./services/playoffSchedule";
 import { generateWithLLM, streamWithLLM } from "./services/llm";
 import { getLeagueContext, toTradePlayer } from "./services/leagueContext";
+import { lineupValue } from "./services/lineup";
+import { rankDropCandidates } from "./services/waiver";
 import { buildIrAdvice } from "./services/irAdvice";
 import { buildMatchupContext, formatMatchupBlock } from "./services/matchupContext";
 import { playedPoints, pointRange } from "./utils/pointRange";
@@ -48,6 +50,7 @@ import { gradeProposal, gradeTrade, pendingTradesFor, tradeForPlayer } from "./s
 import { getLineupCheck } from "./services/lineupCheck";
 import { getPlayerRanks } from "./services/playerRanks";
 import { describeMoves } from "./services/leagueMoves";
+import { buildWaiverAdvice } from "./services/waiverAdvice";
 import { normalizePlayerName } from "./utils/names";
 import { incompatibleStartSitReply } from "./utils/slotCompat";
 import { generateTradeIdeas } from "./services/tradeEngine";
@@ -625,6 +628,21 @@ export function registerRoutes(router: Router): void {
     } catch (err: any) {
       console.error("❌ League moves failed:", err);
       res.status(500).json({ error: err?.message || "Failed to load league moves" });
+    }
+  });
+
+  // Waiver advice for a free agent: a FAAB bid (FAAB leagues) or whether to use your waiver
+  // priority on him (rolling / reverse-standings leagues).
+  router.post("/waiver-advice", async (req: Request, res: Response) => {
+    const { leagueId, rosterId, ownerId, playerId } = (req.body ?? {}) as { leagueId?: string; rosterId?: number; ownerId?: string; playerId?: string };
+    if (!leagueId || !playerId) return res.status(400).json({ error: "leagueId and playerId are required" });
+    try {
+      const ctx = await getLeagueContext(String(leagueId), rosterId, ownerId);
+      if (!ctx.me) return res.status(404).json({ error: "Your team was not found in this league." });
+      res.json(await buildWaiverAdvice(ctx, String(leagueId), String(playerId)));
+    } catch (err: any) {
+      console.error("❌ Waiver advice failed:", err);
+      res.status(500).json({ error: err?.message || "Failed to build waiver advice" });
     }
   });
 

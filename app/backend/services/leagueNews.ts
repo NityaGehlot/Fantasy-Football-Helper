@@ -20,6 +20,8 @@ export type LeagueNewsArticle = {
   published: string;
   image: string | null;
   link: string | null;
+  // A video (ESPN \"Media\"); the image is its cover
+  video?: boolean;
   category: LeagueNewsCategory;
   label: string;
   importance: number;
@@ -73,7 +75,8 @@ const pickImage = (images: any[]): string | null => {
 export function parseEspnNews(data: any): LeagueNewsArticle[] {
   const articles = Array.isArray(data?.articles) ? data.articles : [];
   return articles
-    .filter((a: any) => a?.headline && a?.type !== "Media")
+    // Videos ("Media") are kept when they have a cover image, and marked as video.
+    .filter((a: any) => a?.headline && (a?.type !== "Media" || pickImage(a.images)))
     .map((a: any, i: number) => {
       const cls = classifyLeagueHeadline(String(a.headline), String(a.description ?? ""));
       const cats = Array.isArray(a.categories) ? a.categories : [];
@@ -84,6 +87,7 @@ export function parseEspnNews(data: any): LeagueNewsArticle[] {
         published: String(a.published ?? a.lastModified ?? ""),
         image: pickImage(a.images),
         link: a?.links?.web?.href ?? a?.links?.mobile?.href ?? null,
+        video: a?.type === "Media",
         ...cls,
         players: cats.filter((c: any) => c?.type === "athlete" && c?.description).map((c: any) => String(c.description)),
         teams: cats.filter((c: any) => c?.type === "team" && c?.description).map((c: any) => String(c.description)),

@@ -138,7 +138,9 @@ export function buildDropForTargetPrompt(
   target: TradePlayer,
   options: DropOption[],
   roster: TradePlayer[],
-  balance = ""
+  balance = "",
+  // How waivers work in this league for him (FAAB bid or claim priority), pre-computed
+  waiver = ""
 ): string {
   const best = options[0];
   const top = options.slice(0, 3).map(
@@ -167,7 +169,10 @@ YOUR ROSTER
 ${rosterBlock(roster)}
 
 ROSTER BALANCE (players per position vs what this league's lineup needs)
-${balance}`;
+${balance}${waiver ? `
+
+WAIVER CLAIM (pre-computed for this league's waiver rules; say this in the answer)
+• ${waiver}` : ""}`;
 
   return assemble("WAIVER DECISION", data, question, `
 ${DIVIDER}

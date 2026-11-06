@@ -5,6 +5,7 @@
 
 import React from 'react';
 import { Image, Linking, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { isVideoArticle } from '../services/newsDiversity';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
 import { timeAgo } from '../services/leagueNews';
@@ -44,6 +45,7 @@ export default function NewsCardRow({
         const tone = newsTone(a, colors);
         const image = a.image || (a.link ? images[a.link] : null);
         const href = a.url || a.link;
+        const video = isVideoArticle(a);
         return (
           <TouchableOpacity
             key={`${a.link ?? a.title}-${i}`}
@@ -55,7 +57,13 @@ export default function NewsCardRow({
               <Image source={{ uri: image }} style={styles.image} resizeMode="cover" />
             ) : (
               <View style={[styles.image, styles.placeholder, { backgroundColor: `${tone.color}22` }]}>
-                <Ionicons name={tone.icon} size={32} color={tone.color} />
+                <Ionicons name={video ? 'videocam' : tone.icon} size={32} color={tone.color} />
+              </View>
+            )}
+            {/* Videos: a play button over the cover, so it's clear the link opens a video */}
+            {video && (
+              <View style={styles.play} pointerEvents="none" accessibilityLabel="Video">
+                <Ionicons name="play" size={22} color="#fff" style={{ marginLeft: 3 }} />
               </View>
             )}
             <View style={[styles.pill, { backgroundColor: tone.color }]}>
@@ -82,6 +90,20 @@ const makeStyles = (c: Palette) => ({
   card: { width: 240, backgroundColor: c.surface, borderRadius: radius.lg, overflow: 'hidden' as const, borderWidth: 1, borderColor: c.border, ...shadowFor(c) },
   image: { width: '100%' as const, height: 128, backgroundColor: c.surfaceMuted },
   placeholder: { alignItems: 'center' as const, justifyContent: 'center' as const },
+  play: {
+    position: 'absolute' as const,
+    top: 64 - 22,
+    left: '50%' as const,
+    marginLeft: -22,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.85)',
+  },
   pill: { position: 'absolute' as const, top: 10, left: 10, flexDirection: 'row' as const, alignItems: 'center' as const, gap: 4, borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 3 },
   pillText: { color: '#fff', fontSize: 11, fontWeight: '800' as const },
   body: { padding: 12, gap: 4 },

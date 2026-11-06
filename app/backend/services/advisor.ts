@@ -9,6 +9,7 @@ import { evaluateTrade, generateTradeIdeas, LeagueTeam, TradePlayer } from "./tr
 import { rankDropCandidates, suggestPickups } from "./waiver";
 import { gradeProposal, tradeForPlayer } from "./tradeGrade";
 import { openRosterSpots, type OpenSpots } from "./irAdvice";
+import { buildWaiverAdvice } from "./waiverAdvice";
 import { buildDraftBoard } from "./draft";
 import { getLeagueContext, getValueContext, LeagueContext, weeklyValue } from "./leagueContext";
 import { getDraftPicks, getNflState, getRosters } from "./sleeperServer";
@@ -241,6 +242,9 @@ async function handleWaiver(message: string, ctx: LeagueContext, me: LeagueTeam)
       };
     }
 
+    // How waivers work in this league (FAAB bid or claim priority), for the AI to mention.
+    const waiver = await buildWaiverAdvice(ctx, String(ctx.league?.league_id ?? ""), target.id).catch(() => null);
+
     let options = rankDropCandidates(me.players, target, ctx.slots);
     // If the user named one of their own players ("drop X for Y"), show that option first.
     const named = mentioned.find(p => myIds.has(p.id));
@@ -256,7 +260,10 @@ async function handleWaiver(message: string, ctx: LeagueContext, me: LeagueTeam)
           .map(o => `• ${o.drop.name} (${pts(o.netGain)} pts/week)`)
           .join("\n")}`
       : `Your roster is empty, so just add ${target.name}.`;
-    return { prompt: buildDropForTargetPrompt(message, target, options, me.players, balance), fallback };
+    return {
+      prompt: buildDropForTargetPrompt(message, target, options, me.players, balance, waiver?.summary ?? ""),
+      fallback: waiver?.summary ? `${fallback}\n\n${waiver.summary}` : fallback,
+    };
   }
 
   if (spots && spots.open > 0) {
