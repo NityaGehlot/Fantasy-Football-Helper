@@ -100,9 +100,9 @@ export function findMentionedPlayers(message: string, pool: TradePlayer[], myRos
   return [...found.values()].sort((a, b) => a.at - b.at).map(f => f.player);
 }
 
-async function currentWeekTeamsPlaying(season: number): Promise<{ week: number; teams: Set<string> | null }> {
+async function currentWeekTeamsPlaying(season: number, weekOverride?: number): Promise<{ week: number; teams: Set<string> | null }> {
   const state = await getNflState().catch(() => null);
-  const week = Number(state?.week) || 1;
+  const week = weekOverride || Number(state?.week) || 1;
   if (!state || Number(state.season) !== season || String(state.season_type) !== "regular") return { week, teams: null };
   // If the schedule can't be loaded, skip bye detection rather than failing the answer.
   const teams = await getTeamsPlaying(season, week).catch(() => null);
@@ -114,8 +114,8 @@ async function currentWeekTeamsPlaying(season: number): Promise<{ week: number; 
  * This week's expected points for each of your players: usual points per game, zero when he's
  * out or on bye, scaled by his matchup, weather and the injuries around him.
  */
-export async function weeklyAdjustedPlayers(ctx: LeagueContext, me: LeagueTeam) {
-  const { week, teams: teamsPlaying } = await currentWeekTeamsPlaying(ctx.values.season);
+export async function weeklyAdjustedPlayers(ctx: LeagueContext, me: LeagueTeam, weekOverride?: number) {
+  const { week, teams: teamsPlaying } = await currentWeekTeamsPlaying(ctx.values.season, weekOverride);
   // Scale each player's usual points for this week's matchup, weather and injuries around him.
   const matchups = new Map<string, ReturnType<typeof matchupAdjustment>>();
   await Promise.all(

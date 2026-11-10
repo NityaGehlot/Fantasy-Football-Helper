@@ -5,6 +5,7 @@
 import fetch from "node-fetch";
 import { createTtlCache, MINUTE } from "../utils/ttlCache";
 import { getCurrentNFLSeason } from "../utils/season";
+import { getAllPlayers, getNflState, getWeekStatLines } from "./sleeperServer";
 
 export const STATS_MIN_WEEK = 1;
 export const STATS_MAX_WEEK = 22;
@@ -66,7 +67,124 @@ export async function getWeekRows(week: number, season: number): Promise<any[]> 
       fetchRows(offenseUrl(week, season), season, "offense"),
       fetchRows(defenseUrl(week, season), season, "defense").catch(() => null),
     ]);
-    return [...(offense ?? []), ...(defense ?? [])];
+    if (offense) return [...offense, ...(defense ?? [])];
+    // nfl-data publishes a week's offense file after the week is over, so the week in progress
+    // (and a just-finished one) would show no stats at all. Fill it from Sleeper's stat lines.
+    const fromSleeper = await sleeperWeekRows(week, season).catch(err => {
+      console.warn(`⚠️ Sleeper stats for ${season} week ${week} unavailable:`, err?.message ?? err);
+      return [] as any[];
+    });
+    // Sleeper's team defense rows replace nfl-data's placeholder ones (all zeros until published).
+    const sleeperDefs = new Set(fromSleeper.filter(r => r.position === "DEF").map(r => r.player_id));
+    return [...fromSleeper, ...(defense ?? []).filter(r => !sleeperDefs.has(String(r.player_id)))];
+  });
+}
+
+/** Only weeks that have started can have stats: skip Sleeper for future weeks and seasons. */
+async function weekHasStarted(week: number, season: number): Promise<boolean> {
+  const state = await getNflState().catch(() => null);
+  const current = Number(state?.season);
+  if (!current) return false;
+  if (season !== current) return season < current;
+  const type = String(state?.season_type ?? "").toLowerCase();
+  if (type === "pre") return false;
+  if (type !== "regular") return true;
+  return week <= (Number(state?.week) || 0);
+}
+
+const num = (v: unknown) => Number(v) || 0;
+
+/** One Sleeper stat line (from /stats/nfl/{season}/{week}) in nfl-data's row format. */
+export function sleeperLineToRow(line: any, season: number, week: number, gsisById: Record<string, string> = {}): any | null {
+  const s = line?.stats ?? {};
+  const position = String(line?.player?.position ?? "").toUpperCase();
+  const team = String(line?.team ?? line?.player?.team ?? "").toUpperCase();
+  if (!["QB", "RB", "WR", "TE", "K", "DEF"].includes(position)) return null;
+  // Sleeper lists everyone on a roster; only keep players who actually got into the game.
+  if (!num(s.gp) && !num(s.gms_active) && !num(s.pts_ppr)) return null;
+  const base = {
+    season,
+    week,
+    position,
+    team,
+    opponent_team: String(line?.opponent ?? "").toUpperCase(),
+    headshot_url: "",
+    fantasy_points_ppr: num(s.pts_ppr),
+    game_played: true,
+    team_status: "played",
+    injury_status: "ACTIVE",
+    practice_status: "",
+    primary_injury: "",
+    secondary_injury: "",
+    practice_primary_injury: "",
+    practice_secondary_injury: "",
+    source: "sleeper",
+  };
+  if (position === "DEF") {
+    return {
+      ...base,
+      player_id: `DEF_${team}`,
+      player_name: `${team} DEF`,
+      def_sacks: num(s.sack),
+      def_fumbles_forced: num(s.ff),
+      def_safeties: num(s.safe),
+      def_tds: num(s.def_td) + num(s.def_st_td),
+      def_interceptions: num(s.int),
+      fumble_recovery_opp: num(s.fum_rec),
+      points_allowed: num(s.pts_allow),
+      yards_allowed: num(s.yds_allow),
+    };
+  }
+  const name = [line?.player?.first_name, line?.player?.last_name].filter(Boolean).join(" ");
+  const fgAtt = num(s.fga);
+  const fgMade = num(s.fgm);
+  return {
+    ...base,
+    player_id: gsisById[String(line?.player_id)] || String(line?.player_id),
+    sleeper_id: String(line?.player_id),
+    player_name: name,
+    snap_count: num(s.off_snp),
+    completions: num(s.pass_cmp),
+    attempts: num(s.pass_att),
+    passing_yards: num(s.pass_yd),
+    passing_tds: num(s.pass_td),
+    passing_interceptions: num(s.pass_int),
+    carries: num(s.rush_att),
+    rushing_yards: num(s.rush_yd),
+    rushing_tds: num(s.rush_td),
+    receptions: num(s.rec),
+    targets: num(s.rec_tgt),
+    receiving_yards: num(s.rec_yd),
+    receiving_tds: num(s.rec_td),
+    fumbles: num(s.fum_lost),
+    fg_att: fgAtt,
+    fg_made: fgMade,
+    fg_missed: Math.max(0, fgAtt - fgMade),
+    fg_pct: fgAtt ? fgMade / fgAtt : 0,
+    fg_made_0_19: num(s.fgm_0_19),
+    fg_made_20_29: num(s.fgm_20_29),
+    fg_made_30_39: num(s.fgm_30_39),
+    fg_made_40_49: num(s.fgm_40_49),
+    fg_made_50_59: num(s.fgm_50_59) || (num(s.fgm_60p) ? 0 : num(s.fgm_50p)),
+    fg_made_60_: num(s.fgm_60p),
+    pat_att: num(s.xpa),
+    pat_made: num(s.xpm),
+    pat_missed: Math.max(0, num(s.xpa) - num(s.xpm)),
+  };
+}
+
+async function sleeperWeekRows(week: number, season: number): Promise<any[]> {
+  if (!(await weekHasStarted(week, season))) return [];
+  const [lines, players] = await Promise.all([
+    getWeekStatLines(season, week),
+    getAllPlayers().catch(() => ({} as Record<string, any>)),
+  ]);
+  // nfl-data rows use GSIS ids; keep that id when Sleeper knows it so rows join the same way.
+  const gsisById: Record<string, string> = {};
+  for (const [id, p] of Object.entries(players ?? {})) if ((p as any)?.gsis_id) gsisById[id] = String((p as any).gsis_id).trim();
+  return lines.flatMap(l => {
+    const row = sleeperLineToRow(l, season, week, gsisById);
+    return row ? [row] : [];
   });
 }
 

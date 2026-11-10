@@ -1,14 +1,17 @@
 // app/components/FavoritesNews.tsx
-// Home section: news about the players and teams you follow, plus a sheet to pick teams.
+// Home section: news about the players and teams you follow. "Manage" opens the Following
+// screen, where you pick teams and see your players by team / free agents / other teams.
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../AppNavigator';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
-import { favoriteNews, favoriteReason, toggleFavoritePlayer, toggleFavoriteTeam, useFavorites } from '../services/favorites';
+import { favoriteNews, favoriteReason, useFavorites } from '../services/favorites';
 import { getNewsFiles, TEAM_NEWS_FILES } from '../services/newsService';
 import { fetchArticleImages } from '../services/leagueNews';
-import { NFL_TEAMS } from '../services/playerStatus';
 import type { NewsItem } from '../services/newsDiversity';
 import { radius, type Palette } from '../theme';
 import NewsCardRow from './NewsCardRow';
@@ -19,7 +22,7 @@ export default function FavoritesNews({ players }: { players: Record<string, any
   const fav = useFavorites();
   const [news, setNews] = useState<NewsItem[]>([]);
   const [images, setImages] = useState<Record<string, string | null>>({});
-  const [editing, setEditing] = useState(false);
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   useEffect(() => {
     getNewsFiles(TEAM_NEWS_FILES).then(setNews).catch(() => setNews([]));
@@ -41,19 +44,19 @@ export default function FavoritesNews({ players }: { players: Record<string, any
             {followingCount ? `News about the ${followingCount} players and teams you follow` : 'Follow players and teams to see their news here'}
           </Text>
         </View>
-        <Pressable style={styles.editBtn} onPress={() => setEditing(true)}>
-          <Ionicons name={followingCount ? 'create-outline' : 'add'} size={14} color={colors.primary} />
-          <Text style={styles.editText}>{followingCount ? 'Edit' : 'Follow'}</Text>
+        <Pressable style={styles.editBtn} onPress={() => navigation.navigate('Following')}>
+          <Ionicons name={followingCount ? 'list' : 'add'} size={14} color={colors.primary} />
+          <Text style={styles.editText}>{followingCount ? 'Manage' : 'Follow'}</Text>
         </Pressable>
       </View>
 
       {followingCount > 0 && (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingHorizontal: 16 }}>
           {fav.teams.map(t => (
-            <View key={t} style={styles.chip}><Text style={styles.chipText}>★ {t}</Text></View>
+            <Pressable key={t} style={styles.chip} onPress={() => navigation.navigate('Following')}><Text style={styles.chipText}>★ {t}</Text></Pressable>
           ))}
           {fav.players.map(id => (
-            <View key={id} style={styles.chip}><Text style={styles.chipText}>★ {players[id]?.full_name ?? 'Player'}</Text></View>
+            <Pressable key={id} style={styles.chip} onPress={() => navigation.navigate('Following')}><Text style={styles.chipText}>★ {players[id]?.full_name ?? 'Player'}</Text></Pressable>
           ))}
         </ScrollView>
       )}
@@ -67,45 +70,6 @@ export default function FavoritesNews({ players }: { players: Record<string, any
           </View>
         ))}
 
-      <Modal visible={editing} transparent animationType="fade" onRequestClose={() => setEditing(false)}>
-        <Pressable style={styles.backdrop} onPress={() => setEditing(false)}>
-          <Pressable style={styles.sheet} onPress={e => e.stopPropagation?.()}>
-            <View style={styles.header}>
-              <Text style={[styles.title, { flex: 1 }]}>Follow teams and players</Text>
-              <Pressable onPress={() => setEditing(false)} hitSlop={8} accessibilityLabel="Close">
-                <Ionicons name="close" size={22} color={colors.textMuted} />
-              </Pressable>
-            </View>
-            <ScrollView style={{ maxHeight: 480 }}>
-              <Text style={styles.section}>TEAMS</Text>
-              <View style={styles.grid}>
-                {NFL_TEAMS.map(t => {
-                  const on = fav.teams.includes(t);
-                  return (
-                    <Pressable key={t} style={[styles.team, on && styles.teamOn]} onPress={() => toggleFavoriteTeam(t)}>
-                      <Text style={[styles.teamText, on && { color: colors.onPrimary }]}>{t}</Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-              <Text style={styles.section}>PLAYERS</Text>
-              {fav.players.length === 0 ? (
-                <Text style={styles.sub}>Open any player (search above, trending, or your roster) and tap ☆ Follow.</Text>
-              ) : (
-                fav.players.map(id => (
-                  <View key={id} style={styles.followRow}>
-                    <Text style={styles.followName}>{players[id]?.full_name ?? id}</Text>
-                    <Text style={styles.sub}>{[players[id]?.position, players[id]?.team].filter(Boolean).join(' · ')}</Text>
-                    <Pressable onPress={() => toggleFavoritePlayer(id)} hitSlop={8} accessibilityLabel="Unfollow">
-                      <Ionicons name="close-circle" size={20} color={colors.textMuted} />
-                    </Pressable>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </View>
   );
 }
@@ -126,13 +90,4 @@ const makeStyles = (c: Palette) => ({
   headline: { fontSize: 14, fontWeight: '700' as const, color: c.text, marginTop: 2 },
   meta: { fontSize: 11, color: c.textMuted, marginTop: 3 },
   thumb: { width: 64, height: 64, borderRadius: 8, backgroundColor: c.surfaceMuted },
-  backdrop: { flex: 1, backgroundColor: c.overlay, justifyContent: 'center' as const, alignItems: 'center' as const, padding: 16 },
-  sheet: { width: '100%' as const, maxWidth: 460, backgroundColor: c.surface, borderRadius: radius.lg, paddingVertical: 16 },
-  section: { fontSize: 11, fontWeight: '800' as const, color: c.textSubtle, letterSpacing: 0.8, marginTop: 8, marginBottom: 6, paddingHorizontal: 16 },
-  grid: { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: 6, paddingHorizontal: 16 },
-  team: { width: 58, paddingVertical: 8, borderRadius: radius.sm, backgroundColor: c.surfaceMuted, alignItems: 'center' as const },
-  teamOn: { backgroundColor: c.primary },
-  teamText: { fontWeight: '800' as const, color: c.text, fontSize: 13 },
-  followRow: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 8, paddingHorizontal: 16, paddingVertical: 8 },
-  followName: { fontSize: 14, fontWeight: '700' as const, color: c.text },
 });

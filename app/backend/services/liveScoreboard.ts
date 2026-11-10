@@ -46,7 +46,7 @@ export async function getLiveScoreboard(leagueId: string, rosterId: number, requ
     return String(user?.metadata?.team_name || user?.display_name || `Team ${rid}`);
   };
 
-  const receptionPoints = Number(league?.scoring_settings?.rec ?? 1);
+  const receptionPoints = league?.scoring_settings ?? 1;
   const fallbackProjection = (_id: string, player: any) =>
     (values && valueForSleeperPlayer(values.index, player)?.value) || 0;
 

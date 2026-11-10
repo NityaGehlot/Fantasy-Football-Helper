@@ -7,13 +7,15 @@ import { alignStarters, optimizeLineup, SlotName, SLOT_ELIGIBILITY } from "./lin
 import { decide } from "./lineupFactors";
 import { getLeagueContext } from "./leagueContext";
 import { getGameStates } from "./schedule";
-import { getMatchups, getProjections, getRosters } from "./sleeperServer";
+import { getMatchups, getNflState, getProjections, getRosters } from "./sleeperServer";
 import { projectionFor } from "./liveMatchup";
 import { ensureInjuriesLoaded, injuryNote, lookupInjury } from "./injuryStore";
 import { weeklyAdjustedPlayers } from "./advisor";
+import { isOutStatus } from "./playerValues";
 
-// value: what decides who starts (Sleeper's projection adjusted for matchup and injuries);
-// projection: Sleeper's projection itself (the number shown, like in Sleeper).
+// value and projection: Sleeper's projection for this week with your league's scoring (what you
+// see in Sleeper), 0 when he's out or on bye. All the lineup math uses only this number;
+// reasons (matchup, weather, injuries around him) are notes for you, not part of the math.
 export type CheckPlayer = {
   id: string;
   name: string;
@@ -81,7 +83,8 @@ export function slotLabels(slots: string[]): string[] {
 }
 
 const round = (n: number) => Math.round(n * 100) / 100;
-const KEEP_MARGIN = 0.25;
+// Ties go to whoever is starting now (never shown, never added to a total).
+const TIE_BREAK = 1e-6;
 
 /**
  * Pure part: the lineup set in Sleeper vs the best lineup, slot by slot.
@@ -98,6 +101,9 @@ export function compareLineups(
   locked: Set<string> = new Set()
 ): { swaps: LineupSwap[]; currentPoints: number; bestPoints: number; emptySlots: string[]; lineup: LineupSlot[] } {
   const byId = new Map(players.map(p => [p.id, p]));
+  const startingNow = new Set(currentStarterIds.map(String).filter(id => id && id !== "0"));
+  // Who to start is picked on Sleeper's numbers, with a tie going to the current starter.
+  const ranked = players.map(p => (startingNow.has(p.id) && p.value > 0 ? { ...p, value: p.value + TIE_BREAK } : p));
   const current = slots.map((slot, i) => {
     const id = String(currentStarterIds[i] ?? "");
     const player = id && id !== "0" ? byId.get(id) ?? null : null;
@@ -109,13 +115,13 @@ export function compareLineups(
   // Locked starters keep their slot; fill the other slots with the best unlocked players.
   const lockedIds = new Set(current.filter(c => c.locked).map(c => c.player!.id));
   const openSlots = current.filter(c => !c.locked).map(c => c.slot);
-  const pool = players.filter(p => !locked.has(p.id) && !lockedIds.has(p.id));
+  const pool = ranked.filter(p => !locked.has(p.id) && !lockedIds.has(p.id));
   const best = optimizeLineup(pool, openSlots);
   const bestPoints = round(
     current.filter(c => c.locked).reduce((t, c) => t + c.player!.value, 0) + best.reduce((t, a) => t + (a.player?.value ?? 0), 0)
   );
   const labels = slotLabels(slots);
-  if (bestPoints <= currentPoints && emptySlots.length === 0)
+  if (bestPoints <= currentPoints + 0.001 && emptySlots.length === 0)
     return {
       swaps: [],
       currentPoints,
@@ -153,7 +159,9 @@ export function compareLineups(
     const player = id ? byId.get(id) ?? null : null;
     return { slot: c.slot, label: labels[i], player, locked: false, changed: (player?.id ?? null) !== (c.player?.id ?? null) };
   });
-  return { swaps: swaps.sort((a, b) => b.gain - a.gain), currentPoints, bestPoints: Math.max(bestPoints, currentPoints), emptySlots, lineup };
+  // Both totals are plain sums of the numbers shown next to each player.
+  const shownBest = round(lineup.reduce((t, l) => t + (l.player?.value ?? 0), 0));
+  return { swaps: swaps.sort((a, b) => b.gain - a.gain), currentPoints, bestPoints: Math.max(shownBest, currentPoints), emptySlots, lineup };
 }
 
 /**
@@ -197,42 +205,54 @@ export function assignKeepingCurrent(
   return best ?? slots.map(() => null);
 }
 
+/**
+ * The week Sleeper is showing. Sleeper's `week` rolls over before Monday night, so on Monday
+ * it already says next week while your Sleeper lineup (and the Monday game) is still this
+ * week; use `display_week` until all of its games are over.
+ */
+export async function lineupWeek(season: number): Promise<number | undefined> {
+  const state = await getNflState().catch(() => null);
+  const week = Number(state?.week) || 0;
+  const display = Number((state as any)?.display_week) || 0;
+  if (!display || !week || display >= week || String(state?.season_type) !== "regular") return week || undefined;
+  const games = await getGameStates(season, display).catch(() => null);
+  const unfinished = games && [...games.values()].some(g => g.state !== "post");
+  return unfinished ? display : week;
+}
+
 export async function getLineupCheck(leagueId: string, rosterId?: number, ownerId?: string): Promise<LineupCheck> {
   const ctx = await getLeagueContext(leagueId, rosterId, ownerId);
   if (!ctx.me) throw new Error("Your team was not found in this league.");
-  const { week, teamsPlaying, matchups: matchupAdj, weekly: adjusted } = await weeklyAdjustedPlayers(ctx, ctx.me);
+  const targetWeek = await lineupWeek(ctx.values.season);
+  const { week, teamsPlaying, matchups: matchupAdj, weekly: adjusted } = await weeklyAdjustedPlayers(ctx, ctx.me, targetWeek);
   const [matchups, games, projections, rosters] = await Promise.all([
     getMatchups(leagueId, week).catch(() => []),
     getGameStates(ctx.values.season, week).catch(() => null),
     getProjections(ctx.values.season, week).catch(() => ({} as Record<string, any>)),
     getRosters(leagueId).catch(() => []),
   ]);
-  // Use Sleeper's own projection for this week (what you see in Sleeper and next to each player
-  // in this app), to the hundredth. Players who are out or on bye stay at 0; our own estimate is
-  // only a fallback for players Sleeper doesn't project. Players in IR spots can't be started.
-  const receptionPoints = Number(ctx.league?.scoring_settings?.rec ?? 1);
+  // Every number here is Sleeper's projection for this week with your league's scoring, to the
+  // hundredth, exactly what Sleeper shows. A player Sleeper doesn't project counts as 0 (no
+  // estimate of our own), and so does one who is out (Sleeper's injury status) or on bye.
+  // Players in IR spots can't be started.
+  const scoring = ctx.league?.scoring_settings ?? null;
   const reserve = new Set(((rosters ?? []).find((r: any) => Number(r.roster_id) === ctx.me!.rosterId)?.reserve ?? []).map(String));
-  // Who starts is decided by that projection adjusted for the defense (weighed by how good the
-  // player is), weather and injuries around him (see lineupFactors.ts).
   const weekly: CheckPlayer[] = adjusted
     .filter(p => !reserve.has(p.id))
     .map(p => {
       const adj = matchupAdj.get(p.id);
-      if (p.value === 0) return { ...p, value: 0, projection: 0, reasons: [] };
-      const sleeper = projectionFor(projections[p.id], receptionPoints);
-      // Our own estimate already includes the matchup; take it back out before re-applying.
-      const projection = Math.round((sleeper ?? p.value / (adj?.multiplier || 1)) * 100) / 100;
+      const onBye = !!(teamsPlaying && teamsPlaying.size > 0 && p.team && !teamsPlaying.has(p.team));
+      const out = isOutStatus(p.injuryStatus);
+      const projection = out || onBye ? 0 : round(Math.max(0, projectionFor(projections[p.id], scoring) ?? 0));
+      // Matchup, weather and injuries around him: explained, but not part of the math.
       const d = decide(projection, p.position, adj?.components, (p as any).rank, adj?.injuryNotes ?? []);
-      return { ...p, value: d.score, projection, reasons: d.reasons, tier: d.tier };
+      const reasons = out ? [`Ruled ${String(p.injuryStatus).toLowerCase()} in Sleeper`] : onBye ? ["On bye"] : d.reasons;
+      return { ...p, value: projection, projection, reasons, tier: d.tier };
     });
   const mine = (matchups ?? []).find((m: any) => Number(m.roster_id) === ctx.me!.rosterId);
   // Sleeper's starters follow every starting spot in roster_positions; pair them up so a slot type
   // this app doesn't model can't shift players into the wrong spots. "0" = an empty slot.
   const { slots, ids: starterIds } = alignStarters(ctx.league?.roster_positions, mine?.starters ?? []);
-  // A swap has to be clearly better to be worth making: current starters keep their spot unless
-  // someone beats them by more than KEEP_MARGIN (no "swap for +0.05").
-  const startingNow = new Set(starterIds.filter(id => id && id !== "0"));
-  for (const p of weekly) if (startingNow.has(p.id) && p.value > 0) p.value = round(p.value + KEEP_MARGIN);
 
   const locked = new Set<string>();
   const kickoffs = new Set<string>();
@@ -243,9 +263,9 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
   }
 
   const { swaps, currentPoints, bestPoints, emptySlots, lineup } = compareLineups(weekly, starterIds, slots, locked);
-  const byId = new Map(weekly.map(p => [p.id, p]));
-  const currentProjected = round(starterIds.reduce((t, id) => t + (byId.get(id)?.projection ?? 0), 0));
-  const bestProjected = round(lineup.reduce((t, l) => t + (l.player?.projection ?? 0), 0));
+  // Same numbers as currentPoints / bestPoints (kept for older app versions).
+  const currentProjected = currentPoints;
+  const bestProjected = bestPoints;
   const problems: string[] = [];
   // Empty slots nobody on the roster can fill.
   const unfilled = [...emptySlots];

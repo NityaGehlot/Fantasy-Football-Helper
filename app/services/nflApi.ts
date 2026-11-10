@@ -76,7 +76,8 @@ async function loadPlayerStatsByWeek(week: number, season: number): Promise<any[
       defRows.forEach((r: any) => {
         const id = String(r.player_id);
         if (id.startsWith('DEF_')) {
-          map.set(id, r);
+          // Keep the backend's row when it came from Sleeper (nfl-data's is a placeholder until published)
+          if (map.get(id)?.source !== 'sleeper') map.set(id, r);
         } else {
           // also add any defensive individual rows if missing
           if (!map.has(id)) map.set(id, r);

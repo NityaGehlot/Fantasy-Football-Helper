@@ -117,6 +117,14 @@ export const getWeekStats = (season: number, week: number): Promise<Record<strin
     )
   );
 
+// The same weekly stats with the player's name, team and opponent kept (newer endpoint only).
+// Used to fill in weeks nfl-data hasn't published yet. Short TTL so in-progress weeks stay fresh.
+export const getWeekStatLines = (season: number, week: number): Promise<any[]> =>
+  cache.get(`statLines:${season}:${week}`, 5 * MINUTE, async () => {
+    const data = await fetchJson(`${SLEEPER_ROOT}/stats/nfl/${season}/${week}?season_type=regular&${POSITION_QS}`);
+    return Array.isArray(data) ? data : [];
+  });
+
 // Season-to-date stat totals (one row per player). Refreshed every 3 hours.
 export const getSeasonStatRows = (season: number): Promise<StatRow[]> =>
   cache.get(`seasonStats:${season}`, 3 * HOUR, () =>

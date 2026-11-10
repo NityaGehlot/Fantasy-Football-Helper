@@ -1,6 +1,6 @@
 // app/components/LineupCheckSheet.tsx
-// Lineup check: the lineup you have set in Sleeper vs the best one for this week (points
-// already adjusted for matchups, weather, injuries and inactive players), and the swaps to make.
+// Lineup check: the lineup you have set in Sleeper vs the best one for this week (Sleeper's
+// projections with your league's scoring), and the swaps to make.
 
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
@@ -41,7 +41,7 @@ export default function LineupCheckSheet({
       .finally(() => setLoading(false));
   }, [visible, leagueId, team.rosterId]);
 
-  const gain = check ? Math.round((check.bestPoints - check.currentPoints) * 10) / 10 : 0;
+  const gain = check ? Math.round((check.bestPoints - check.currentPoints) * 100) / 100 : 0;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -73,9 +73,10 @@ export default function LineupCheckSheet({
                 </View>
               </View>
               <Text style={styles.note}>
-                Totals are Sleeper's projections adjusted for this week: the defense each player faces (less for
-                the best players at their position), injuries on both teams, weather and inactive players. Each
-                player's number below is Sleeper's own projection. Players whose game already started are locked.
+                Every number is Sleeper's projection with your league's scoring, the same one you see in Sleeper.
+                Totals are the sum of your starters' projections. Players who are out or on bye count as 0, and
+                players whose game already started are locked. Notes on defense, weather and injuries are for
+                context and don't change the numbers.
               </Text>
 
               {check.swaps.length === 0 ? (
@@ -85,7 +86,7 @@ export default function LineupCheckSheet({
                 </View>
               ) : (
                 <>
-                  <Text style={styles.section}>MAKE THESE SWAPS (+{gain.toFixed(2)} AFTER MATCHUPS)</Text>
+                  <Text style={styles.section}>MAKE THESE SWAPS (+{gain.toFixed(2)} PROJECTED)</Text>
                   {check.swaps.map((s, i) => (
                     <View key={i} style={styles.swap}>
                       <Text style={styles.slot}>{s.slot}</Text>

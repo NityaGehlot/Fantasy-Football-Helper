@@ -62,11 +62,42 @@ export function fractionRemaining(game: GameState | undefined | null): number {
 }
 
 // Pick the projection that matches the league's reception scoring.
-export function projectionFor(stats: any, receptionPoints: number): number | null {
+// Sleeper's default scoring (its PPR preset; half-PPR / standard only change `rec`). Sleeper's
+// pts_ppr / pts_half_ppr / pts_std totals are computed with these.
+export const SLEEPER_DEFAULT_SCORING: Record<string, number> = {
+  blk_kick: 2, def_st_ff: 1, def_st_fum_rec: 1, def_st_td: 6, def_td: 6, ff: 1, fgm_0_19: 3, fgm_20_29: 3,
+  fgm_30_39: 3, fgm_40_49: 4, fgm_50p: 5, fgmiss: -1, fum: 0, fum_lost: -2, fum_rec: 2, fum_rec_td: 6, int: 2,
+  pass_2pt: 2, pass_int: -1, pass_td: 4, pass_yd: 0.04, pts_allow_0: 10, pts_allow_1_6: 7, pts_allow_7_13: 4,
+  pts_allow_14_20: 1, pts_allow_21_27: 0, pts_allow_28_34: -1, pts_allow_35p: -4, rec: 1, rec_2pt: 2, rec_td: 6,
+  rec_yd: 0.1, rush_2pt: 2, rush_td: 6, rush_yd: 0.1, sack: 1, safe: 2, st_ff: 1, st_fum_rec: 1, st_td: 6, xpm: 1,
+  xpmiss: -1,
+};
+
+/**
+ * Sleeper's projected points for one player with the league's scoring. Starts from Sleeper's
+ * own total for the closest preset (pts_ppr / pts_half_ppr / pts_std, exactly what Sleeper
+ * shows in a standard league) and adds what the league's custom scoring changes (6-point
+ * passing TDs, TE premium, bonuses...) from Sleeper's projected stat line. Pass the league's
+ * scoring_settings, or just its points per reception.
+ */
+export function projectionFor(stats: any, scoring: number | Record<string, number> | null | undefined): number | null {
   if (!stats) return null;
-  const key = receptionPoints >= 1 ? "pts_ppr" : receptionPoints >= 0.5 ? "pts_half_ppr" : "pts_std";
-  const value = Number(stats[key] ?? stats.pts_ppr);
-  return Number.isFinite(value) ? value : null;
+  const settings = typeof scoring === "object" && scoring ? scoring : null;
+  const rec = Number(settings ? settings.rec ?? 0 : scoring ?? 1);
+  const presetRec = rec >= 1 ? 1 : rec >= 0.5 ? 0.5 : 0;
+  const key = presetRec === 1 ? "pts_ppr" : presetRec === 0.5 ? "pts_half_ppr" : "pts_std";
+  const base = Number(stats[key] ?? stats.pts_ppr);
+  if (!Number.isFinite(base)) return null;
+  if (!settings) return base;
+  const preset: Record<string, number> = { ...SLEEPER_DEFAULT_SCORING, rec: presetRec };
+  let delta = 0;
+  for (const k of new Set([...Object.keys(settings), ...Object.keys(preset)])) {
+    const v = Number(stats[k]);
+    if (!Number.isFinite(v) || v === 0) continue;
+    const diff = (Number(settings[k]) || 0) - (preset[k] ?? 0);
+    if (diff) delta += v * diff;
+  }
+  return Math.round((base + delta) * 100) / 100;
 }
 
 // Approximate standard normal CDF (Abramowitz & Stegun 7.1.26, error < 1.5e-7).
@@ -164,7 +195,8 @@ export function buildLiveSide({
   projections: Record<string, any>;
   stats: Record<string, any>;
   games: Map<string, GameState> | null;
-  receptionPoints: number;
+  // The league's scoring_settings (or just its points per reception)
+  receptionPoints: number | Record<string, number>;
   fallbackProjection: (playerId: string, player: any) => number;
 }): Omit<LiveSide, "winProbability"> {
   const starterIds: string[] = (matchup?.starters ?? []).map(String);

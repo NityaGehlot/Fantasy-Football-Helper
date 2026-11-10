@@ -48,6 +48,7 @@ import { imagesForArticles } from "./services/articleImages";
 import { getAllPlayers, getLeague, getLeagueUsers, getNflState, getRosters, getTransactions, lastSource } from "./services/sleeperServer";
 import { gradeProposal, gradeTrade, pendingTradesFor, tradeForPlayer } from "./services/tradeGrade";
 import { getLineupCheck } from "./services/lineupCheck";
+import { getPlayerInsights } from "./services/playerInsights";
 import { getPlayerRanks } from "./services/playerRanks";
 import { describeMoves } from "./services/leagueMoves";
 import { buildWaiverAdvice } from "./services/waiverAdvice";
@@ -488,6 +489,25 @@ export function registerRoutes(router: Router): void {
     } catch (err) {
       console.error("❌ Failed to load all weeks:", err);
       res.status(500).json({ error: "Failed to load all weeks" });
+    }
+  });
+
+  // ===============================
+  // Expert takes on one player (RotoWire updates + ESPN analyst columns, via ESPN's fantasy feed)
+  // ===============================
+  router.get("/player-insights", async (req: Request, res: Response) => {
+    try {
+      const insights = await getPlayerInsights({
+        espnId: req.query.espnId ? String(req.query.espnId) : undefined,
+        sleeperId: req.query.sleeperId ? String(req.query.sleeperId) : undefined,
+        name: req.query.name ? String(req.query.name) : undefined,
+        limit: Number(req.query.limit) || 8,
+      });
+      res.set("Cache-Control", "public, max-age=300");
+      res.json({ source: "espn", insights });
+    } catch (err) {
+      console.error("❌ Player insights failed:", err);
+      res.status(502).json({ error: "Expert takes unavailable" });
     }
   });
 

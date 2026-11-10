@@ -35,7 +35,7 @@ import { getWeekProjections, projectedPoints, projectedStatLine, scoringLabel, t
 import { getLeague } from '../services/sleeperAPI';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchWaiverAdvice, type WaiverAdvice } from '../services/waiverAdvice';
-import { teamSearchName, xSearchUrl } from '../services/externalLinks';
+import ExpertTakes from '../components/ExpertTakes';
 
 type NewsArticle = {
   title: string;
@@ -85,7 +85,7 @@ export default function PlayerDetailsScreen({ route }: any) {
   const [displaySeasons, setDisplaySeasons] = useState<number[]>(() => [getCurrentNFLSeason()]);
   const [loadingNews, setLoadingNews] = useState(true);
   const [newsUpdatedAt, setNewsUpdatedAt] = useState<string | null>(null);
-  const [newsTab, setNewsTab] = useState<'player' | 'team'>('player');
+  const [newsTab, setNewsTab] = useState<'player' | 'team' | 'experts'>('player');
   const [seasonScope, setSeasonScope] = useState<'whole' | 'regular' | 'post'>('regular');
   const [seasonViewMode, setSeasonViewMode] = useState<'totals' | 'averages'>('totals');
   const [teamPlayedPostseasonByWeek, setTeamPlayedPostseasonByWeek] = useState<Record<number, boolean>>({});
@@ -352,8 +352,9 @@ export default function PlayerDetailsScreen({ route }: any) {
             const offData = offResp.ok ? await offResp.json() : null;
             const defData = defResp.ok ? await defResp.json() : null;
 
-            if (!offData && !defData) {
-              // nothing on GitHub for this season/week — fall back to service
+            if (!offData) {
+              // Offense file not published yet (the week in progress or just finished) — the
+              // backend fills it from Sleeper's live stats.
               try {
                 return await getPlayerStatsByWeek(w, seasonNum);
               } catch (err) {
@@ -1839,19 +1840,22 @@ export default function PlayerDetailsScreen({ route }: any) {
           >
             <Text style={[styles.newsTabText, newsTab === 'team' && styles.newsTabTextActive]}>Team News</Text>
           </TouchableOpacity>
+          {/* Team defenses aren't in ESPN's player feed */}
+          {basePosition !== 'DEF' && (
+            <TouchableOpacity
+              style={[styles.newsTabButton, newsTab === 'experts' && styles.newsTabButtonActive]}
+              onPress={() => setNewsTab('experts')}
+            >
+              <Text style={[styles.newsTabText, newsTab === 'experts' && styles.newsTabTextActive]}>Expert Takes</Text>
+            </TouchableOpacity>
+          )}
         </View>
-        {newsTab === 'player' ? renderNewsCards(playerNews) : renderNewsCards(teamNews)}
-        {/* Live posts about him on X (X's API can't be read for free, so this opens X's own search) */}
-        {!!playerName && (
-          <TouchableOpacity
-            style={styles.xBtn}
-            onPress={() => Linking.openURL(xSearchUrl(newsTab === 'team' ? teamSearchName(displayTeam, playerName) : playerName)).catch(() => undefined)}
-            accessibilityLabel={`Latest posts on X about ${newsTab === 'team' ? displayTeam : playerName}`}
-          >
-            <Text style={styles.xLogo}>𝕏</Text>
-            <Text style={styles.xText}>Latest on X about {newsTab === 'team' ? displayTeam : playerName}</Text>
-            <Ionicons name="open-outline" size={14} color={th.textMuted} />
-          </TouchableOpacity>
+        {newsTab === 'experts' && basePosition !== 'DEF' ? (
+          <ExpertTakes player={player} />
+        ) : newsTab === 'team' ? (
+          renderNewsCards(teamNews)
+        ) : (
+          renderNewsCards(playerNews)
         )}
       </View>
 
@@ -2353,9 +2357,6 @@ const makeStyles = (th: Palette) => ({
     marginTop: 2,
     textAlign: 'center',
   },
-  xBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: th.border, backgroundColor: th.surfaceMuted },
-  xLogo: { fontSize: 16, fontWeight: '900', color: th.text },
-  xText: { flex: 1, fontSize: 13, fontWeight: '700', color: th.text },
   waiverBox: { alignSelf: 'stretch', backgroundColor: th.surfaceMuted, borderRadius: 12, padding: 10, gap: 4 },
   waiverHead: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   waiverTitle: { flex: 1, fontSize: 14, fontWeight: '800', color: th.text },

@@ -114,9 +114,9 @@ export const GUIDE: GuideTopic[] = [
   {
     id: 'favorites',
     title: 'Favorite players and teams',
-    keywords: ['favorite', 'follow', 'star', 'news', 'team news'],
+    keywords: ['favorite', 'follow', 'following', 'star', 'news', 'team news', 'watchlist'],
     answer:
-      'Tap ☆ Follow on any player page (or follow teams from "Your favorites" on Home). Home then shows the latest news about them.',
+      'Tap ☆ Follow on any player page. Home then shows the latest news about them. Tap "Manage" under "Your favorites" on Home to open Following: pick teams there, and see your players sorted into your team, free agents you could pick up, and players on other teams you could trade for, each with this week\'s projection and injury tag. Tap the star to unfollow.',
     screen: 'Home',
     goLabel: 'Open Home',
   },

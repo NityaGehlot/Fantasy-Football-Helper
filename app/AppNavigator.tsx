@@ -15,6 +15,7 @@ import PlayerDetailsScreen from "./screens/PlayerDetailsScreen";
 import DefenseRosterScreen from "./screens/DefenseRosterScreen";
 import ComparePlayerScreen from "./screens/ComparePlayerScreen";
 import TradeIdeasScreen from "./screens/TradeIdeasScreen";
+import FollowingScreen from "./screens/FollowingScreen";
 import LeaguesModal from './components/LeaguesModal';
 import NotificationBell from './components/NotificationBell';
 import HelpAssistant from './components/HelpAssistant';
@@ -62,6 +63,8 @@ export type RootStackParamList = {
     player?: any;
     allWeeksStats?: any;
   };
+  // Players and teams you follow, organized by your team / free agents / other teams
+  Following: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -236,6 +239,7 @@ export default function AppNavigator() {
           <Stack.Screen name="PlayerDetails" component={PlayerDetailsScreen} options={{ title: "Player Details" }} />
           <Stack.Screen name="DefenseRoster" component={DefenseRosterScreen} options={{ title: "Defense Roster" }} />
           <Stack.Screen name="ComparePlayer" component={ComparePlayerScreen} options={{ title: "Compare Players" }} />
+          <Stack.Screen name="Following" component={FollowingScreen} options={{ title: "Following" }} />
         </Stack.Navigator>
         <Tutorial />
         </NotificationProvider>
