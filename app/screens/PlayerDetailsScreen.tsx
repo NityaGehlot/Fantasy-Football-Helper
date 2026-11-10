@@ -35,7 +35,7 @@ import { getWeekProjections, projectedPoints, projectedStatLine, scoringLabel, t
 import { getLeague } from '../services/sleeperAPI';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchWaiverAdvice, type WaiverAdvice } from '../services/waiverAdvice';
-import { teamSearchName, xSearchUrl } from '../services/externalLinks';
+import { fetchPlayerNotes, type PlayerNote } from '../services/playerNotes';
 
 type NewsArticle = {
   title: string;
@@ -97,6 +97,9 @@ export default function PlayerDetailsScreen({ route }: any) {
   const [showTradeFor, setShowTradeFor] = useState(false);
   // Who has him in your open league (your team, another team, or nobody).
   const [owner, setOwner] = useState<Ownership | null | undefined>(undefined);
+  // RotoWire notes + ESPN fantasy columns about him
+  const [notes, setNotes] = useState<PlayerNote[]>([]);
+  const [showAllNotes, setShowAllNotes] = useState(false);
   // For a free agent in your league: FAAB bid or whether to use your waiver priority on him
   const [waiver, setWaiver] = useState<WaiverAdvice | null>(null);
   // Fantasy rank this season (overall / at his position) with your league's scoring
@@ -105,7 +108,7 @@ export default function PlayerDetailsScreen({ route }: any) {
   // 'bye' when that week's file has no one from his team.
   const [projections, setProjections] = useState<Record<number, ProjectionEntry | 'bye' | null>>({});
   // Points per catch in your league (1 = PPR, 0.5 = half, 0 = standard) to pick the right projection
-  const [receptionPoints, setReceptionPoints] = useState(1);
+  const [receptionPoints, setReceptionPoints] = useState<number | Record<string, number>>(1);
   // The season `allWeeksStats` holds, so the weekly range never shows another season's numbers
   const [statsSeason, setStatsSeason] = useState<number | null>(null);
   useEffect(() => {
@@ -1362,7 +1365,7 @@ export default function PlayerDetailsScreen({ route }: any) {
   useEffect(() => {
     if (!activeLeagueId) return;
     getLeague(activeLeagueId)
-      .then((l: any) => setReceptionPoints(Number(l?.scoring_settings?.rec ?? 1)))
+      .then((l: any) => setReceptionPoints(l?.scoring_settings && typeof l.scoring_settings === 'object' ? l.scoring_settings : Number(l?.scoring_settings?.rec ?? 1)))
       .catch(() => undefined);
   }, [activeLeagueId]);
 
@@ -1390,6 +1393,17 @@ export default function PlayerDetailsScreen({ route }: any) {
       </View>
     );
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    setNotes([]);
+    setShowAllNotes(false);
+    if (!player?.player_id) return;
+    fetchPlayerNotes(String(player.player_id), playerName, displayTeam).then(n => !cancelled && setNotes(n));
+    return () => {
+      cancelled = true;
+    };
+  }, [player?.player_id]);
 
   // Waiver advice once we know he's a free agent in your league.
   useEffect(() => {
@@ -1841,19 +1855,46 @@ export default function PlayerDetailsScreen({ route }: any) {
           </TouchableOpacity>
         </View>
         {newsTab === 'player' ? renderNewsCards(playerNews) : renderNewsCards(teamNews)}
-        {/* Live posts about him on X (X's API can't be read for free, so this opens X's own search) */}
-        {!!playerName && (
-          <TouchableOpacity
-            style={styles.xBtn}
-            onPress={() => Linking.openURL(xSearchUrl(newsTab === 'team' ? teamSearchName(displayTeam, playerName) : playerName)).catch(() => undefined)}
-            accessibilityLabel={`Latest posts on X about ${newsTab === 'team' ? displayTeam : playerName}`}
-          >
-            <Text style={styles.xLogo}>𝕏</Text>
-            <Text style={styles.xText}>Latest on X about {newsTab === 'team' ? displayTeam : playerName}</Text>
-            <Ionicons name="open-outline" size={14} color={th.textMuted} />
-          </TouchableOpacity>
-        )}
       </View>
+
+      {/* LATEST ANALYSIS: RotoWire notes and ESPN fantasy columns about him */}
+      {notes.length > 0 && (
+        <View style={styles.section}>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' }}>
+            <Text style={styles.sectionTitle}>Latest analysis</Text>
+            <Text style={{ fontSize: 12, color: th.textMuted }}>RotoWire · ESPN</Text>
+          </View>
+          {(showAllNotes ? notes : notes.slice(0, 3)).map((n, i) => (
+            <TouchableOpacity
+              key={`${n.published}-${i}`}
+              style={styles.noteRow}
+              activeOpacity={n.link ? 0.7 : 1}
+              onPress={() => n.link && Linking.openURL(n.link).catch(() => undefined)}
+            >
+              <View style={styles.noteMeta}>
+                <View style={[styles.noteKind, { backgroundColor: n.kind === 'note' ? th.primarySoft : th.surfaceMuted }]}>
+                  <Text style={[styles.noteKindText, { color: n.kind === 'note' ? th.primary : th.textMuted }]}>
+                    {n.kind === 'note' ? 'PLAYER NOTE' : 'COLUMN'}
+                  </Text>
+                </View>
+                <Text style={styles.noteSource} numberOfLines={1}>
+                  {n.source} · {timeAgo(n.published)}
+                </Text>
+              </View>
+              <Text style={styles.noteHeadline}>{n.headline}</Text>
+              {!!n.analysis && n.analysis !== n.headline && (
+                <Text style={styles.noteText} numberOfLines={showAllNotes ? undefined : 4}>{n.analysis}</Text>
+              )}
+              {!!n.link && <Text style={styles.noteLink}>Read on ESPN ›</Text>}
+            </TouchableOpacity>
+          ))}
+          {notes.length > 3 && (
+            <TouchableOpacity onPress={() => setShowAllNotes(v => !v)} style={{ alignSelf: 'center', paddingTop: 6 }}>
+              <Text style={styles.noteLink}>{showAllNotes ? 'Show less' : `Show all ${notes.length}`}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
 
       {/* ========================= */}
       {/* WEEK STATS LOG */}
@@ -2353,9 +2394,14 @@ const makeStyles = (th: Palette) => ({
     marginTop: 2,
     textAlign: 'center',
   },
-  xBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: th.border, backgroundColor: th.surfaceMuted },
-  xLogo: { fontSize: 16, fontWeight: '900', color: th.text },
-  xText: { flex: 1, fontSize: 13, fontWeight: '700', color: th.text },
+  noteRow: { paddingVertical: 10, borderTopWidth: 1, borderTopColor: th.border, gap: 4 },
+  noteMeta: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  noteKind: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2 },
+  noteKindText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.5 },
+  noteSource: { flex: 1, fontSize: 11, color: th.textMuted },
+  noteHeadline: { fontSize: 14, fontWeight: '700', color: th.text, lineHeight: 19 },
+  noteText: { fontSize: 13, color: th.textMuted, lineHeight: 19 },
+  noteLink: { fontSize: 12, fontWeight: '700', color: th.primary },
   waiverBox: { alignSelf: 'stretch', backgroundColor: th.surfaceMuted, borderRadius: 12, padding: 10, gap: 4 },
   waiverHead: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   waiverTitle: { flex: 1, fontSize: 14, fontWeight: '800', color: th.text },

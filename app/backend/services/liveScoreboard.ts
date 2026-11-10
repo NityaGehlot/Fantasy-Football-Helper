@@ -46,9 +46,10 @@ export async function getLiveScoreboard(leagueId: string, rosterId: number, requ
     return String(user?.metadata?.team_name || user?.display_name || `Team ${rid}`);
   };
 
-  const receptionPoints = Number(league?.scoring_settings?.rec ?? 1);
-  const fallbackProjection = (_id: string, player: any) =>
-    (values && valueForSleeperPlayer(values.index, player)?.value) || 0;
+  // Sleeper's projections in this league's scoring; a player Sleeper doesn't project counts 0
+  // (that's what Sleeper shows too), not an estimate of our own.
+  const receptionPoints = league?.scoring_settings ?? Number(league?.scoring_settings?.rec ?? 1);
+  const fallbackProjection = (_id: string, _player: any) => 0;
 
   const side = (m: any) =>
     buildLiveSide({

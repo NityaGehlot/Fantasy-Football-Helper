@@ -82,6 +82,8 @@ export function slotLabels(slots: string[]): string[] {
 
 const round = (n: number) => Math.round(n * 100) / 100;
 const KEEP_MARGIN = 0.25;
+// Most the matchup / injuries / weather can move a player when breaking a near-tie.
+const TIE_BREAK = 0.5;
 
 /**
  * Pure part: the lineup set in Sleeper vs the best lineup, slot by slot.
@@ -207,24 +209,30 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
     getProjections(ctx.values.season, week).catch(() => ({} as Record<string, any>)),
     getRosters(leagueId).catch(() => []),
   ]);
-  // Use Sleeper's own projection for this week (what you see in Sleeper and next to each player
-  // in this app), to the hundredth. Players who are out or on bye stay at 0; our own estimate is
-  // only a fallback for players Sleeper doesn't project. Players in IR spots can't be started.
-  const receptionPoints = Number(ctx.league?.scoring_settings?.rec ?? 1);
+  // Every number is Sleeper's projection for this week in THIS league's scoring (his projected
+  // stat line x the league's scoring settings, the way Sleeper's app shows it). A player Sleeper
+  // doesn't project counts 0, like in Sleeper. Players in IR spots can't be started.
+  const scoring = ctx.league?.scoring_settings ?? Number(ctx.league?.scoring_settings?.rec ?? 1);
   const reserve = new Set(((rosters ?? []).find((r: any) => Number(r.roster_id) === ctx.me!.rosterId)?.reserve ?? []).map(String));
-  // Who starts is decided by that projection adjusted for the defense (weighed by how good the
-  // player is), weather and injuries around him (see lineupFactors.ts).
-  const weekly: CheckPlayer[] = adjusted
-    .filter(p => !reserve.has(p.id))
-    .map(p => {
-      const adj = matchupAdj.get(p.id);
-      if (p.value === 0) return { ...p, value: 0, projection: 0, reasons: [] };
-      const sleeper = projectionFor(projections[p.id], receptionPoints);
-      // Our own estimate already includes the matchup; take it back out before re-applying.
-      const projection = Math.round((sleeper ?? p.value / (adj?.multiplier || 1)) * 100) / 100;
-      const d = decide(projection, p.position, adj?.components, (p as any).rank, adj?.injuryNotes ?? []);
-      return { ...p, value: d.score, projection, reasons: d.reasons, tier: d.tier };
-    });
+  // The matchup, injuries around him and weather only break near-ties (TIE_BREAK points at most):
+  // they decide between two players Sleeper projects about the same, and explain the call, but
+  // never change a number you see.
+  const decided = (useTieBreak: boolean): CheckPlayer[] =>
+    adjusted
+      .filter(p => !reserve.has(p.id))
+      .map(p => {
+        const adj = matchupAdj.get(p.id);
+        const sleeper = projectionFor(projections[p.id], scoring);
+        const projection = round(sleeper ?? 0);
+        if (sleeper === null || projection <= 0) {
+          const why = sleeper === null ? "No Sleeper projection this week (bye, out or inactive)" : "Sleeper projects 0 points this week";
+          return { ...p, value: 0, projection: 0, reasons: [why] };
+        }
+        const d = decide(projection, p.position, adj?.components, (p as any).rank, adj?.injuryNotes ?? []);
+        const tie = useTieBreak ? Math.max(-TIE_BREAK, Math.min(TIE_BREAK, d.score - projection)) : 0;
+        return { ...p, value: round(projection + tie), projection, reasons: d.reasons.map(r => r.replace(/, [\d.]+ after matchup and injuries$/, "")), tier: d.tier };
+      });
+  let weekly = decided(true);
   const mine = (matchups ?? []).find((m: any) => Number(m.roster_id) === ctx.me!.rosterId);
   // Sleeper's starters follow every starting spot in roster_positions; pair them up so a slot type
   // this app doesn't model can't shift players into the wrong spots. "0" = an empty slot.
@@ -232,7 +240,9 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
   // A swap has to be clearly better to be worth making: current starters keep their spot unless
   // someone beats them by more than KEEP_MARGIN (no "swap for +0.05").
   const startingNow = new Set(starterIds.filter(id => id && id !== "0"));
-  for (const p of weekly) if (startingNow.has(p.id) && p.value > 0) p.value = round(p.value + KEEP_MARGIN);
+  const withKeepMargin = (list: CheckPlayer[]) =>
+    list.map(p => (startingNow.has(p.id) && p.value > 0 ? { ...p, value: round(p.value + KEEP_MARGIN) } : p));
+  weekly = withKeepMargin(weekly);
 
   const locked = new Set<string>();
   const kickoffs = new Set<string>();
@@ -242,10 +252,24 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
     else if (g?.kickoff && Date.parse(g.kickoff) > Date.now()) kickoffs.add(g.kickoff);
   }
 
-  const { swaps, currentPoints, bestPoints, emptySlots, lineup } = compareLineups(weekly, starterIds, slots, locked);
+  let result = compareLineups(weekly, starterIds, slots, locked);
+  const byId0 = new Map(weekly.map(p => [p.id, p]));
+  const sum = (ids: (string | undefined)[]) => round(ids.reduce((t, id) => t + (id ? byId0.get(id)?.projection ?? 0 : 0), 0));
+  // The tie-breaker must never pick a lineup Sleeper projects lower: then decide on projections alone.
+  if (sum(result.lineup.map(l => l.player?.id)) < sum(starterIds) - 0.001) {
+    weekly = withKeepMargin(decided(false));
+    result = compareLineups(weekly, starterIds, slots, locked);
+  }
+  const { emptySlots, lineup } = result;
   const byId = new Map(weekly.map(p => [p.id, p]));
   const currentProjected = round(starterIds.reduce((t, id) => t + (byId.get(id)?.projection ?? 0), 0));
   const bestProjected = round(lineup.reduce((t, l) => t + (l.player?.projection ?? 0), 0));
+  // Shown numbers are Sleeper's only: totals and each swap's gain come from the projections.
+  const currentPoints = currentProjected;
+  const bestPoints = Math.max(bestProjected, currentProjected);
+  const swaps = result.swaps
+    .map(sw => ({ ...sw, gain: round((sw.start.projection ?? 0) - (sw.bench?.projection ?? 0)) }))
+    .sort((a, b) => b.gain - a.gain);
   const problems: string[] = [];
   // Empty slots nobody on the roster can fill.
   const unfilled = [...emptySlots];
@@ -307,8 +331,10 @@ export function findCloseCalls(lineup: LineupSlot[], bench: CheckPlayer[], margi
     const eligible = SLOT_ELIGIBILITY[l.slot as SlotName] ?? [];
     for (const b of bench) {
       if (!eligible.includes(b.position) || b.value <= 0) continue;
-      const diff = round(l.player.value - b.value);
-      if (diff >= 0 && diff <= margin) out.push({ slot: l.label, starter: l.player, bench: b, diff });
+      // The gap shown is Sleeper's projections; the decision value only orders near-ties.
+      const diff = round((l.player.projection ?? l.player.value) - (b.projection ?? b.value));
+      // A starter projected a bit lower only counts if he won the tie-break (better matchup).
+      if (diff <= margin && (diff >= 0 || (diff >= -TIE_BREAK && l.player.value >= b.value))) out.push({ slot: l.label, starter: l.player, bench: b, diff });
     }
   }
   const seen = new Set<string>();

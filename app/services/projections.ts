@@ -5,6 +5,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createCache, HOUR } from './cache';
+import { leaguePoints } from '../backend/utils/leaguePoints';
 
 export type ProjectionEntry = {
   name?: string;
@@ -53,14 +54,25 @@ export async function getWeekProjections(season: number, week: number): Promise<
   }
 }
 
-/** Points in the league's format: full PPR (1 per catch), half PPR (0.5) or standard (0). */
-export function projectedPoints(entry: ProjectionEntry, receptionPoints = 1): number {
+/**
+ * Projected points in the league's scoring: his full projected stat line x the league's scoring
+ * settings (what Sleeper's app shows). With only points-per-catch (or no league), Sleeper's PPR /
+ * half / standard total.
+ */
+export function projectedPoints(entry: ProjectionEntry, scoring: number | Record<string, number> = 1): number {
+  if (scoring && typeof scoring === 'object' && entry.stats && Object.keys(entry.stats).length)
+    return leaguePoints(entry.stats, scoring);
+  const receptionPoints = typeof scoring === 'number' ? scoring : Number(scoring?.rec ?? 1);
   if (receptionPoints >= 1) return entry.ppr;
   if (receptionPoints >= 0.5) return entry.half;
   return entry.std;
 }
 
-export const scoringLabel = (receptionPoints = 1) => (receptionPoints >= 1 ? 'PPR' : receptionPoints >= 0.5 ? 'Half PPR' : 'Standard');
+export const scoringLabel = (scoring: number | Record<string, number> = 1) => {
+  if (scoring && typeof scoring === 'object') return 'your league';
+  const receptionPoints = scoring;
+  return receptionPoints >= 1 ? 'PPR' : receptionPoints >= 0.5 ? 'Half PPR' : 'Standard';
+};
 
 const n1 = (v?: number) => (v === undefined ? '' : Number.isInteger(v) ? String(v) : v.toFixed(1));
 
@@ -73,7 +85,10 @@ export function projectedStatLine(position: string | undefined, s: Record<string
   if (s.rec || s.rec_yd) lines.push(`${n1(s.rec ?? 0)} rec${s.rec_tgt ? ` (${n1(s.rec_tgt)} tgt)` : ''}, ${n1(s.rec_yd ?? 0)} yd${s.rec_td ? `, ${n1(s.rec_td)} TD` : ''}`);
   if (pos === 'K' && (s.fgm || s.xpm)) lines.push(`${n1(s.fgm ?? 0)} FG${s.fga ? ` of ${n1(s.fga)}` : ''}, ${n1(s.xpm ?? 0)} XP`);
   if (pos === 'DEF') {
-    const parts = [s.def_sack ? `${n1(s.def_sack)} sacks` : '', s.def_int ? `${n1(s.def_int)} INT` : '', s.def_fum_rec ? `${n1(s.def_fum_rec)} fum rec` : '', s.pts_allow ? `${n1(s.pts_allow)} pts allowed` : ''].filter(Boolean);
+    const sacks = s.def_sack ?? s.sack;
+    const ints = s.def_int ?? s.int;
+    const fumRec = s.def_fum_rec ?? s.fum_rec;
+    const parts = [sacks ? `${n1(sacks)} sacks` : '', ints ? `${n1(ints)} INT` : '', fumRec ? `${n1(fumRec)} fum rec` : '', s.pts_allow ? `${n1(s.pts_allow)} pts allowed` : ''].filter(Boolean);
     if (parts.length) lines.push(parts.join(', '));
   }
   return lines;

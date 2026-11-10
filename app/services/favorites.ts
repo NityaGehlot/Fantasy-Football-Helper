@@ -58,6 +58,12 @@ export function toggleFavoriteTeam(team: string) {
   save({ ...current, teams });
 }
 
+/** Follow several players at once (e.g. everyone on your fantasy roster). */
+export function followPlayers(ids: string[]) {
+  const players = [...new Set([...current.players, ...ids.map(String)])];
+  if (players.length !== current.players.length) save({ ...current, players });
+}
+
 export function useFavorites(): Favorites {
   const [fav, setFav] = useState(current);
   useEffect(() => {

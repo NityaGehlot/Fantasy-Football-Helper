@@ -7,6 +7,7 @@
 // and only the remaining part of the game can still change, so variance scales with the
 // fraction remaining. The difference of two such totals is ~normal, giving P(win).
 
+import { leaguePoints } from "../utils/leaguePoints";
 import type { GameState } from "./schedule";
 
 export type LivePlayer = {
@@ -61,9 +62,16 @@ export function fractionRemaining(game: GameState | undefined | null): number {
   return Math.max(0.01, Math.min(1, (60 - elapsed) / 60));
 }
 
-// Pick the projection that matches the league's reception scoring.
-export function projectionFor(stats: any, receptionPoints: number): number | null {
+/**
+ * A player's Sleeper projection in YOUR league's scoring, the way Sleeper's app shows it: his
+ * projected stat line (pass yards, catches, FGs by distance...) times the league's scoring
+ * settings. Given only a points-per-catch number (no scoring settings), Sleeper's own PPR /
+ * half-PPR / standard total is used. Null when Sleeper has no projection for him.
+ */
+export function projectionFor(stats: any, scoring: number | Record<string, number> | null | undefined): number | null {
   if (!stats) return null;
+  if (scoring && typeof scoring === "object") return Math.round(leaguePoints(stats, scoring) * 100) / 100;
+  const receptionPoints = typeof scoring === "number" ? scoring : 1;
   const key = receptionPoints >= 1 ? "pts_ppr" : receptionPoints >= 0.5 ? "pts_half_ppr" : "pts_std";
   const value = Number(stats[key] ?? stats.pts_ppr);
   return Number.isFinite(value) ? value : null;
@@ -164,7 +172,8 @@ export function buildLiveSide({
   projections: Record<string, any>;
   stats: Record<string, any>;
   games: Map<string, GameState> | null;
-  receptionPoints: number;
+  // The league's scoring settings (or just points per catch)
+  receptionPoints: number | Record<string, number>;
   fallbackProjection: (playerId: string, player: any) => number;
 }): Omit<LiveSide, "winProbability"> {
   const starterIds: string[] = (matchup?.starters ?? []).map(String);

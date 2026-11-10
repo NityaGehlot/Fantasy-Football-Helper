@@ -51,6 +51,7 @@ import { getLineupCheck } from "./services/lineupCheck";
 import { getPlayerRanks } from "./services/playerRanks";
 import { describeMoves } from "./services/leagueMoves";
 import { buildWaiverAdvice } from "./services/waiverAdvice";
+import { getPlayerNotes } from "./services/playerNotes";
 import { normalizePlayerName } from "./utils/names";
 import { incompatibleStartSitReply } from "./utils/slotCompat";
 import { generateTradeIdeas } from "./services/tradeEngine";
@@ -643,6 +644,28 @@ export function registerRoutes(router: Router): void {
     } catch (err: any) {
       console.error("❌ Waiver advice failed:", err);
       res.status(500).json({ error: err?.message || "Failed to build waiver advice" });
+    }
+  });
+
+  // Latest analysis on a player: RotoWire notes and ESPN fantasy columns (via ESPN's public feed).
+  router.get("/player-notes", async (req: Request, res: Response) => {
+    const id = String(req.query.id ?? "");
+    let name = String(req.query.name ?? "");
+    let team = String(req.query.team ?? "");
+    try {
+      let espnId: string | null = null;
+      if (id) {
+        const players = await getAllPlayers().catch(() => ({} as Record<string, any>));
+        const p = players[id];
+        espnId = p?.espn_id ? String(p.espn_id) : null;
+        name = name || p?.full_name || "";
+        team = team || p?.team || "";
+      }
+      if (!name && !espnId) return res.status(400).json({ error: "id or name is required" });
+      res.json(await getPlayerNotes({ espnId, name, team }));
+    } catch (err: any) {
+      console.error("❌ Player notes failed:", err);
+      res.status(500).json({ error: err?.message || "Failed to load player notes" });
     }
   });
 

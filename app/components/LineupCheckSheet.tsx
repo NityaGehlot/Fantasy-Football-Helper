@@ -41,7 +41,7 @@ export default function LineupCheckSheet({
       .finally(() => setLoading(false));
   }, [visible, leagueId, team.rosterId]);
 
-  const gain = check ? Math.round((check.bestPoints - check.currentPoints) * 10) / 10 : 0;
+  const gain = check ? Math.round((check.bestPoints - check.currentPoints) * 100) / 100 : 0;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -73,9 +73,9 @@ export default function LineupCheckSheet({
                 </View>
               </View>
               <Text style={styles.note}>
-                Totals are Sleeper's projections adjusted for this week: the defense each player faces (less for
-                the best players at their position), injuries on both teams, weather and inactive players. Each
-                player's number below is Sleeper's own projection. Players whose game already started are locked.
+                Every number is Sleeper's projection in your league's scoring, the same as in the Sleeper app.
+                When two players are projected about the same, the defense they face, injuries around them and
+                weather decide (see each reason). Players whose game already started are locked.
               </Text>
 
               {check.swaps.length === 0 ? (
@@ -85,7 +85,7 @@ export default function LineupCheckSheet({
                 </View>
               ) : (
                 <>
-                  <Text style={styles.section}>MAKE THESE SWAPS (+{gain.toFixed(2)} AFTER MATCHUPS)</Text>
+                  <Text style={styles.section}>MAKE THESE SWAPS (+{gain.toFixed(2)} PROJECTED PTS)</Text>
                   {check.swaps.map((s, i) => (
                     <View key={i} style={styles.swap}>
                       <Text style={styles.slot}>{s.slot}</Text>

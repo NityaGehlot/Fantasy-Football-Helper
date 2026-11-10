@@ -5,6 +5,9 @@
 
 import { getAllPlayers, getSeasonStatRows } from "./sleeperServer";
 import { createTtlCache, HOUR } from "../utils/ttlCache";
+import { leaguePoints } from "../utils/leaguePoints";
+
+export { leaguePoints };
 
 export type PlayerRank = {
   points: number; // fantasy points this season
@@ -17,24 +20,6 @@ export type PlayerRank = {
 
 const RANKED = new Set(["QB", "RB", "WR", "TE", "K", "DEF"]);
 const cache = createTtlCache();
-
-/** Fantasy points for a stat line with the league's scoring (falls back to Sleeper's PPR / half / standard totals). */
-export function leaguePoints(stats: Record<string, number>, scoring?: Record<string, number> | null): number {
-  if (scoring && Object.keys(scoring).length) {
-    let total = 0;
-    let matched = false;
-    for (const [key, weight] of Object.entries(scoring)) {
-      const v = Number(stats[key]);
-      if (!Number.isFinite(v) || !Number.isFinite(Number(weight))) continue;
-      total += v * Number(weight);
-      matched = true;
-    }
-    if (matched) return Math.round(total * 100) / 100;
-  }
-  const rec = Number(scoring?.rec ?? 1);
-  const key = rec >= 1 ? "pts_ppr" : rec >= 0.5 ? "pts_half_ppr" : "pts_std";
-  return Math.round(Number(stats[key] ?? stats.pts_ppr ?? 0) * 100) / 100;
-}
 
 /** Overall and position ranks by points (ties share a rank, like 1, 2, 2, 4). */
 export function computeRanks(

@@ -186,10 +186,10 @@ export function lineupListing(check: ListingInput): string {
     .filter(s => !s.from)
     .map(
       s =>
-        `• Start ${s.start.name}${s.bench ? ` instead of ${s.bench.name}${s.movesTo ? ` (${s.bench.name} moves to ${s.movesTo})` : ""}` : ` in your empty ${s.slot} spot`} (+${s.gain.toFixed(2)} after matchup and injuries)`
+        `• Start ${s.start.name}${s.bench ? ` instead of ${s.bench.name}${s.movesTo ? ` (${s.bench.name} moves to ${s.movesTo})` : ""}` : ` in your empty ${s.slot} spot`} (${s.gain >= 0 ? "+" : ""}${s.gain.toFixed(2)} projected)`
     );
   const close = (check.closeCalls ?? []).map(
-    c => `• ${c.slot}: ${c.starter.name} (${shown(c.starter)}) over ${c.bench.name} (${shown(c.bench)}), ${c.diff.toFixed(2)} apart${keyReason(c.bench) ? ` · ${c.bench.name}: ${keyReason(c.bench)}` : ""}`
+    c => `• ${c.slot}: ${c.starter.name} (${shown(c.starter)}) over ${c.bench.name} (${shown(c.bench)}), ${Math.abs(c.diff).toFixed(2)} ${c.diff >= 0 ? "apart" : "behind on projection but a better matchup"}${keyReason(c.bench) ? ` · ${c.bench.name}: ${keyReason(c.bench)}` : ""}`
   );
   return [
     `Best lineup for week ${check.week} (same order as Sleeper; points are Sleeper's projections):`,

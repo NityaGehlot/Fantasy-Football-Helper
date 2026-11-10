@@ -4,6 +4,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
 import { favoriteNews, favoriteReason, toggleFavoritePlayer, toggleFavoriteTeam, useFavorites } from '../services/favorites';
 import { getNewsFiles, TEAM_NEWS_FILES } from '../services/newsService';
@@ -20,6 +21,7 @@ export default function FavoritesNews({ players }: { players: Record<string, any
   const [news, setNews] = useState<NewsItem[]>([]);
   const [images, setImages] = useState<Record<string, string | null>>({});
   const [editing, setEditing] = useState(false);
+  const navigation = useNavigation<any>();
 
   useEffect(() => {
     getNewsFiles(TEAM_NEWS_FILES).then(setNews).catch(() => setNews([]));
@@ -41,6 +43,12 @@ export default function FavoritesNews({ players }: { players: Record<string, any
             {followingCount ? `News about the ${followingCount} players and teams you follow` : 'Follow players and teams to see their news here'}
           </Text>
         </View>
+        {followingCount > 0 && (
+          <Pressable style={styles.editBtn} onPress={() => navigation.navigate('Following')} accessibilityLabel="See everyone you follow">
+            <Ionicons name="list-outline" size={14} color={colors.primary} />
+            <Text style={styles.editText}>Manage</Text>
+          </Pressable>
+        )}
         <Pressable style={styles.editBtn} onPress={() => setEditing(true)}>
           <Ionicons name={followingCount ? 'create-outline' : 'add'} size={14} color={colors.primary} />
           <Text style={styles.editText}>{followingCount ? 'Edit' : 'Follow'}</Text>
