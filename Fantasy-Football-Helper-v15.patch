@@ -1,0 +1,1201 @@
+diff --git a/app/AppNavigator.tsx b/app/AppNavigator.tsx
+index 4773070..95c2a86 100644
+--- a/app/AppNavigator.tsx
++++ b/app/AppNavigator.tsx
+@@ -15,6 +15,7 @@ import PlayerDetailsScreen from "./screens/PlayerDetailsScreen";
+ import DefenseRosterScreen from "./screens/DefenseRosterScreen";
+ import ComparePlayerScreen from "./screens/ComparePlayerScreen";
+ import TradeIdeasScreen from "./screens/TradeIdeasScreen";
++import FollowingScreen from "./screens/FollowingScreen";
+ import LeaguesModal from './components/LeaguesModal';
+ import NotificationBell from './components/NotificationBell';
+ import HelpAssistant from './components/HelpAssistant';
+@@ -62,6 +63,7 @@ export type RootStackParamList = {
+     player?: any;
+     allWeeksStats?: any;
+   };
++  Following: undefined;
+ };
+ 
+ const Stack = createNativeStackNavigator<RootStackParamList>();
+@@ -236,6 +238,7 @@ export default function AppNavigator() {
+           <Stack.Screen name="PlayerDetails" component={PlayerDetailsScreen} options={{ title: "Player Details" }} />
+           <Stack.Screen name="DefenseRoster" component={DefenseRosterScreen} options={{ title: "Defense Roster" }} />
+           <Stack.Screen name="ComparePlayer" component={ComparePlayerScreen} options={{ title: "Compare Players" }} />
++          <Stack.Screen name="Following" component={FollowingScreen} options={{ title: "Following" }} />
+         </Stack.Navigator>
+         <Tutorial />
+         </NotificationProvider>
+diff --git a/app/backend/routes.ts b/app/backend/routes.ts
+index 3ad4165..2ed3011 100644
+--- a/app/backend/routes.ts
++++ b/app/backend/routes.ts
+@@ -51,6 +51,7 @@ import { getLineupCheck } from "./services/lineupCheck";
+ import { getPlayerRanks } from "./services/playerRanks";
+ import { describeMoves } from "./services/leagueMoves";
+ import { buildWaiverAdvice } from "./services/waiverAdvice";
++import { getPlayerNotes } from "./services/playerNotes";
+ import { normalizePlayerName } from "./utils/names";
+ import { incompatibleStartSitReply } from "./utils/slotCompat";
+ import { generateTradeIdeas } from "./services/tradeEngine";
+@@ -646,6 +647,28 @@ export function registerRoutes(router: Router): void {
+     }
+   });
+ 
++  // Latest analysis on a player: RotoWire notes and ESPN fantasy columns (via ESPN's public feed).
++  router.get("/player-notes", async (req: Request, res: Response) => {
++    const id = String(req.query.id ?? "");
++    let name = String(req.query.name ?? "");
++    let team = String(req.query.team ?? "");
++    try {
++      let espnId: string | null = null;
++      if (id) {
++        const players = await getAllPlayers().catch(() => ({} as Record<string, any>));
++        const p = players[id];
++        espnId = p?.espn_id ? String(p.espn_id) : null;
++        name = name || p?.full_name || "";
++        team = team || p?.team || "";
++      }
++      if (!name && !espnId) return res.status(400).json({ error: "id or name is required" });
++      res.json(await getPlayerNotes({ espnId, name, team }));
++    } catch (err: any) {
++      console.error("❌ Player notes failed:", err);
++      res.status(500).json({ error: err?.message || "Failed to load player notes" });
++    }
++  });
++
+   // Fantasy ranks this season (overall and at each position) with the league's scoring.
+   router.get("/player-ranks", async (req: Request, res: Response) => {
+     try {
+diff --git a/app/backend/services/advisor.ts b/app/backend/services/advisor.ts
+index 6c6d8c4..27fee12 100644
+--- a/app/backend/services/advisor.ts
++++ b/app/backend/services/advisor.ts
+@@ -186,10 +186,10 @@ export function lineupListing(check: ListingInput): string {
+     .filter(s => !s.from)
+     .map(
+       s =>
+-        `• Start ${s.start.name}${s.bench ? ` instead of ${s.bench.name}${s.movesTo ? ` (${s.bench.name} moves to ${s.movesTo})` : ""}` : ` in your empty ${s.slot} spot`} (+${s.gain.toFixed(2)} after matchup and injuries)`
++        `• Start ${s.start.name}${s.bench ? ` instead of ${s.bench.name}${s.movesTo ? ` (${s.bench.name} moves to ${s.movesTo})` : ""}` : ` in your empty ${s.slot} spot`} (${s.gain >= 0 ? "+" : ""}${s.gain.toFixed(2)} projected)`
+     );
+   const close = (check.closeCalls ?? []).map(
+-    c => `• ${c.slot}: ${c.starter.name} (${shown(c.starter)}) over ${c.bench.name} (${shown(c.bench)}), ${c.diff.toFixed(2)} apart${keyReason(c.bench) ? ` · ${c.bench.name}: ${keyReason(c.bench)}` : ""}`
++    c => `• ${c.slot}: ${c.starter.name} (${shown(c.starter)}) over ${c.bench.name} (${shown(c.bench)}), ${Math.abs(c.diff).toFixed(2)} ${c.diff >= 0 ? "apart" : "behind on projection but a better matchup"}${keyReason(c.bench) ? ` · ${c.bench.name}: ${keyReason(c.bench)}` : ""}`
+   );
+   return [
+     `Best lineup for week ${check.week} (same order as Sleeper; points are Sleeper's projections):`,
+diff --git a/app/backend/services/lineupCheck.ts b/app/backend/services/lineupCheck.ts
+index 3b6fa78..90c9c4e 100644
+--- a/app/backend/services/lineupCheck.ts
++++ b/app/backend/services/lineupCheck.ts
+@@ -82,6 +82,8 @@ export function slotLabels(slots: string[]): string[] {
+ 
+ const round = (n: number) => Math.round(n * 100) / 100;
+ const KEEP_MARGIN = 0.25;
++// Most the matchup / injuries / weather can move a player when breaking a near-tie.
++const TIE_BREAK = 0.5;
+ 
+ /**
+  * Pure part: the lineup set in Sleeper vs the best lineup, slot by slot.
+@@ -207,24 +209,30 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
+     getProjections(ctx.values.season, week).catch(() => ({} as Record<string, any>)),
+     getRosters(leagueId).catch(() => []),
+   ]);
+-  // Use Sleeper's own projection for this week (what you see in Sleeper and next to each player
+-  // in this app), to the hundredth. Players who are out or on bye stay at 0; our own estimate is
+-  // only a fallback for players Sleeper doesn't project. Players in IR spots can't be started.
+-  const receptionPoints = Number(ctx.league?.scoring_settings?.rec ?? 1);
++  // Every number is Sleeper's projection for this week in THIS league's scoring (his projected
++  // stat line x the league's scoring settings, the way Sleeper's app shows it). A player Sleeper
++  // doesn't project counts 0, like in Sleeper. Players in IR spots can't be started.
++  const scoring = ctx.league?.scoring_settings ?? Number(ctx.league?.scoring_settings?.rec ?? 1);
+   const reserve = new Set(((rosters ?? []).find((r: any) => Number(r.roster_id) === ctx.me!.rosterId)?.reserve ?? []).map(String));
+-  // Who starts is decided by that projection adjusted for the defense (weighed by how good the
+-  // player is), weather and injuries around him (see lineupFactors.ts).
+-  const weekly: CheckPlayer[] = adjusted
+-    .filter(p => !reserve.has(p.id))
+-    .map(p => {
+-      const adj = matchupAdj.get(p.id);
+-      if (p.value === 0) return { ...p, value: 0, projection: 0, reasons: [] };
+-      const sleeper = projectionFor(projections[p.id], receptionPoints);
+-      // Our own estimate already includes the matchup; take it back out before re-applying.
+-      const projection = Math.round((sleeper ?? p.value / (adj?.multiplier || 1)) * 100) / 100;
+-      const d = decide(projection, p.position, adj?.components, (p as any).rank, adj?.injuryNotes ?? []);
+-      return { ...p, value: d.score, projection, reasons: d.reasons, tier: d.tier };
+-    });
++  // The matchup, injuries around him and weather only break near-ties (TIE_BREAK points at most):
++  // they decide between two players Sleeper projects about the same, and explain the call, but
++  // never change a number you see.
++  const decided = (useTieBreak: boolean): CheckPlayer[] =>
++    adjusted
++      .filter(p => !reserve.has(p.id))
++      .map(p => {
++        const adj = matchupAdj.get(p.id);
++        const sleeper = projectionFor(projections[p.id], scoring);
++        const projection = round(sleeper ?? 0);
++        if (sleeper === null || projection <= 0) {
++          const why = sleeper === null ? "No Sleeper projection this week (bye, out or inactive)" : "Sleeper projects 0 points this week";
++          return { ...p, value: 0, projection: 0, reasons: [why] };
++        }
++        const d = decide(projection, p.position, adj?.components, (p as any).rank, adj?.injuryNotes ?? []);
++        const tie = useTieBreak ? Math.max(-TIE_BREAK, Math.min(TIE_BREAK, d.score - projection)) : 0;
++        return { ...p, value: round(projection + tie), projection, reasons: d.reasons.map(r => r.replace(/, [\d.]+ after matchup and injuries$/, "")), tier: d.tier };
++      });
++  let weekly = decided(true);
+   const mine = (matchups ?? []).find((m: any) => Number(m.roster_id) === ctx.me!.rosterId);
+   // Sleeper's starters follow every starting spot in roster_positions; pair them up so a slot type
+   // this app doesn't model can't shift players into the wrong spots. "0" = an empty slot.
+@@ -232,7 +240,9 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
+   // A swap has to be clearly better to be worth making: current starters keep their spot unless
+   // someone beats them by more than KEEP_MARGIN (no "swap for +0.05").
+   const startingNow = new Set(starterIds.filter(id => id && id !== "0"));
+-  for (const p of weekly) if (startingNow.has(p.id) && p.value > 0) p.value = round(p.value + KEEP_MARGIN);
++  const withKeepMargin = (list: CheckPlayer[]) =>
++    list.map(p => (startingNow.has(p.id) && p.value > 0 ? { ...p, value: round(p.value + KEEP_MARGIN) } : p));
++  weekly = withKeepMargin(weekly);
+ 
+   const locked = new Set<string>();
+   const kickoffs = new Set<string>();
+@@ -242,10 +252,24 @@ export async function getLineupCheck(leagueId: string, rosterId?: number, ownerI
+     else if (g?.kickoff && Date.parse(g.kickoff) > Date.now()) kickoffs.add(g.kickoff);
+   }
+ 
+-  const { swaps, currentPoints, bestPoints, emptySlots, lineup } = compareLineups(weekly, starterIds, slots, locked);
++  let result = compareLineups(weekly, starterIds, slots, locked);
++  const byId0 = new Map(weekly.map(p => [p.id, p]));
++  const sum = (ids: (string | undefined)[]) => round(ids.reduce((t, id) => t + (id ? byId0.get(id)?.projection ?? 0 : 0), 0));
++  // The tie-breaker must never pick a lineup Sleeper projects lower: then decide on projections alone.
++  if (sum(result.lineup.map(l => l.player?.id)) < sum(starterIds) - 0.001) {
++    weekly = withKeepMargin(decided(false));
++    result = compareLineups(weekly, starterIds, slots, locked);
++  }
++  const { emptySlots, lineup } = result;
+   const byId = new Map(weekly.map(p => [p.id, p]));
+   const currentProjected = round(starterIds.reduce((t, id) => t + (byId.get(id)?.projection ?? 0), 0));
+   const bestProjected = round(lineup.reduce((t, l) => t + (l.player?.projection ?? 0), 0));
++  // Shown numbers are Sleeper's only: totals and each swap's gain come from the projections.
++  const currentPoints = currentProjected;
++  const bestPoints = Math.max(bestProjected, currentProjected);
++  const swaps = result.swaps
++    .map(sw => ({ ...sw, gain: round((sw.start.projection ?? 0) - (sw.bench?.projection ?? 0)) }))
++    .sort((a, b) => b.gain - a.gain);
+   const problems: string[] = [];
+   // Empty slots nobody on the roster can fill.
+   const unfilled = [...emptySlots];
+@@ -307,8 +331,10 @@ export function findCloseCalls(lineup: LineupSlot[], bench: CheckPlayer[], margi
+     const eligible = SLOT_ELIGIBILITY[l.slot as SlotName] ?? [];
+     for (const b of bench) {
+       if (!eligible.includes(b.position) || b.value <= 0) continue;
+-      const diff = round(l.player.value - b.value);
+-      if (diff >= 0 && diff <= margin) out.push({ slot: l.label, starter: l.player, bench: b, diff });
++      // The gap shown is Sleeper's projections; the decision value only orders near-ties.
++      const diff = round((l.player.projection ?? l.player.value) - (b.projection ?? b.value));
++      // A starter projected a bit lower only counts if he won the tie-break (better matchup).
++      if (diff <= margin && (diff >= 0 || (diff >= -TIE_BREAK && l.player.value >= b.value))) out.push({ slot: l.label, starter: l.player, bench: b, diff });
+     }
+   }
+   const seen = new Set<string>();
+diff --git a/app/backend/services/liveMatchup.ts b/app/backend/services/liveMatchup.ts
+index a2764cd..0572318 100644
+--- a/app/backend/services/liveMatchup.ts
++++ b/app/backend/services/liveMatchup.ts
+@@ -7,6 +7,7 @@
+ // and only the remaining part of the game can still change, so variance scales with the
+ // fraction remaining. The difference of two such totals is ~normal, giving P(win).
+ 
++import { leaguePoints } from "../utils/leaguePoints";
+ import type { GameState } from "./schedule";
+ 
+ export type LivePlayer = {
+@@ -61,9 +62,16 @@ export function fractionRemaining(game: GameState | undefined | null): number {
+   return Math.max(0.01, Math.min(1, (60 - elapsed) / 60));
+ }
+ 
+-// Pick the projection that matches the league's reception scoring.
+-export function projectionFor(stats: any, receptionPoints: number): number | null {
++/**
++ * A player's Sleeper projection in YOUR league's scoring, the way Sleeper's app shows it: his
++ * projected stat line (pass yards, catches, FGs by distance...) times the league's scoring
++ * settings. Given only a points-per-catch number (no scoring settings), Sleeper's own PPR /
++ * half-PPR / standard total is used. Null when Sleeper has no projection for him.
++ */
++export function projectionFor(stats: any, scoring: number | Record<string, number> | null | undefined): number | null {
+   if (!stats) return null;
++  if (scoring && typeof scoring === "object") return Math.round(leaguePoints(stats, scoring) * 100) / 100;
++  const receptionPoints = typeof scoring === "number" ? scoring : 1;
+   const key = receptionPoints >= 1 ? "pts_ppr" : receptionPoints >= 0.5 ? "pts_half_ppr" : "pts_std";
+   const value = Number(stats[key] ?? stats.pts_ppr);
+   return Number.isFinite(value) ? value : null;
+@@ -164,7 +172,8 @@ export function buildLiveSide({
+   projections: Record<string, any>;
+   stats: Record<string, any>;
+   games: Map<string, GameState> | null;
+-  receptionPoints: number;
++  // The league's scoring settings (or just points per catch)
++  receptionPoints: number | Record<string, number>;
+   fallbackProjection: (playerId: string, player: any) => number;
+ }): Omit<LiveSide, "winProbability"> {
+   const starterIds: string[] = (matchup?.starters ?? []).map(String);
+diff --git a/app/backend/services/liveScoreboard.ts b/app/backend/services/liveScoreboard.ts
+index e3b05db..192eeaa 100644
+--- a/app/backend/services/liveScoreboard.ts
++++ b/app/backend/services/liveScoreboard.ts
+@@ -46,9 +46,10 @@ export async function getLiveScoreboard(leagueId: string, rosterId: number, requ
+     return String(user?.metadata?.team_name || user?.display_name || `Team ${rid}`);
+   };
+ 
+-  const receptionPoints = Number(league?.scoring_settings?.rec ?? 1);
+-  const fallbackProjection = (_id: string, player: any) =>
+-    (values && valueForSleeperPlayer(values.index, player)?.value) || 0;
++  // Sleeper's projections in this league's scoring; a player Sleeper doesn't project counts 0
++  // (that's what Sleeper shows too), not an estimate of our own.
++  const receptionPoints = league?.scoring_settings ?? Number(league?.scoring_settings?.rec ?? 1);
++  const fallbackProjection = (_id: string, _player: any) => 0;
+ 
+   const side = (m: any) =>
+     buildLiveSide({
+diff --git a/app/backend/services/playerNotes.ts b/app/backend/services/playerNotes.ts
+new file mode 100644
+index 0000000..36a6c86
+--- /dev/null
++++ b/app/backend/services/playerNotes.ts
+@@ -0,0 +1,127 @@
++// app/backend/services/playerNotes.ts
++// "Latest analysis" for a player: RotoWire's player notes (the news in one line plus a paragraph
++// of fantasy analysis) and ESPN's fantasy columns that discuss him, from ESPN's public fantasy
++// news feed. Players are matched to ESPN by the ESPN id Sleeper has for them, or by name + team
++// on ESPN's team rosters (Sleeper only has ESPN ids for some players).
++
++import fetch from "node-fetch";
++import { createTtlCache, HOUR, MINUTE } from "../utils/ttlCache";
++import { normalizePlayerName } from "../utils/names";
++
++const ESPN = process.env.ESPN_API_ROOT || "https://site.api.espn.com/apis";
++const cache = createTtlCache();
++
++export type PlayerNote = {
++  kind: "note" | "article";
++  headline: string;
++  // RotoWire: the analysis paragraph; ESPN column: its summary
++  analysis: string;
++  published: string;
++  source: string;
++  link?: string;
++  image?: string;
++};
++
++// ESPN and Sleeper spell a few teams differently.
++const TEAM_ALIASES: Record<string, string> = { WSH: "WAS", JAC: "JAX", LA: "LAR" };
++const teamKey = (t: unknown) => {
++  const s = String(t ?? "").toUpperCase();
++  return TEAM_ALIASES[s] ?? s;
++};
++
++async function getJson(url: string): Promise<any> {
++  const res = await fetch(url, { timeout: 15000 });
++  if (!res.ok) throw new Error(`ESPN request failed (${res.status})`);
++  return res.json();
++}
++
++/** name|TEAM -> ESPN athlete id (and name -> id when unique), from all 32 team rosters. */
++export async function espnRosterIndex(): Promise<Map<string, string>> {
++  return cache.get("rosters", 12 * HOUR, async () => {
++    const teams = await getJson(`${ESPN}/site/v2/sports/football/nfl/teams`);
++    const list: any[] = teams?.sports?.[0]?.leagues?.[0]?.teams?.map((t: any) => t.team) ?? [];
++    const index = new Map<string, string>();
++    const nameCount = new Map<string, number>();
++    await Promise.all(
++      list.map(async t => {
++        const roster = await getJson(`${ESPN}/site/v2/sports/football/nfl/teams/${t.id}/roster`).catch(() => null);
++        for (const group of roster?.athletes ?? [])
++          for (const a of group?.items ?? []) {
++            const name = normalizePlayerName(a.fullName ?? "");
++            if (!name || !a.id) continue;
++            index.set(`${name}|${teamKey(t.abbreviation)}`, String(a.id));
++            index.set(name, String(a.id));
++            nameCount.set(name, (nameCount.get(name) ?? 0) + 1);
++          }
++      })
++    );
++    // A name shared by two players can't be matched without the team.
++    for (const [name, n] of nameCount) if (n > 1) index.delete(name);
++    return index;
++  });
++}
++
++export function resolveEspnId(index: Map<string, string>, p: { espnId?: string | null; name: string; team?: string | null }): string | null {
++  if (p.espnId) return String(p.espnId);
++  const name = normalizePlayerName(p.name);
++  return index.get(`${name}|${teamKey(p.team)}`) ?? index.get(name) ?? null;
++}
++
++const stripHtml = (html: string) =>
++  String(html ?? "")
++    .replace(/<(photo|video)\d+>/gi, " ")
++    .replace(/<[^>]+>/g, " ")
++    .replace(/&nbsp;/g, " ")
++    .replace(/&amp;/g, "&")
++    .replace(/&#39;|&rsquo;/g, "'")
++    .replace(/&quot;|&ldquo;|&rdquo;/g, '"')
++    .replace(/\s+/g, " ")
++    .trim();
++
++/** ESPN's fantasy news feed for one player -> notes (newest first). */
++export function parsePlayerNews(data: any, playerName: string, { notes = 5, articles = 3 } = {}): PlayerNote[] {
++  const last = normalizePlayerName(playerName).split(" ").pop() ?? "";
++  const out: PlayerNote[] = [];
++  let nNotes = 0;
++  let nArticles = 0;
++  for (const a of data?.feed ?? []) {
++    if (!a?.headline || String(a.premium) === "true") continue;
++    if (a.type === "Rotowire") {
++      if (nNotes >= notes) continue;
++      nNotes++;
++      out.push({
++        kind: "note",
++        headline: stripHtml(a.headline),
++        analysis: stripHtml(a.story ?? ""),
++        published: String(a.published ?? a.lastModified ?? ""),
++        source: "RotoWire",
++      });
++    } else {
++      // ESPN columns: only ones that actually talk about him.
++      const text = normalizePlayerName(`${a.headline} ${a.description ?? ""} ${stripHtml(a.story ?? "").slice(0, 4000)}`);
++      if (nArticles >= articles || !last || !` ${text} `.includes(` ${last} `)) continue;
++      nArticles++;
++      out.push({
++        kind: "article",
++        headline: stripHtml(a.headline),
++        analysis: stripHtml(a.description ?? ""),
++        published: String(a.published ?? ""),
++        source: a.byline ? `ESPN · ${a.byline}` : "ESPN",
++        link: a.links?.web?.href,
++        image: a.images?.[0]?.url,
++      });
++    }
++  }
++  return out.sort((x, y) => y.published.localeCompare(x.published));
++}
++
++/** Latest analysis for a player (cached 30 minutes). Empty when ESPN doesn't know him. */
++export async function getPlayerNotes(p: { espnId?: string | null; name: string; team?: string | null }): Promise<{ espnId: string | null; notes: PlayerNote[] }> {
++  const index = p.espnId ? new Map<string, string>() : await espnRosterIndex().catch(() => new Map<string, string>());
++  const espnId = resolveEspnId(index, p);
++  if (!espnId) return { espnId: null, notes: [] };
++  const notes = await cache.get(`notes:${espnId}`, 30 * MINUTE, async () =>
++    parsePlayerNews(await getJson(`${ESPN}/fantasy/v2/games/ffl/news/players?limit=25&playerId=${espnId}`), p.name)
++  );
++  return { espnId, notes };
++}
+diff --git a/app/backend/services/playerRanks.ts b/app/backend/services/playerRanks.ts
+index 3948a0a..cc42526 100644
+--- a/app/backend/services/playerRanks.ts
++++ b/app/backend/services/playerRanks.ts
+@@ -5,6 +5,9 @@
+ 
+ import { getAllPlayers, getSeasonStatRows } from "./sleeperServer";
+ import { createTtlCache, HOUR } from "../utils/ttlCache";
++import { leaguePoints } from "../utils/leaguePoints";
++
++export { leaguePoints };
+ 
+ export type PlayerRank = {
+   points: number; // fantasy points this season
+@@ -18,24 +21,6 @@ export type PlayerRank = {
+ const RANKED = new Set(["QB", "RB", "WR", "TE", "K", "DEF"]);
+ const cache = createTtlCache();
+ 
+-/** Fantasy points for a stat line with the league's scoring (falls back to Sleeper's PPR / half / standard totals). */
+-export function leaguePoints(stats: Record<string, number>, scoring?: Record<string, number> | null): number {
+-  if (scoring && Object.keys(scoring).length) {
+-    let total = 0;
+-    let matched = false;
+-    for (const [key, weight] of Object.entries(scoring)) {
+-      const v = Number(stats[key]);
+-      if (!Number.isFinite(v) || !Number.isFinite(Number(weight))) continue;
+-      total += v * Number(weight);
+-      matched = true;
+-    }
+-    if (matched) return Math.round(total * 100) / 100;
+-  }
+-  const rec = Number(scoring?.rec ?? 1);
+-  const key = rec >= 1 ? "pts_ppr" : rec >= 0.5 ? "pts_half_ppr" : "pts_std";
+-  return Math.round(Number(stats[key] ?? stats.pts_ppr ?? 0) * 100) / 100;
+-}
+-
+ /** Overall and position ranks by points (ties share a rank, like 1, 2, 2, 4). */
+ export function computeRanks(
+   rows: { id: string; position: string; stats: Record<string, number> }[],
+diff --git a/app/backend/utils/leaguePoints.ts b/app/backend/utils/leaguePoints.ts
+new file mode 100644
+index 0000000..661c9f7
+--- /dev/null
++++ b/app/backend/utils/leaguePoints.ts
+@@ -0,0 +1,22 @@
++// app/backend/utils/leaguePoints.ts
++// Fantasy points for a stat line with a league's own scoring settings, the way Sleeper scores
++// (Sleeper's stat names are the same as its scoring-setting keys). Pure code: used by the backend
++// (ranks, lineup check, live scores) and the app (projections on player pages).
++
++/** Points for a stat line; falls back to Sleeper's PPR / half / standard totals when no stat matches. */
++export function leaguePoints(stats: Record<string, number>, scoring?: Record<string, number> | null): number {
++  if (scoring && Object.keys(scoring).length) {
++    let total = 0;
++    let matched = false;
++    for (const [key, weight] of Object.entries(scoring)) {
++      const v = Number(stats[key]);
++      if (!Number.isFinite(v) || !Number.isFinite(Number(weight))) continue;
++      total += v * Number(weight);
++      matched = true;
++    }
++    if (matched) return Math.round(total * 100) / 100;
++  }
++  const rec = Number(scoring?.rec ?? 1);
++  const key = rec >= 1 ? "pts_ppr" : rec >= 0.5 ? "pts_half_ppr" : "pts_std";
++  return Math.round(Number(stats[key] ?? stats.pts_ppr ?? 0) * 100) / 100;
++}
+diff --git a/app/components/FavoritesNews.tsx b/app/components/FavoritesNews.tsx
+index 1fc55b6..5f6cdd2 100644
+--- a/app/components/FavoritesNews.tsx
++++ b/app/components/FavoritesNews.tsx
+@@ -4,6 +4,7 @@
+ import React, { useEffect, useMemo, useState } from 'react';
+ import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
+ import { Ionicons } from '@expo/vector-icons';
++import { useNavigation } from '@react-navigation/native';
+ import { useTheme, useThemedStyles } from '../context/ThemeContext';
+ import { favoriteNews, favoriteReason, toggleFavoritePlayer, toggleFavoriteTeam, useFavorites } from '../services/favorites';
+ import { getNewsFiles, TEAM_NEWS_FILES } from '../services/newsService';
+@@ -20,6 +21,7 @@ export default function FavoritesNews({ players }: { players: Record<string, any
+   const [news, setNews] = useState<NewsItem[]>([]);
+   const [images, setImages] = useState<Record<string, string | null>>({});
+   const [editing, setEditing] = useState(false);
++  const navigation = useNavigation<any>();
+ 
+   useEffect(() => {
+     getNewsFiles(TEAM_NEWS_FILES).then(setNews).catch(() => setNews([]));
+@@ -41,6 +43,12 @@ export default function FavoritesNews({ players }: { players: Record<string, any
+             {followingCount ? `News about the ${followingCount} players and teams you follow` : 'Follow players and teams to see their news here'}
+           </Text>
+         </View>
++        {followingCount > 0 && (
++          <Pressable style={styles.editBtn} onPress={() => navigation.navigate('Following')} accessibilityLabel="See everyone you follow">
++            <Ionicons name="list-outline" size={14} color={colors.primary} />
++            <Text style={styles.editText}>Manage</Text>
++          </Pressable>
++        )}
+         <Pressable style={styles.editBtn} onPress={() => setEditing(true)}>
+           <Ionicons name={followingCount ? 'create-outline' : 'add'} size={14} color={colors.primary} />
+           <Text style={styles.editText}>{followingCount ? 'Edit' : 'Follow'}</Text>
+diff --git a/app/components/LineupCheckSheet.tsx b/app/components/LineupCheckSheet.tsx
+index 2031fd1..f564cad 100644
+--- a/app/components/LineupCheckSheet.tsx
++++ b/app/components/LineupCheckSheet.tsx
+@@ -41,7 +41,7 @@ export default function LineupCheckSheet({
+       .finally(() => setLoading(false));
+   }, [visible, leagueId, team.rosterId]);
+ 
+-  const gain = check ? Math.round((check.bestPoints - check.currentPoints) * 10) / 10 : 0;
++  const gain = check ? Math.round((check.bestPoints - check.currentPoints) * 100) / 100 : 0;
+ 
+   return (
+     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+@@ -73,9 +73,9 @@ export default function LineupCheckSheet({
+                 </View>
+               </View>
+               <Text style={styles.note}>
+-                Totals are Sleeper's projections adjusted for this week: the defense each player faces (less for
+-                the best players at their position), injuries on both teams, weather and inactive players. Each
+-                player's number below is Sleeper's own projection. Players whose game already started are locked.
++                Every number is Sleeper's projection in your league's scoring, the same as in the Sleeper app.
++                When two players are projected about the same, the defense they face, injuries around them and
++                weather decide (see each reason). Players whose game already started are locked.
+               </Text>
+ 
+               {check.swaps.length === 0 ? (
+@@ -85,7 +85,7 @@ export default function LineupCheckSheet({
+                 </View>
+               ) : (
+                 <>
+-                  <Text style={styles.section}>MAKE THESE SWAPS (+{gain.toFixed(2)} AFTER MATCHUPS)</Text>
++                  <Text style={styles.section}>MAKE THESE SWAPS (+{gain.toFixed(2)} PROJECTED PTS)</Text>
+                   {check.swaps.map((s, i) => (
+                     <View key={i} style={styles.swap}>
+                       <Text style={styles.slot}>{s.slot}</Text>
+diff --git a/app/screens/FollowingScreen.tsx b/app/screens/FollowingScreen.tsx
+new file mode 100644
+index 0000000..e8a65d5
+--- /dev/null
++++ b/app/screens/FollowingScreen.tsx
+@@ -0,0 +1,247 @@
++// app/screens/FollowingScreen.tsx
++// "Following": every player and team you follow in one organized place. Players are grouped by
++// position (or team / A-Z) with this week's opponent, Sleeper projection in your league's scoring
++// and injury status; teams show this week's game, how many of your followed players they have,
++// and their latest headline. Tap a player to open him; tap ★ to unfollow.
++
++import React, { useEffect, useMemo, useState } from 'react';
++import { Pressable, ScrollView, Text, View } from 'react-native';
++import { Ionicons } from '@expo/vector-icons';
++import { useNavigation } from '@react-navigation/native';
++import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
++import type { RootStackParamList } from '../AppNavigator';
++import { useTheme, useThemedStyles } from '../context/ThemeContext';
++import { useFantasy } from '../context/FantasyContext';
++import { followPlayers, toggleFavoritePlayer, toggleFavoriteTeam, useFavorites } from '../services/favorites';
++import { groupFollowed, opponentsFromProjections, rosterToFollow, type FollowedPlayer, type SortMode } from '../services/following';
++import { getLeague, getNFLState, getPlayersFromGithub } from '../services/sleeperAPI';
++import { getWeekProjections, projectedPoints, type ProjectionFile } from '../services/projections';
++import { getInjuryIndex } from '../services/injuryService';
++import { currentInjury, indexInjuries } from '../services/injuryFormat';
++import { getNewsFiles, TEAM_NEWS_FILES } from '../services/newsService';
++import type { NewsItem } from '../services/newsDiversity';
++import { NFL_TEAMS } from '../services/playerStatus';
++import { radius, type Palette } from '../theme';
++
++type Nav = NativeStackNavigationProp<RootStackParamList>;
++const SORTS: { mode: SortMode; label: string }[] = [
++  { mode: 'position', label: 'Position' },
++  { mode: 'team', label: 'NFL team' },
++  { mode: 'name', label: 'A-Z' },
++];
++
++export default function FollowingScreen() {
++  const navigation = useNavigation<Nav>();
++  const { colors } = useTheme();
++  const styles = useThemedStyles(makeStyles);
++  const { activeLeagueId, myTeam } = useFantasy();
++  const fav = useFavorites();
++  const [tab, setTab] = useState<'players' | 'teams'>('players');
++  const [sort, setSort] = useState<SortMode>('position');
++  const [picking, setPicking] = useState(false);
++  const [players, setPlayers] = useState<Record<string, any>>({});
++  const [proj, setProj] = useState<ProjectionFile | null>(null);
++  const [week, setWeek] = useState<number | null>(null);
++  const [scoring, setScoring] = useState<number | Record<string, number>>(1);
++  const [injuries, setInjuries] = useState(indexInjuries(null));
++  const [news, setNews] = useState<NewsItem[]>([]);
++
++  useEffect(() => {
++    getPlayersFromGithub().then(setPlayers).catch(() => undefined);
++    getInjuryIndex().then(setInjuries).catch(() => undefined);
++    getNewsFiles(TEAM_NEWS_FILES).then(setNews).catch(() => undefined);
++    getNFLState()
++      .then(s => {
++        const season = Number(s?.season), wk = Number(s?.week);
++        if (!season || !wk) return;
++        setWeek(wk);
++        return getWeekProjections(season, wk).then(setProj);
++      })
++      .catch(() => undefined);
++  }, []);
++
++  useEffect(() => {
++    if (!activeLeagueId) return;
++    getLeague(activeLeagueId)
++      .then((l: any) => l?.scoring_settings && typeof l.scoring_settings === 'object' && setScoring(l.scoring_settings))
++      .catch(() => undefined);
++  }, [activeLeagueId]);
++
++  const opponents = useMemo(() => opponentsFromProjections(proj?.players), [proj]);
++  const opponentOf = (team: string) => (!team ? null : opponents.get(team.toUpperCase()) ?? (proj ? 'BYE' : null));
++
++  const followed: FollowedPlayer[] = useMemo(
++    () =>
++      fav.players.map(id => {
++        const p = players[id] ?? {};
++        const entry = proj?.players?.[id];
++        const injury = currentInjury(injuries, { ...p, player_id: id }).status;
++        return {
++          id,
++          name: p.full_name ?? (p.position === 'DEF' ? `${p.team ?? id} D/ST` : entry?.name ?? id),
++          position: p.position ?? entry?.pos ?? '',
++          team: p.team ?? entry?.team ?? '',
++          opponent: opponentOf(p.team ?? entry?.team ?? ''),
++          projection: entry ? projectedPoints(entry, scoring) : null,
++          injury: injury || undefined,
++        };
++      }),
++    [fav.players, players, proj, scoring, injuries, opponents]
++  );
++  const sections = useMemo(() => groupFollowed(followed, sort), [followed, sort]);
++  const toFollow = rosterToFollow((myTeam?.players ?? []).map(p => p.playerId), fav.players);
++
++  const teamRows = useMemo(
++    () =>
++      fav.teams.map(team => {
++        const headline = news.find(n => {
++          const pl = Object.values(players).find((p: any) => p?.full_name === n.player) as any;
++          return pl?.team === team;
++        });
++        return { team, opponent: opponentOf(team), count: followed.filter(p => p.team === team).length, headline };
++      }),
++    [fav.teams, news, players, followed, opponents]
++  );
++
++  const openPlayer = (id: string) => {
++    const p = players[id];
++    if (p) navigation.navigate('PlayerDetails', { player: { ...p, player_id: id }, stats: {}, fantasyPoints: 0 });
++  };
++
++  return (
++    <ScrollView style={styles.container} contentContainerStyle={{ padding: 16, paddingBottom: 32 }}>
++      <View style={styles.tabs}>
++        {(['players', 'teams'] as const).map(t => (
++          <Pressable key={t} style={[styles.tab, tab === t && styles.tabOn]} onPress={() => setTab(t)}>
++            <Text style={[styles.tabText, tab === t && { color: colors.onPrimary }]}>
++              {t === 'players' ? `Players (${fav.players.length})` : `Teams (${fav.teams.length})`}
++            </Text>
++          </Pressable>
++        ))}
++      </View>
++
++      {tab === 'players' ? (
++        <>
++          <View style={styles.toolbar}>
++            {SORTS.map(s => (
++              <Pressable key={s.mode} style={[styles.chip, sort === s.mode && styles.chipOn]} onPress={() => setSort(s.mode)}>
++                <Text style={[styles.chipText, sort === s.mode && { color: colors.primary }]}>{s.label}</Text>
++              </Pressable>
++            ))}
++          </View>
++          {toFollow.length > 0 && (
++            <Pressable style={styles.rosterBtn} onPress={() => followPlayers(toFollow)}>
++              <Ionicons name="people-outline" size={16} color={colors.primary} />
++              <Text style={styles.rosterText}>
++                Follow my roster ({toFollow.length} more{myTeam?.teamName ? ` from ${myTeam.teamName}` : ''})
++              </Text>
++            </Pressable>
++          )}
++          {week != null && <Text style={styles.note}>Week {week} · projections are Sleeper's, in your league's scoring</Text>}
++          {sections.length === 0 ? (
++            <Text style={styles.empty}>You don't follow any players yet. Open a player and tap ☆ Follow, or follow your whole roster above.</Text>
++          ) : (
++            sections.map(sec => (
++              <View key={sec.title} style={styles.card}>
++                <Text style={styles.cardTitle}>
++                  {sec.title} <Text style={styles.count}>{sec.players.length}</Text>
++                </Text>
++                {sec.players.map(p => (
++                  <Pressable key={p.id} style={styles.row} onPress={() => openPlayer(p.id)}>
++                    <View style={styles.pos}><Text style={styles.posText}>{p.position || '—'}</Text></View>
++                    <View style={{ flex: 1 }}>
++                      <Text style={styles.name} numberOfLines={1}>
++                        {p.name}
++                        {!!p.injury && <Text style={styles.injury}>  {p.injury}</Text>}
++                      </Text>
++                      <Text style={styles.meta}>
++                        {p.team || 'Free agent'}
++                        {p.opponent ? (p.opponent === 'BYE' ? ' · Bye week' : ` · vs ${p.opponent}`) : ''}
++                      </Text>
++                    </View>
++                    <Text style={styles.proj}>{p.projection != null ? p.projection.toFixed(2) : '—'}</Text>
++                    <Pressable onPress={() => toggleFavoritePlayer(p.id)} hitSlop={10} accessibilityLabel={`Unfollow ${p.name}`}>
++                      <Ionicons name="star" size={18} color={colors.warning} />
++                    </Pressable>
++                  </Pressable>
++                ))}
++              </View>
++            ))
++          )}
++        </>
++      ) : (
++        <>
++          <Pressable style={styles.rosterBtn} onPress={() => setPicking(v => !v)}>
++            <Ionicons name={picking ? 'checkmark' : 'add'} size={16} color={colors.primary} />
++            <Text style={styles.rosterText}>{picking ? 'Done' : 'Follow or unfollow teams'}</Text>
++          </Pressable>
++          {picking && (
++            <View style={styles.grid}>
++              {NFL_TEAMS.map(t => {
++                const on = fav.teams.includes(t);
++                return (
++                  <Pressable key={t} style={[styles.team, on && styles.teamOn]} onPress={() => toggleFavoriteTeam(t)}>
++                    <Text style={[styles.teamText, on && { color: colors.onPrimary }]}>{t}</Text>
++                  </Pressable>
++                );
++              })}
++            </View>
++          )}
++          {teamRows.length === 0 ? (
++            <Text style={styles.empty}>You don't follow any teams yet.</Text>
++          ) : (
++            <View style={styles.card}>
++              {teamRows.map(r => (
++                <View key={r.team} style={styles.row}>
++                  <View style={styles.pos}><Text style={styles.posText}>{r.team}</Text></View>
++                  <View style={{ flex: 1 }}>
++                    <Text style={styles.name}>
++                      {r.opponent ? (r.opponent === 'BYE' ? 'Bye week' : `This week vs ${r.opponent}`) : r.team}
++                    </Text>
++                    <Text style={styles.meta} numberOfLines={2}>
++                      {r.count ? `${r.count} followed player${r.count > 1 ? 's' : ''} · ` : ''}
++                      {r.headline?.title ?? 'No recent headlines'}
++                    </Text>
++                  </View>
++                  <Pressable onPress={() => toggleFavoriteTeam(r.team)} hitSlop={10} accessibilityLabel={`Unfollow ${r.team}`}>
++                    <Ionicons name="star" size={18} color={colors.warning} />
++                  </Pressable>
++                </View>
++              ))}
++            </View>
++          )}
++        </>
++      )}
++    </ScrollView>
++  );
++}
++
++const makeStyles = (c: Palette) => ({
++  container: { flex: 1, backgroundColor: c.background },
++  tabs: { flexDirection: 'row' as const, backgroundColor: c.surfaceMuted, borderRadius: radius.pill, padding: 4, marginBottom: 12 },
++  tab: { flex: 1, paddingVertical: 8, borderRadius: radius.pill, alignItems: 'center' as const },
++  tabOn: { backgroundColor: c.primary },
++  tabText: { fontWeight: '800' as const, color: c.text, fontSize: 13 },
++  toolbar: { flexDirection: 'row' as const, gap: 6, marginBottom: 10 },
++  chip: { borderRadius: radius.pill, borderWidth: 1, borderColor: c.border, paddingHorizontal: 12, paddingVertical: 5 },
++  chipOn: { borderColor: c.primary, backgroundColor: c.primarySoft },
++  chipText: { fontSize: 12, fontWeight: '700' as const, color: c.textMuted },
++  rosterBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6, alignSelf: 'flex-start' as const, backgroundColor: c.primarySoft, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 7, marginBottom: 10 },
++  rosterText: { color: c.primary, fontWeight: '700' as const, fontSize: 12 },
++  note: { fontSize: 11, color: c.textMuted, marginBottom: 8 },
++  empty: { color: c.textMuted, textAlign: 'center' as const, padding: 24 },
++  card: { backgroundColor: c.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: c.border, marginBottom: 12, overflow: 'hidden' as const },
++  cardTitle: { fontSize: 12, fontWeight: '900' as const, color: c.textMuted, letterSpacing: 0.6, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 4 },
++  count: { color: c.primary },
++  row: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 10, paddingHorizontal: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: c.border },
++  pos: { minWidth: 40, paddingVertical: 4, borderRadius: 8, backgroundColor: c.surfaceMuted, alignItems: 'center' as const },
++  posText: { fontSize: 11, fontWeight: '900' as const, color: c.text },
++  name: { fontSize: 14, fontWeight: '700' as const, color: c.text },
++  injury: { fontSize: 12, fontWeight: '900' as const, color: c.danger },
++  meta: { fontSize: 12, color: c.textMuted, marginTop: 2 },
++  proj: { fontSize: 14, fontWeight: '800' as const, color: c.text, minWidth: 46, textAlign: 'right' as const },
++  grid: { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: 6, marginBottom: 12 },
++  team: { width: 56, paddingVertical: 7, borderRadius: 8, borderWidth: 1, borderColor: c.border, alignItems: 'center' as const },
++  teamOn: { backgroundColor: c.primary, borderColor: c.primary },
++  teamText: { fontWeight: '800' as const, fontSize: 12, color: c.text },
++});
+diff --git a/app/screens/PlayerDetailsScreen.tsx b/app/screens/PlayerDetailsScreen.tsx
+index c2b1673..a058960 100644
+--- a/app/screens/PlayerDetailsScreen.tsx
++++ b/app/screens/PlayerDetailsScreen.tsx
+@@ -35,7 +35,7 @@ import { getWeekProjections, projectedPoints, projectedStatLine, scoringLabel, t
+ import { getLeague } from '../services/sleeperAPI';
+ import { Ionicons } from '@expo/vector-icons';
+ import { fetchWaiverAdvice, type WaiverAdvice } from '../services/waiverAdvice';
+-import { teamSearchName, xSearchUrl } from '../services/externalLinks';
++import { fetchPlayerNotes, type PlayerNote } from '../services/playerNotes';
+ 
+ type NewsArticle = {
+   title: string;
+@@ -97,6 +97,9 @@ export default function PlayerDetailsScreen({ route }: any) {
+   const [showTradeFor, setShowTradeFor] = useState(false);
+   // Who has him in your open league (your team, another team, or nobody).
+   const [owner, setOwner] = useState<Ownership | null | undefined>(undefined);
++  // RotoWire notes + ESPN fantasy columns about him
++  const [notes, setNotes] = useState<PlayerNote[]>([]);
++  const [showAllNotes, setShowAllNotes] = useState(false);
+   // For a free agent in your league: FAAB bid or whether to use your waiver priority on him
+   const [waiver, setWaiver] = useState<WaiverAdvice | null>(null);
+   // Fantasy rank this season (overall / at his position) with your league's scoring
+@@ -105,7 +108,7 @@ export default function PlayerDetailsScreen({ route }: any) {
+   // 'bye' when that week's file has no one from his team.
+   const [projections, setProjections] = useState<Record<number, ProjectionEntry | 'bye' | null>>({});
+   // Points per catch in your league (1 = PPR, 0.5 = half, 0 = standard) to pick the right projection
+-  const [receptionPoints, setReceptionPoints] = useState(1);
++  const [receptionPoints, setReceptionPoints] = useState<number | Record<string, number>>(1);
+   // The season `allWeeksStats` holds, so the weekly range never shows another season's numbers
+   const [statsSeason, setStatsSeason] = useState<number | null>(null);
+   useEffect(() => {
+@@ -1362,7 +1365,7 @@ export default function PlayerDetailsScreen({ route }: any) {
+   useEffect(() => {
+     if (!activeLeagueId) return;
+     getLeague(activeLeagueId)
+-      .then((l: any) => setReceptionPoints(Number(l?.scoring_settings?.rec ?? 1)))
++      .then((l: any) => setReceptionPoints(l?.scoring_settings && typeof l.scoring_settings === 'object' ? l.scoring_settings : Number(l?.scoring_settings?.rec ?? 1)))
+       .catch(() => undefined);
+   }, [activeLeagueId]);
+ 
+@@ -1391,6 +1394,17 @@ export default function PlayerDetailsScreen({ route }: any) {
+     );
+   };
+ 
++  useEffect(() => {
++    let cancelled = false;
++    setNotes([]);
++    setShowAllNotes(false);
++    if (!player?.player_id) return;
++    fetchPlayerNotes(String(player.player_id), playerName, displayTeam).then(n => !cancelled && setNotes(n));
++    return () => {
++      cancelled = true;
++    };
++  }, [player?.player_id]);
++
+   // Waiver advice once we know he's a free agent in your league.
+   useEffect(() => {
+     let cancelled = false;
+@@ -1841,20 +1855,47 @@ export default function PlayerDetailsScreen({ route }: any) {
+           </TouchableOpacity>
+         </View>
+         {newsTab === 'player' ? renderNewsCards(playerNews) : renderNewsCards(teamNews)}
+-        {/* Live posts about him on X (X's API can't be read for free, so this opens X's own search) */}
+-        {!!playerName && (
+-          <TouchableOpacity
+-            style={styles.xBtn}
+-            onPress={() => Linking.openURL(xSearchUrl(newsTab === 'team' ? teamSearchName(displayTeam, playerName) : playerName)).catch(() => undefined)}
+-            accessibilityLabel={`Latest posts on X about ${newsTab === 'team' ? displayTeam : playerName}`}
+-          >
+-            <Text style={styles.xLogo}>𝕏</Text>
+-            <Text style={styles.xText}>Latest on X about {newsTab === 'team' ? displayTeam : playerName}</Text>
+-            <Ionicons name="open-outline" size={14} color={th.textMuted} />
+-          </TouchableOpacity>
+-        )}
+       </View>
+ 
++      {/* LATEST ANALYSIS: RotoWire notes and ESPN fantasy columns about him */}
++      {notes.length > 0 && (
++        <View style={styles.section}>
++          <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' }}>
++            <Text style={styles.sectionTitle}>Latest analysis</Text>
++            <Text style={{ fontSize: 12, color: th.textMuted }}>RotoWire · ESPN</Text>
++          </View>
++          {(showAllNotes ? notes : notes.slice(0, 3)).map((n, i) => (
++            <TouchableOpacity
++              key={`${n.published}-${i}`}
++              style={styles.noteRow}
++              activeOpacity={n.link ? 0.7 : 1}
++              onPress={() => n.link && Linking.openURL(n.link).catch(() => undefined)}
++            >
++              <View style={styles.noteMeta}>
++                <View style={[styles.noteKind, { backgroundColor: n.kind === 'note' ? th.primarySoft : th.surfaceMuted }]}>
++                  <Text style={[styles.noteKindText, { color: n.kind === 'note' ? th.primary : th.textMuted }]}>
++                    {n.kind === 'note' ? 'PLAYER NOTE' : 'COLUMN'}
++                  </Text>
++                </View>
++                <Text style={styles.noteSource} numberOfLines={1}>
++                  {n.source} · {timeAgo(n.published)}
++                </Text>
++              </View>
++              <Text style={styles.noteHeadline}>{n.headline}</Text>
++              {!!n.analysis && n.analysis !== n.headline && (
++                <Text style={styles.noteText} numberOfLines={showAllNotes ? undefined : 4}>{n.analysis}</Text>
++              )}
++              {!!n.link && <Text style={styles.noteLink}>Read on ESPN ›</Text>}
++            </TouchableOpacity>
++          ))}
++          {notes.length > 3 && (
++            <TouchableOpacity onPress={() => setShowAllNotes(v => !v)} style={{ alignSelf: 'center', paddingTop: 6 }}>
++              <Text style={styles.noteLink}>{showAllNotes ? 'Show less' : `Show all ${notes.length}`}</Text>
++            </TouchableOpacity>
++          )}
++        </View>
++      )}
++
+       {/* ========================= */}
+       {/* WEEK STATS LOG */}
+       {/* ========================= */}
+@@ -2353,9 +2394,14 @@ const makeStyles = (th: Palette) => ({
+     marginTop: 2,
+     textAlign: 'center',
+   },
+-  xBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: th.border, backgroundColor: th.surfaceMuted },
+-  xLogo: { fontSize: 16, fontWeight: '900', color: th.text },
+-  xText: { flex: 1, fontSize: 13, fontWeight: '700', color: th.text },
++  noteRow: { paddingVertical: 10, borderTopWidth: 1, borderTopColor: th.border, gap: 4 },
++  noteMeta: { flexDirection: 'row', alignItems: 'center', gap: 8 },
++  noteKind: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2 },
++  noteKindText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.5 },
++  noteSource: { flex: 1, fontSize: 11, color: th.textMuted },
++  noteHeadline: { fontSize: 14, fontWeight: '700', color: th.text, lineHeight: 19 },
++  noteText: { fontSize: 13, color: th.textMuted, lineHeight: 19 },
++  noteLink: { fontSize: 12, fontWeight: '700', color: th.primary },
+   waiverBox: { alignSelf: 'stretch', backgroundColor: th.surfaceMuted, borderRadius: 12, padding: 10, gap: 4 },
+   waiverHead: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+   waiverTitle: { flex: 1, fontSize: 14, fontWeight: '800', color: th.text },
+diff --git a/app/services/externalLinks.ts b/app/services/externalLinks.ts
+index 34d337c..a48f1b7 100644
+--- a/app/services/externalLinks.ts
++++ b/app/services/externalLinks.ts
+@@ -1,26 +1,10 @@
+ // app/services/externalLinks.ts
+-// Links out of the app: Sleeper (to make the moves the app suggests) and X (live posts).
++// Links out of the app to Sleeper, to make the moves the app suggests.
+ //
+-// Why links instead of doing it for you: Sleeper's public API is read-only. Changing a lineup or
++// Why a link instead of doing it for you: Sleeper's public API is read-only. Changing a lineup or
+ // sending a trade needs Sleeper's private API and your Sleeper login token, which gives full
+ // access to your account and could stop working whenever Sleeper changes it, so the app never
+-// asks for it. X's API can't be read without a paid plan, so the X button opens X's own search.
++// asks for it.
+ 
+ /** Your league in Sleeper (opens the Sleeper app on a phone where it's installed). */
+ export const sleeperLeagueUrl = (leagueId: string) => `https://sleeper.com/leagues/${encodeURIComponent(leagueId)}`;
+-
+-/** Latest posts on X mentioning someone (exact phrase, newest first). */
+-export const xSearchUrl = (query: string) => `https://x.com/search?q=${encodeURIComponent(`"${query.trim()}"`)}&f=live`;
+-
+-const TEAM_NAMES: Record<string, string> = {
+-  ARI: 'Arizona Cardinals', ATL: 'Atlanta Falcons', BAL: 'Baltimore Ravens', BUF: 'Buffalo Bills', CAR: 'Carolina Panthers',
+-  CHI: 'Chicago Bears', CIN: 'Cincinnati Bengals', CLE: 'Cleveland Browns', DAL: 'Dallas Cowboys', DEN: 'Denver Broncos',
+-  DET: 'Detroit Lions', GB: 'Green Bay Packers', HOU: 'Houston Texans', IND: 'Indianapolis Colts', JAX: 'Jacksonville Jaguars',
+-  KC: 'Kansas City Chiefs', LV: 'Las Vegas Raiders', LAC: 'Los Angeles Chargers', LAR: 'Los Angeles Rams', MIA: 'Miami Dolphins',
+-  MIN: 'Minnesota Vikings', NE: 'New England Patriots', NO: 'New Orleans Saints', NYG: 'New York Giants', NYJ: 'New York Jets',
+-  PHI: 'Philadelphia Eagles', PIT: 'Pittsburgh Steelers', SF: 'San Francisco 49ers', SEA: 'Seattle Seahawks', TB: 'Tampa Bay Buccaneers',
+-  TEN: 'Tennessee Titans', WAS: 'Washington Commanders', WSH: 'Washington Commanders',
+-};
+-
+-/** The full team name to search for (falls back to the player's name for free agents). */
+-export const teamSearchName = (team: string, fallback: string) => TEAM_NAMES[String(team).toUpperCase()] ?? fallback;
+diff --git a/app/services/favorites.ts b/app/services/favorites.ts
+index fb61865..0991d4d 100644
+--- a/app/services/favorites.ts
++++ b/app/services/favorites.ts
+@@ -58,6 +58,12 @@ export function toggleFavoriteTeam(team: string) {
+   save({ ...current, teams });
+ }
+ 
++/** Follow several players at once (e.g. everyone on your fantasy roster). */
++export function followPlayers(ids: string[]) {
++  const players = [...new Set([...current.players, ...ids.map(String)])];
++  if (players.length !== current.players.length) save({ ...current, players });
++}
++
+ export function useFavorites(): Favorites {
+   const [fav, setFav] = useState(current);
+   useEffect(() => {
+diff --git a/app/services/following.ts b/app/services/following.ts
+new file mode 100644
+index 0000000..53602cd
+--- /dev/null
++++ b/app/services/following.ts
+@@ -0,0 +1,54 @@
++// app/services/following.ts
++// The "Following" screen's logic (no React Native imports): your followed players grouped and
++// sorted, with each one's team, this week's opponent / projection and injury; your followed teams
++// with this week's opponent and how many of your followed players play for them.
++
++export type FollowedPlayer = {
++  id: string;
++  name: string;
++  position: string;
++  team: string;
++  opponent?: string | null; // this week ("BYE" when his team is off)
++  projection?: number | null; // Sleeper projection in your league's scoring
++  injury?: string; // Q / D / O / IR ...
++};
++
++export type FollowedTeam = { team: string; name: string; opponent?: string | null; players: number; headline?: string | null };
++
++export type SortMode = 'position' | 'team' | 'name';
++
++const POSITION_ORDER = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
++const posIndex = (p: string) => {
++  const i = POSITION_ORDER.indexOf(String(p).toUpperCase());
++  return i < 0 ? POSITION_ORDER.length : i;
++};
++
++/** Sections for the players list: by position (QB first), by team, or one A-Z list. */
++export function groupFollowed(players: FollowedPlayer[], mode: SortMode): { title: string; players: FollowedPlayer[] }[] {
++  const byName = (a: FollowedPlayer, b: FollowedPlayer) => a.name.localeCompare(b.name);
++  if (mode === 'name') return players.length ? [{ title: 'A-Z', players: [...players].sort(byName) }] : [];
++  const key = (p: FollowedPlayer) => (mode === 'position' ? String(p.position || 'Other').toUpperCase() : String(p.team || 'Free agents').toUpperCase());
++  const groups = new Map<string, FollowedPlayer[]>();
++  for (const p of players) groups.set(key(p), [...(groups.get(key(p)) ?? []), p]);
++  const titles = [...groups.keys()].sort((a, b) => (mode === 'position' ? posIndex(a) - posIndex(b) : a.localeCompare(b)));
++  return titles.map(title => ({
++    title,
++    // Within a position, the highest projection first; within a team, by position.
++    players: [...groups.get(title)!].sort((a, b) =>
++      mode === 'position' ? (b.projection ?? -1) - (a.projection ?? -1) || byName(a, b) : posIndex(a.position) - posIndex(b.position) || byName(a, b)
++    ),
++  }));
++}
++
++/** This week's opponent for each team, from the week's projections (teams not in it are on bye). */
++export function opponentsFromProjections(players: Record<string, { team?: string; opp?: string }> | undefined): Map<string, string> {
++  const out = new Map<string, string>();
++  for (const p of Object.values(players ?? {})) if (p.team && p.opp) out.set(String(p.team).toUpperCase(), String(p.opp).toUpperCase());
++  return out;
++}
++
++/** Players on your fantasy roster you don't follow yet ("Follow my roster"). */
++export function rosterToFollow(rosterIds: string[], followed: string[]): string[] {
++  const have = new Set(followed.map(String));
++  return [...new Set(rosterIds.map(String))].filter(id => id && id !== '0' && !have.has(id));
++}
+diff --git a/app/services/playerNotes.ts b/app/services/playerNotes.ts
+new file mode 100644
+index 0000000..6bf9671
+--- /dev/null
++++ b/app/services/playerNotes.ts
+@@ -0,0 +1,33 @@
++// app/services/playerNotes.ts
++// Client for "Latest analysis": RotoWire player notes and ESPN fantasy columns about a player.
++
++import { getApiBaseUrl } from './apiBaseUrl';
++import { createCache, MINUTE } from './cache';
++
++export type PlayerNote = {
++  kind: 'note' | 'article';
++  headline: string;
++  analysis: string;
++  published: string;
++  source: string;
++  link?: string;
++  image?: string;
++};
++
++const cache = createCache({ prefix: 'ffh_notes_v1:' });
++
++export async function fetchPlayerNotes(playerId: string, name?: string, team?: string): Promise<PlayerNote[]> {
++  try {
++    return await cache.get(`${playerId}`, 20 * MINUTE, async () => {
++      const qs = new URLSearchParams({ id: playerId });
++      if (name) qs.set('name', name);
++      if (team) qs.set('team', team);
++      const res = await fetch(`${getApiBaseUrl()}/player-notes?${qs}`);
++      if (!res.ok) throw new Error('Notes unavailable');
++      const data = await res.json();
++      return Array.isArray(data?.notes) ? (data.notes as PlayerNote[]) : [];
++    });
++  } catch {
++    return [];
++  }
++}
+diff --git a/app/services/projections.ts b/app/services/projections.ts
+index 7edce45..1b35022 100644
+--- a/app/services/projections.ts
++++ b/app/services/projections.ts
+@@ -5,6 +5,7 @@
+ 
+ import AsyncStorage from '@react-native-async-storage/async-storage';
+ import { createCache, HOUR } from './cache';
++import { leaguePoints } from '../backend/utils/leaguePoints';
+ 
+ export type ProjectionEntry = {
+   name?: string;
+@@ -53,14 +54,25 @@ export async function getWeekProjections(season: number, week: number): Promise<
+   }
+ }
+ 
+-/** Points in the league's format: full PPR (1 per catch), half PPR (0.5) or standard (0). */
+-export function projectedPoints(entry: ProjectionEntry, receptionPoints = 1): number {
++/**
++ * Projected points in the league's scoring: his full projected stat line x the league's scoring
++ * settings (what Sleeper's app shows). With only points-per-catch (or no league), Sleeper's PPR /
++ * half / standard total.
++ */
++export function projectedPoints(entry: ProjectionEntry, scoring: number | Record<string, number> = 1): number {
++  if (scoring && typeof scoring === 'object' && entry.stats && Object.keys(entry.stats).length)
++    return leaguePoints(entry.stats, scoring);
++  const receptionPoints = typeof scoring === 'number' ? scoring : Number(scoring?.rec ?? 1);
+   if (receptionPoints >= 1) return entry.ppr;
+   if (receptionPoints >= 0.5) return entry.half;
+   return entry.std;
+ }
+ 
+-export const scoringLabel = (receptionPoints = 1) => (receptionPoints >= 1 ? 'PPR' : receptionPoints >= 0.5 ? 'Half PPR' : 'Standard');
++export const scoringLabel = (scoring: number | Record<string, number> = 1) => {
++  if (scoring && typeof scoring === 'object') return 'your league';
++  const receptionPoints = scoring;
++  return receptionPoints >= 1 ? 'PPR' : receptionPoints >= 0.5 ? 'Half PPR' : 'Standard';
++};
+ 
+ const n1 = (v?: number) => (v === undefined ? '' : Number.isInteger(v) ? String(v) : v.toFixed(1));
+ 
+@@ -73,7 +85,10 @@ export function projectedStatLine(position: string | undefined, s: Record<string
+   if (s.rec || s.rec_yd) lines.push(`${n1(s.rec ?? 0)} rec${s.rec_tgt ? ` (${n1(s.rec_tgt)} tgt)` : ''}, ${n1(s.rec_yd ?? 0)} yd${s.rec_td ? `, ${n1(s.rec_td)} TD` : ''}`);
+   if (pos === 'K' && (s.fgm || s.xpm)) lines.push(`${n1(s.fgm ?? 0)} FG${s.fga ? ` of ${n1(s.fga)}` : ''}, ${n1(s.xpm ?? 0)} XP`);
+   if (pos === 'DEF') {
+-    const parts = [s.def_sack ? `${n1(s.def_sack)} sacks` : '', s.def_int ? `${n1(s.def_int)} INT` : '', s.def_fum_rec ? `${n1(s.def_fum_rec)} fum rec` : '', s.pts_allow ? `${n1(s.pts_allow)} pts allowed` : ''].filter(Boolean);
++    const sacks = s.def_sack ?? s.sack;
++    const ints = s.def_int ?? s.int;
++    const fumRec = s.def_fum_rec ?? s.fum_rec;
++    const parts = [sacks ? `${n1(sacks)} sacks` : '', ints ? `${n1(ints)} INT` : '', fumRec ? `${n1(fumRec)} fum rec` : '', s.pts_allow ? `${n1(s.pts_allow)} pts allowed` : ''].filter(Boolean);
+     if (parts.length) lines.push(parts.join(', '));
+   }
+   return lines;
+diff --git a/tests/backend/round13.test.ts b/tests/backend/round13.test.ts
+new file mode 100644
+index 0000000..ac28712
+--- /dev/null
++++ b/tests/backend/round13.test.ts
+@@ -0,0 +1,58 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { projectionFor } from "../../app/backend/services/liveMatchup";
++import { parsePlayerNews, resolveEspnId } from "../../app/backend/services/playerNotes";
++
++test("projections use the league's own scoring, like Sleeper's app", () => {
++  // A kicker: Sleeper's generic PPR total vs a league that scores kicks differently.
++  const kicker = { fgm_0_19: 0.05, fgm_20_29: 0.5, fgm_30_39: 0.6, fgm_40_49: 0.45, fgm_50p: 0.25, xpm: 2.3, fgmiss: 0.3, pts_ppr: 8.57 };
++  const leagueScoring = { fgm_0_19: 3, fgm_20_29: 3, fgm_30_39: 3, fgm_40_49: 4, fgm_50p: 5, xpm: 1, fgmiss: -1, rec: 1 };
++  assert.equal(projectionFor(kicker, leagueScoring), 8.5); // 0.15+1.5+1.8+1.8+1.25+2.3-0.3
++  assert.equal(projectionFor(kicker, 1), 8.57); // just points per catch: Sleeper's PPR total
++  // A QB with a 40+ yard TD bonus.
++  const qb = { pass_yd: 250, pass_td: 1.8, pass_int: 0.6, pass_td_40p: 0.3, rush_yd: 20, pts_ppr: 18.6 };
++  assert.equal(projectionFor(qb, { pass_yd: 0.04, pass_td: 4, pass_int: -1, pass_td_40p: 2, rush_yd: 0.1, rec: 1 }), 19.2);
++  // No projection from Sleeper: null (the lineup check counts it as 0).
++  assert.equal(projectionFor(undefined, leagueScoring), null);
++});
++
++test("latest analysis: RotoWire notes and ESPN columns that mention him", () => {
++  const feed = {
++    feed: [
++      { type: "Rotowire", headline: "Allgeier is slated to work as Arizona's No. 1 running back.", story: "<p>After previously leading the backfield...</p>", published: "2026-11-04T10:00:00Z" },
++      { type: "Story", headline: "Rest-of-season rankings", description: "Big movers", story: "<p>Tyler Allgeier jumps up</p>", published: "2026-11-03T10:00:00Z", byline: "Eric Karabell", links: { web: { href: "https://espn.com/x" } } },
++      { type: "Story", headline: "Unrelated column", description: "About someone else", story: "<p>Nothing here</p>", published: "2026-11-05T10:00:00Z" },
++      { type: "Rotowire", headline: "Premium note", story: "x", published: "2026-11-06T10:00:00Z", premium: true },
++    ],
++  };
++  const notes = parsePlayerNews(feed, "Tyler Allgeier");
++  assert.deepEqual(notes.map(n => n.kind), ["note", "article"]);
++  assert.equal(notes[0].analysis, "After previously leading the backfield...");
++  assert.equal(notes[0].source, "RotoWire");
++  assert.equal(notes[1].source, "ESPN · Eric Karabell");
++  assert.equal(notes[1].link, "https://espn.com/x");
++});
++
++test("players are matched to ESPN by id, or by name + team", () => {
++  const index = new Map([["tyler allgeier|ARI", "4373626"], ["tyler allgeier", "4373626"], ["jayden daniels|WAS", "4426348"]]);
++  assert.equal(resolveEspnId(index, { espnId: "999", name: "Anyone" }), "999");
++  assert.equal(resolveEspnId(index, { name: "Tyler Allgeier", team: "ARI" }), "4373626");
++  assert.equal(resolveEspnId(index, { name: "Jayden Daniels", team: "WSH" }), "4426348"); // ESPN's WSH = Sleeper's WAS
++  assert.equal(resolveEspnId(index, { name: "Nobody Known", team: "KC" }), null);
++});
++
++test("following: grouped by position (best projection first), by team, or A-Z", () => {
++  const { groupFollowed, opponentsFromProjections, rosterToFollow } = require("../../app/services/following");
++  const ps = [
++    { id: "1", name: "Bijan Robinson", position: "RB", team: "ATL", projection: 18 },
++    { id: "2", name: "Josh Allen", position: "QB", team: "BUF", projection: 22 },
++    { id: "3", name: "Kyren Williams", position: "RB", team: "LAR", projection: 15 },
++    { id: "4", name: "Drake London", position: "WR", team: "ATL", projection: null },
++  ];
++  assert.deepEqual(groupFollowed(ps, "position").map((s: any) => s.title), ["QB", "RB", "WR"]);
++  assert.deepEqual(groupFollowed(ps, "position")[1].players.map((p: any) => p.id), ["1", "3"]);
++  assert.deepEqual(groupFollowed(ps, "team")[0].players.map((p: any) => p.id), ["1", "4"]); // ATL: RB before WR
++  assert.deepEqual(groupFollowed(ps, "name")[0].players.map((p: any) => p.name)[0], "Bijan Robinson");
++  assert.equal(opponentsFromProjections({ a: { team: "atl", opp: "no" } }).get("ATL"), "NO");
++  assert.deepEqual(rosterToFollow(["1", "5", "5", "0"], ["1"]), ["5"]);
++});
+diff --git a/tests/round12.test.ts b/tests/round12.test.ts
+index 6e4cec4..c8140a3 100644
+--- a/tests/round12.test.ts
++++ b/tests/round12.test.ts
+@@ -1,13 +1,10 @@
+ import { test } from "node:test";
+ import assert from "node:assert/strict";
+-import { sleeperLeagueUrl, teamSearchName, xSearchUrl } from "../app/services/externalLinks";
++import { sleeperLeagueUrl } from "../app/services/externalLinks";
+ import { isVideoArticle } from "../app/services/newsDiversity";
+ 
+-test("links out to Sleeper and X", () => {
++test("link out to Sleeper", () => {
+   assert.equal(sleeperLeagueUrl("1402843174556143616"), "https://sleeper.com/leagues/1402843174556143616");
+-  assert.equal(xSearchUrl("Tyler Allgeier"), "https://x.com/search?q=%22Tyler%20Allgeier%22&f=live");
+-  assert.equal(teamSearchName("ari", "Tyler Allgeier"), "Arizona Cardinals");
+-  assert.equal(teamSearchName("FA", "Tyler Allgeier"), "Tyler Allgeier");
+ });
+ 
+ test("video articles", () => {
