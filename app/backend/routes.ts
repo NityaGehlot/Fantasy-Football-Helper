@@ -1,4 +1,5 @@
 // app/backend/routes.ts
+import { mergeTransactions, tradeFitsLeague, validateExtraTransactions } from "./utils/extraTransactions";
 import { Router, Request, Response } from "express";
 import fetch from "node-fetch";
 
@@ -591,7 +592,13 @@ export function registerRoutes(router: Router): void {
 
   // Pending trade offers involving your team, each graded (with counter-offers when it's bad).
   router.post("/trade-offers", async (req: Request, res: Response) => {
-    const { leagueId, rosterId, ownerId } = (req.body ?? {}) as { leagueId?: string; rosterId?: number; ownerId?: string };
+    const { leagueId, rosterId, ownerId, extraTransactions } = (req.body ?? {}) as {
+      leagueId?: string;
+      rosterId?: number;
+      ownerId?: string;
+      // Pending trades the FF Helper browser extension saw on sleeper.com
+      extraTransactions?: unknown;
+    };
     if (!leagueId) return res.status(400).json({ error: "leagueId is required" });
     try {
       const ctx = await getLeagueContext(String(leagueId), rosterId, ownerId);
@@ -607,7 +614,13 @@ export function registerRoutes(router: Router): void {
       trades.forEach((t: any) => (statuses[String(t?.status ?? "unknown")] = (statuses[String(t?.status ?? "unknown")] ?? 0) + 1));
       const mineCount = trades.filter((t: any) => (t?.roster_ids ?? []).map(Number).includes(ctx.me!.rosterId)).length;
       const checked = { weeks, transactions: transactions.length, trades: trades.length, statuses, involvingYou: mineCount };
-      const pending = pendingTradesFor(transactions, ctx.me.rosterId, ctx.me.ownerId);
+      // The public API never lists pending trades; add the ones the extension saw. When the
+      // public API already has a trade (accepted or failed), its status wins.
+      const rostered = new Set(ctx.teams.flatMap(t => t.players.map(p => String(p.id))));
+      const extra = validateExtraTransactions(extraTransactions, ctx.me.rosterId).filter(t => tradeFitsLeague(t, rostered));
+      const publicIds = new Set(transactions.map((t: any) => String(t?.transaction_id)));
+      const extensionIds = new Set(extra.map(t => String(t.transaction_id)).filter(id => !publicIds.has(id)));
+      const pending = pendingTradesFor(mergeTransactions(transactions, extra), ctx.me.rosterId, ctx.me.ownerId, extensionIds);
       if (pending.length) await addPlayoffSchedules(ctx);
       const offers = pending.flatMap(t => {
         const partner = ctx.teams.find(x => x.rosterId === t.partnerRosterId);

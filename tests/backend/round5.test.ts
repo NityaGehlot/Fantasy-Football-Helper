@@ -84,7 +84,7 @@ test("pending trades are read from Sleeper transactions", () => {
     "u1"
   );
   assert.equal(offers.length, 1);
-  assert.deepEqual(offers[0], { transactionId: "t1", status: "pending", direction: "received", partnerRosterId: 2, give: ["2"], get: ["6"] });
+  assert.deepEqual(offers[0], { transactionId: "t1", status: "pending", direction: "received", partnerRosterId: 2, give: ["2"], get: ["6"], source: "sleeper", draftPicks: [] });
 });
 
 test("lineup check: swaps to the best lineup, leaving locked players alone", () => {

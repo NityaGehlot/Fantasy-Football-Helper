@@ -15,6 +15,7 @@ import PlayerDetailsScreen from "./screens/PlayerDetailsScreen";
 import DefenseRosterScreen from "./screens/DefenseRosterScreen";
 import ComparePlayerScreen from "./screens/ComparePlayerScreen";
 import TradeIdeasScreen from "./screens/TradeIdeasScreen";
+import ExtensionScreen from "./screens/ExtensionScreen";
 import FollowingScreen from "./screens/FollowingScreen";
 import LeaguesModal from './components/LeaguesModal';
 import NotificationBell from './components/NotificationBell';
@@ -63,6 +64,7 @@ export type RootStackParamList = {
     player?: any;
     allWeeksStats?: any;
   };
+  Extension: undefined;
   // Players and teams you follow, organized by your team / free agents / other teams
   Following: undefined;
 };
@@ -102,6 +104,14 @@ function AccountMenu() {
             setShowLeagues(true);
           }}
           title="Leagues"
+        />
+        <Menu.Item
+          leadingIcon="puzzle-outline"
+          onPress={() => {
+            closeMenu();
+            if (navigationRef.isReady()) navigationRef.navigate('Extension');
+          }}
+          title="Browser extension"
         />
         <Divider />
         <Text style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 2, fontSize: 11, fontWeight: '800', color: colors.textMuted, letterSpacing: 0.8 }}>
@@ -239,6 +249,7 @@ export default function AppNavigator() {
           <Stack.Screen name="PlayerDetails" component={PlayerDetailsScreen} options={{ title: "Player Details" }} />
           <Stack.Screen name="DefenseRoster" component={DefenseRosterScreen} options={{ title: "Defense Roster" }} />
           <Stack.Screen name="ComparePlayer" component={ComparePlayerScreen} options={{ title: "Compare Players" }} />
+          <Stack.Screen name="Extension" component={ExtensionScreen} options={{ title: "Browser extension" }} />
           <Stack.Screen name="Following" component={FollowingScreen} options={{ title: "Following" }} />
         </Stack.Navigator>
         <Tutorial />

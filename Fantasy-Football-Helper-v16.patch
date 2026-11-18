@@ -1,0 +1,2958 @@
+diff --git a/.gitignore b/.gitignore
+index ba554e1..48c69df 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -132,3 +132,6 @@ dmypy.json
+ .pyre/
+ node_modules
+ .DS_Store
++.superpowers/
++extension/dist/
++public/ffhelper-extension.zip
+diff --git a/app/AppNavigator.tsx b/app/AppNavigator.tsx
+index 9d0ce95..028651a 100644
+--- a/app/AppNavigator.tsx
++++ b/app/AppNavigator.tsx
+@@ -15,6 +15,7 @@ import PlayerDetailsScreen from "./screens/PlayerDetailsScreen";
+ import DefenseRosterScreen from "./screens/DefenseRosterScreen";
+ import ComparePlayerScreen from "./screens/ComparePlayerScreen";
+ import TradeIdeasScreen from "./screens/TradeIdeasScreen";
++import ExtensionScreen from "./screens/ExtensionScreen";
+ import FollowingScreen from "./screens/FollowingScreen";
+ import LeaguesModal from './components/LeaguesModal';
+ import NotificationBell from './components/NotificationBell';
+@@ -63,6 +64,7 @@ export type RootStackParamList = {
+     player?: any;
+     allWeeksStats?: any;
+   };
++  Extension: undefined;
+   // Players and teams you follow, organized by your team / free agents / other teams
+   Following: undefined;
+ };
+@@ -103,6 +105,14 @@ function AccountMenu() {
+           }}
+           title="Leagues"
+         />
++        <Menu.Item
++          leadingIcon="puzzle-outline"
++          onPress={() => {
++            closeMenu();
++            if (navigationRef.isReady()) navigationRef.navigate('Extension');
++          }}
++          title="Browser extension"
++        />
+         <Divider />
+         <Text style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 2, fontSize: 11, fontWeight: '800', color: colors.textMuted, letterSpacing: 0.8 }}>
+           APPEARANCE
+@@ -239,6 +249,7 @@ export default function AppNavigator() {
+           <Stack.Screen name="PlayerDetails" component={PlayerDetailsScreen} options={{ title: "Player Details" }} />
+           <Stack.Screen name="DefenseRoster" component={DefenseRosterScreen} options={{ title: "Defense Roster" }} />
+           <Stack.Screen name="ComparePlayer" component={ComparePlayerScreen} options={{ title: "Compare Players" }} />
++          <Stack.Screen name="Extension" component={ExtensionScreen} options={{ title: "Browser extension" }} />
+           <Stack.Screen name="Following" component={FollowingScreen} options={{ title: "Following" }} />
+         </Stack.Navigator>
+         <Tutorial />
+diff --git a/app/backend/routes.ts b/app/backend/routes.ts
+index 4afcdfd..5ab3ebb 100644
+--- a/app/backend/routes.ts
++++ b/app/backend/routes.ts
+@@ -1,4 +1,5 @@
+ // app/backend/routes.ts
++import { mergeTransactions, tradeFitsLeague, validateExtraTransactions } from "./utils/extraTransactions";
+ import { Router, Request, Response } from "express";
+ import fetch from "node-fetch";
+ 
+@@ -591,7 +592,13 @@ export function registerRoutes(router: Router): void {
+ 
+   // Pending trade offers involving your team, each graded (with counter-offers when it's bad).
+   router.post("/trade-offers", async (req: Request, res: Response) => {
+-    const { leagueId, rosterId, ownerId } = (req.body ?? {}) as { leagueId?: string; rosterId?: number; ownerId?: string };
++    const { leagueId, rosterId, ownerId, extraTransactions } = (req.body ?? {}) as {
++      leagueId?: string;
++      rosterId?: number;
++      ownerId?: string;
++      // Pending trades the FF Helper browser extension saw on sleeper.com
++      extraTransactions?: unknown;
++    };
+     if (!leagueId) return res.status(400).json({ error: "leagueId is required" });
+     try {
+       const ctx = await getLeagueContext(String(leagueId), rosterId, ownerId);
+@@ -607,7 +614,13 @@ export function registerRoutes(router: Router): void {
+       trades.forEach((t: any) => (statuses[String(t?.status ?? "unknown")] = (statuses[String(t?.status ?? "unknown")] ?? 0) + 1));
+       const mineCount = trades.filter((t: any) => (t?.roster_ids ?? []).map(Number).includes(ctx.me!.rosterId)).length;
+       const checked = { weeks, transactions: transactions.length, trades: trades.length, statuses, involvingYou: mineCount };
+-      const pending = pendingTradesFor(transactions, ctx.me.rosterId, ctx.me.ownerId);
++      // The public API never lists pending trades; add the ones the extension saw. When the
++      // public API already has a trade (accepted or failed), its status wins.
++      const rostered = new Set(ctx.teams.flatMap(t => t.players.map(p => String(p.id))));
++      const extra = validateExtraTransactions(extraTransactions, ctx.me.rosterId).filter(t => tradeFitsLeague(t, rostered));
++      const publicIds = new Set(transactions.map((t: any) => String(t?.transaction_id)));
++      const extensionIds = new Set(extra.map(t => String(t.transaction_id)).filter(id => !publicIds.has(id)));
++      const pending = pendingTradesFor(mergeTransactions(transactions, extra), ctx.me.rosterId, ctx.me.ownerId, extensionIds);
+       if (pending.length) await addPlayoffSchedules(ctx);
+       const offers = pending.flatMap(t => {
+         const partner = ctx.teams.find(x => x.rosterId === t.partnerRosterId);
+diff --git a/app/backend/services/tradeGrade.ts b/app/backend/services/tradeGrade.ts
+index 44108d0..7ff07b4 100644
+--- a/app/backend/services/tradeGrade.ts
++++ b/app/backend/services/tradeGrade.ts
+@@ -227,6 +227,9 @@ export type PendingTrade = {
+   partnerRosterId: number;
+   give: string[];
+   get: string[];
++  // Where it was found: Sleeper's public API, or the FF Helper browser extension
++  source: "sleeper" | "extension";
++  draftPicks: unknown[];
+ };
+ 
+ /**
+@@ -234,7 +237,7 @@ export type PendingTrade = {
+  * Sleeper's public API mostly lists completed moves, so this is often empty: offers can
+  * also be entered by hand in the app.
+  */
+-export function pendingTradesFor(transactions: any[], rosterId: number, ownerId?: string): PendingTrade[] {
++export function pendingTradesFor(transactions: any[], rosterId: number, ownerId?: string, extensionIds: Set<string> = new Set()): PendingTrade[] {
+   return (transactions ?? [])
+     .filter(t => t?.type === "trade" && !["complete", "failed"].includes(String(t?.status)))
+     .filter(t => (t?.roster_ids ?? []).map(Number).includes(Number(rosterId)))
+@@ -249,6 +252,8 @@ export function pendingTradesFor(transactions: any[], rosterId: number, ownerId?
+         partnerRosterId: partner,
+         get: adds.filter(([, r]) => Number(r) === Number(rosterId)).map(([id]) => id),
+         give: drops.filter(([, r]) => Number(r) === Number(rosterId)).map(([id]) => id),
++        source: extensionIds.has(String(t.transaction_id ?? "")) ? "extension" : "sleeper",
++        draftPicks: Array.isArray(t?.draft_picks) ? t.draft_picks : [],
+       } as PendingTrade;
+     });
+ }
+diff --git a/app/backend/utils/extraTransactions.ts b/app/backend/utils/extraTransactions.ts
+new file mode 100644
+index 0000000..58e4efe
+--- /dev/null
++++ b/app/backend/utils/extraTransactions.ts
+@@ -0,0 +1,52 @@
++// app/backend/utils/extraTransactions.ts
++// Pending trades sent in by the FF Helper browser extension (Sleeper's public API never returns
++// them). Validated before grading, and merged with what the public API returned.
++
++const MAX_EXTRA = 50;
++
++const isPlayerMap = (v: unknown) =>
++  !!v && typeof v === "object" && !Array.isArray(v) && Object.values(v as object).every(r => typeof r === "number" && Number.isFinite(r));
++
++/** Only well-formed trades that involve this roster (at most 50). */
++export function validateExtraTransactions(raw: unknown, rosterId: number): any[] {
++  if (!Array.isArray(raw)) return [];
++  return raw
++    .filter(
++      (t: any) =>
++        t &&
++        t.type === "trade" &&
++        (typeof t.transaction_id === "string" || typeof t.transaction_id === "number") &&
++        Array.isArray(t.roster_ids) &&
++        t.roster_ids.every((r: unknown) => typeof r === "number") &&
++        t.roster_ids.includes(Number(rosterId)) &&
++        isPlayerMap(t.adds ?? {}) &&
++        isPlayerMap(t.drops ?? {}) &&
++        (t.draft_picks === undefined || Array.isArray(t.draft_picks))
++    )
++    .slice(0, MAX_EXTRA)
++    .map((t: any) => ({
++      transaction_id: String(t.transaction_id),
++      type: "trade",
++      status: String(t.status ?? "proposed"),
++      creator: t.creator != null ? String(t.creator) : null,
++      roster_ids: t.roster_ids,
++      adds: t.adds ?? {},
++      drops: t.drops ?? {},
++      draft_picks: (t.draft_picks ?? []).slice(0, 20),
++    }));
++}
++
++/** Public-API transactions plus extension ones; when both have a trade, the public one wins. */
++export function mergeTransactions(publicTx: any[], extra: any[]): any[] {
++  const seen = new Set(publicTx.map(t => String(t?.transaction_id)));
++  return [...publicTx, ...extra.filter(t => !seen.has(String(t.transaction_id)))];
++}
++
++/**
++ * True when every player the trade moves is on one of this league's rosters. Roster ids are
++ * small numbers that repeat across leagues, so this is what catches a trade the extension saw
++ * for a different league.
++ */
++export function tradeFitsLeague(t: any, rosteredIds: Set<string>): boolean {
++  return [...Object.keys(t?.adds ?? {}), ...Object.keys(t?.drops ?? {})].every(id => rosteredIds.has(String(id)));
++}
+diff --git a/app/components/TradeOffers.tsx b/app/components/TradeOffers.tsx
+index 17092f8..fb9aefc 100644
+--- a/app/components/TradeOffers.tsx
++++ b/app/components/TradeOffers.tsx
+@@ -5,6 +5,11 @@
+ import React, { useEffect, useState } from 'react';
+ import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+ import { Ionicons } from '@expo/vector-icons';
++import { useNavigation } from '@react-navigation/native';
++import { auth } from '../services/firebase';
++import { watchExtensionTrades, watchLinkedDevices } from '../services/extensionLink';
++import { draftPickLines, offerSourceLabel, type ExtensionTrade } from '../services/extensionTrades';
++import { toTransaction } from '../../extension/src/capture';
+ import type { MyFantasyTeam } from '../context/FantasyContext';
+ import { useTheme, useThemedStyles } from '../context/ThemeContext';
+ import { describeOfferCheck, fetchTradeOffers, type OfferCheck, type PendingOffer } from '../services/tradeGrader';
+@@ -28,11 +33,30 @@ export default function TradeOffers({
+   const [checked, setChecked] = useState<OfferCheck | undefined>(undefined);
+   const [error, setError] = useState('');
+   const [nonce, setNonce] = useState(0);
++  const navigation = useNavigation<any>();
++  // Pending trades the browser extension saved, and whether any browser is linked
++  const [extTrades, setExtTrades] = useState<ExtensionTrade[]>([]);
++  const [linked, setLinked] = useState<boolean | null>(null);
++  const uid = auth.currentUser?.uid ?? null;
++
++  useEffect(() => {
++    if (!uid) return;
++    const offTrades = watchExtensionTrades(uid, leagueId, setExtTrades);
++    const offDevices = watchLinkedDevices(uid, d => setLinked(d.length > 0));
++    return () => {
++      offTrades();
++      offDevices();
++    };
++  }, [uid, leagueId]);
++
++  // Re-grade when the extension's set of trades changes (not on every "seen" update).
++  const extKey = extTrades.map(t => `${t.transactionId}:${t.status}`).sort().join('|');
++  const seen = new Map(extTrades.map(t => [t.transactionId, t.seenAt]));
+ 
+   useEffect(() => {
+     let cancelled = false;
+     setError('');
+-    fetchTradeOffers(leagueId, team.rosterId, team.ownerId)
++    fetchTradeOffers(leagueId, team.rosterId, team.ownerId, extTrades.map(toTransaction))
+       .then(d => {
+         if (cancelled) return;
+         setOffers(d.offers);
+@@ -42,7 +66,7 @@ export default function TradeOffers({
+     return () => {
+       cancelled = true;
+     };
+-  }, [leagueId, team.rosterId, nonce]);
++  }, [leagueId, team.rosterId, nonce, extKey]);
+ 
+   const received = (offers ?? []).filter(o => o.direction === 'received');
+   const sent = (offers ?? []).filter(o => o.direction === 'sent');
+@@ -71,20 +95,36 @@ export default function TradeOffers({
+         </View>
+       ) : (
+         <View style={{ gap: 12 }}>
+-          {received.map(o => (
+-            <View key={o.transactionId} style={{ gap: 6 }}>
+-              <Text style={styles.from}>Offer from {o.partnerName}</Text>
+-              <TradeGradeCard r={o.result} partnerName={o.partnerName} onAskAI={onAskAI} />
+-            </View>
+-          ))}
+-          {sent.map(o => (
+-            <View key={o.transactionId} style={{ gap: 6 }}>
+-              <Text style={styles.from}>Your offer to {o.partnerName} (waiting on them)</Text>
+-              <TradeGradeCard r={o.result} partnerName={o.partnerName} onAskAI={onAskAI} />
+-            </View>
+-          ))}
++          {[...received, ...sent].map(o => {
++            const label = offerSourceLabel(o, seen, Date.now());
++            const picks = draftPickLines(o.draftPicks, team.rosterId);
++            return (
++              <View key={o.transactionId} style={{ gap: 6 }}>
++                <Text style={styles.from}>
++                  {o.direction === 'received' ? `Offer from ${o.partnerName}` : `Your offer to ${o.partnerName} (waiting on them)`}
++                </Text>
++                {!!label && <Text style={styles.source}>{label}</Text>}
++                {picks.get.length + picks.give.length > 0 && (
++                  <Text style={styles.sub}>
++                    {[...picks.get.map(p => `You get: ${p}`), ...picks.give.map(p => `You give: ${p}`)].join(' · ')} (picks aren't graded)
++                  </Text>
++                )}
++                <TradeGradeCard r={o.result} partnerName={o.partnerName} onAskAI={onAskAI} />
++              </View>
++            );
++          })}
+         </View>
+       )}
++      {linked === false && (
++        <Pressable style={styles.extCard} onPress={() => navigation.navigate('Extension')} accessibilityRole="button">
++          <Ionicons name="extension-puzzle-outline" size={18} color={colors.primary} />
++          <View style={{ flex: 1 }}>
++            <Text style={styles.extTitle}>See offers people sent you</Text>
++            <Text style={styles.sub}>Get the FF Helper browser extension: it shows your pending Sleeper offers here.</Text>
++          </View>
++          <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
++        </Pressable>
++      )}
+     </View>
+   );
+ }
+@@ -97,4 +137,7 @@ const makeStyles = (c: Palette) => ({
+   link: { color: c.primary, fontWeight: '700' as const },
+   checked: { fontSize: 11, color: c.textSubtle, lineHeight: 15 },
+   from: { fontSize: 13, fontWeight: '800' as const, color: c.text },
++  source: { fontSize: 11, fontWeight: '700' as const, color: c.primary },
++  extCard: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 10, padding: 12, borderRadius: radius.md, backgroundColor: c.primarySoft },
++  extTitle: { fontSize: 13, fontWeight: '800' as const, color: c.text },
+ });
+diff --git a/app/screens/ExtensionScreen.tsx b/app/screens/ExtensionScreen.tsx
+new file mode 100644
+index 0000000..8d309ab
+--- /dev/null
++++ b/app/screens/ExtensionScreen.tsx
+@@ -0,0 +1,221 @@
++// app/screens/ExtensionScreen.tsx
++// The FF Helper browser extension: what it does, download + install, connect it to your account
++// with a one-time code, and the browsers you've linked.
++
++import React, { useEffect, useRef, useState } from 'react';
++import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, Text, View } from 'react-native';
++import { Ionicons } from '@expo/vector-icons';
++import { onAuthStateChanged, type User } from 'firebase/auth';
++import { useTheme, useThemedStyles } from '../context/ThemeContext';
++import { auth } from '../services/firebase';
++import { createPairing, unlinkDevice, watchLinkedDevices, type LinkedDevice } from '../services/extensionLink';
++import { formatCode, PAIRING_TTL_MS } from '../services/pairingCode';
++import { newlyLinked, seenAgo } from '../services/extensionTrades';
++import { radius, type Palette } from '../theme';
++
++const ZIP_PATH = '/ffhelper-extension.zip';
++const INSTALL_STEPS = [
++  'Download the extension and unzip it.',
++  'In Chrome, Edge or Brave, open chrome://extensions and turn on Developer mode (top right).',
++  'Click Load unpacked and choose the unzipped folder.',
++  'Click the FF Helper icon in your toolbar and enter the code below.',
++];
++
++// Pick a name to show in the extension. Never the email address.
++const labelFor = (u: User) => (u.displayName?.trim() || 'your FF Helper account').slice(0, 60);
++
++export default function ExtensionScreen() {
++  const { colors } = useTheme();
++  const styles = useThemedStyles(makeStyles);
++  const [user, setUser] = useState<User | null>(auth.currentUser);
++  const [devices, setDevices] = useState<LinkedDevice[] | null>(null);
++  const [pairing, setPairing] = useState<{ code: string; expiresAt: number } | null>(null);
++  const [creating, setCreating] = useState(false);
++  const [error, setError] = useState('');
++  const [downloadError, setDownloadError] = useState('');
++  const [now, setNow] = useState(Date.now());
++  const [justLinked, setJustLinked] = useState(false);
++  // Browsers (id -> link time) when the current code was made, to notice the one that links.
++  const devicesAtCode = useRef(new Map<string, number>());
++
++  useEffect(() => onAuthStateChanged(auth, setUser), []);
++
++  useEffect(() => {
++    if (!user) return;
++    return watchLinkedDevices(user.uid, d => {
++      setDevices(d);
++      // A browser linked (or re-linked) while a code was showing.
++      if (pairing && newlyLinked(devicesAtCode.current, d)) {
++        setPairing(null);
++        setJustLinked(true);
++      }
++    });
++  }, [user?.uid, pairing?.code]);
++
++  useEffect(() => {
++    if (!pairing) return;
++    const id = setInterval(() => setNow(Date.now()), 1000);
++    return () => clearInterval(id);
++  }, [pairing?.code]);
++
++  const makeCode = async () => {
++    if (!user) return;
++    setCreating(true);
++    setError('');
++    setJustLinked(false);
++    try {
++      devicesAtCode.current = new Map((devices ?? []).map(d => [d.id, d.linkedAt]));
++      setPairing(await createPairing(user.uid, labelFor(user)));
++      setNow(Date.now());
++    } catch (e: any) {
++      setError("Couldn't make a code. Check your connection and try again.");
++    } finally {
++      setCreating(false);
++    }
++  };
++
++  const download = async () => {
++    if (Platform.OS !== 'web') return;
++    setDownloadError('');
++    // Without a built zip the web server answers with the app page, so check first.
++    const res = await fetch(ZIP_PATH, { method: 'HEAD' }).catch(() => null);
++    if (!res?.ok || !String(res.headers.get('content-type') ?? '').includes('zip')) {
++      setDownloadError("The extension download isn't available yet. Run npm run build:extension, then reload.");
++      return;
++    }
++    Linking.openURL(ZIP_PATH).catch(() => undefined);
++  };
++
++  const left = pairing ? Math.max(0, pairing.expiresAt - now) : 0;
++  const expired = !!pairing && left === 0;
++  const mmss = `${Math.floor(left / 60000)}:${String(Math.floor((left % 60000) / 1000)).padStart(2, '0')}`;
++
++  return (
++    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
++      <Text style={styles.h1}>Your Sleeper trade offers, graded in FF Helper</Text>
++      <Text style={styles.lede}>
++        Sleeper doesn't share offers until they're accepted. This browser extension notices the offers Sleeper's website
++        shows you and sends just the trade details here, so the Trades tab can grade them and suggest counters.
++      </Text>
++
++      <View style={styles.promise}>
++        <View style={styles.promiseCol}>
++          <Text style={styles.promiseHead}>What it reads</Text>
++          <Text style={styles.promiseItem}>Trade offers on sleeper.com, while you have it open</Text>
++          <Text style={styles.promiseItem}>Who's in each offer and its status</Text>
++        </View>
++        <View style={styles.promiseCol}>
++          <Text style={styles.promiseHead}>What it never touches</Text>
++          <Text style={styles.promiseItem}>Your Sleeper password or login</Text>
++          <Text style={styles.promiseItem}>Any other website</Text>
++          <Text style={styles.promiseItem}>Sending or accepting trades</Text>
++        </View>
++      </View>
++
++      <Text style={styles.h2}>Install it</Text>
++      {Platform.OS === 'web' ? (
++        <Pressable style={styles.primaryBtn} onPress={download} accessibilityRole="button">
++          <Ionicons name="download-outline" size={18} color={colors.onPrimary} />
++          <Text style={styles.primaryText}>Download the extension</Text>
++        </Pressable>
++      ) : null}
++      {Platform.OS === 'web' && !!downloadError && <Text style={styles.error}>{downloadError}</Text>}
++      {Platform.OS !== 'web' && (
++        <Text style={styles.note}>Browser extensions run on computers. Open FF Helper on your computer's browser to download it.</Text>
++      )}
++      <View style={styles.steps}>
++        {INSTALL_STEPS.map((s, i) => (
++          <View key={s} style={styles.step}>
++            <Text style={styles.stepNum}>{i + 1}</Text>
++            <Text style={styles.stepText}>{s}</Text>
++          </View>
++        ))}
++      </View>
++
++      <Text style={styles.h2}>Connect it to your account</Text>
++      {!user ? (
++        <Text style={styles.note}>Sign in to connect the extension. Offers are saved to your account, so you need one.</Text>
++      ) : justLinked ? (
++        <View style={styles.linkedBanner}>
++          <Ionicons name="checkmark-circle" size={22} color={colors.success} />
++          <Text style={styles.linkedText}>Linked. Open your league on sleeper.com and your pending offers will show in the Trades tab.</Text>
++        </View>
++      ) : pairing && !expired ? (
++        <View style={styles.codeCard}>
++          <Text style={styles.codeHint}>Enter this code in the extension</Text>
++          <Text style={styles.code} selectable accessibilityLabel={`Code ${pairing.code.split('').join(' ')}`}>
++            {formatCode(pairing.code)}
++          </Text>
++          <View style={styles.bar}>
++            <View style={[styles.barFill, { width: `${(left / PAIRING_TTL_MS) * 100}%` }]} />
++          </View>
++          <Text style={styles.codeHint}>Works once, for {mmss} more</Text>
++        </View>
++      ) : (
++        <View style={{ gap: 8 }}>
++          {expired && <Text style={styles.note}>That code expired. Make a new one.</Text>}
++          <Pressable style={styles.primaryBtn} onPress={makeCode} disabled={creating} accessibilityRole="button">
++            {creating ? <ActivityIndicator color={colors.onPrimary} /> : <Ionicons name="key-outline" size={18} color={colors.onPrimary} />}
++            <Text style={styles.primaryText}>{expired ? 'Make a new code' : 'Get a connect code'}</Text>
++          </Pressable>
++          {!!error && <Text style={styles.error}>{error}</Text>}
++        </View>
++      )}
++
++      {!!user && (devices?.length ?? 0) > 0 && (
++        <>
++          <Text style={styles.h2}>Linked browsers</Text>
++          <View style={styles.list}>
++            {devices!.map(d => (
++              <View key={d.id} style={styles.device}>
++                <Ionicons name="desktop-outline" size={18} color={colors.textMuted} />
++                <View style={{ flex: 1 }}>
++                  <Text style={styles.deviceName}>{d.browser}</Text>
++                  <Text style={styles.deviceMeta}>
++                    {d.lastSyncAt ? `Last saw Sleeper ${seenAgo(d.lastSyncAt, Date.now())}` : 'Waiting for you to open sleeper.com'}
++                  </Text>
++                </View>
++                <Pressable onPress={() => unlinkDevice(user.uid, d.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Unlink ${d.browser}`}>
++                  <Text style={styles.unlink}>Unlink</Text>
++                </Pressable>
++              </View>
++            ))}
++          </View>
++        </>
++      )}
++    </ScrollView>
++  );
++}
++
++const makeStyles = (c: Palette) => ({
++  container: { flex: 1, backgroundColor: c.background },
++  content: { padding: 16, paddingBottom: 40, width: '100%' as const, maxWidth: 640, alignSelf: 'center' as const, gap: 12 },
++  h1: { fontSize: 26, lineHeight: 31, fontWeight: '800' as const, color: c.text, letterSpacing: -0.4 },
++  lede: { fontSize: 15, lineHeight: 22, color: c.textMuted },
++  h2: { fontSize: 18, fontWeight: '800' as const, color: c.text, marginTop: 14 },
++  promise: { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: 10 },
++  promiseCol: { flexGrow: 1, flexBasis: 220, backgroundColor: c.surface, borderRadius: radius.md, borderWidth: 1, borderColor: c.border, padding: 12, gap: 4 },
++  promiseHead: { fontSize: 13, fontWeight: '800' as const, color: c.text, marginBottom: 2 },
++  promiseItem: { fontSize: 13, lineHeight: 19, color: c.textMuted },
++  primaryBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const, gap: 8, alignSelf: 'flex-start' as const, backgroundColor: c.primary, borderRadius: radius.pill, paddingHorizontal: 18, paddingVertical: 11 },
++  primaryText: { color: c.onPrimary, fontWeight: '800' as const, fontSize: 14 },
++  note: { fontSize: 13, lineHeight: 19, color: c.textMuted },
++  error: { fontSize: 13, color: c.danger },
++  steps: { gap: 8 },
++  step: { flexDirection: 'row' as const, gap: 10, alignItems: 'flex-start' as const },
++  stepNum: { width: 22, height: 22, borderRadius: 11, backgroundColor: c.primarySoft, color: c.primary, fontWeight: '800' as const, fontSize: 12, textAlign: 'center' as const, lineHeight: 22 },
++  stepText: { flex: 1, fontSize: 14, lineHeight: 21, color: c.text },
++  // The one bold element: the code, set like a jersey number.
++  codeCard: { alignItems: 'center' as const, gap: 10, paddingVertical: 22, paddingHorizontal: 16, borderRadius: radius.lg, backgroundColor: c.surface, borderWidth: 2, borderColor: c.primary },
++  code: { fontSize: 44, fontWeight: '900' as const, letterSpacing: 6, color: c.text, fontVariant: ['tabular-nums' as const] },
++  codeHint: { fontSize: 13, color: c.textMuted },
++  bar: { width: '70%' as const, height: 4, borderRadius: 2, backgroundColor: c.surfaceMuted, overflow: 'hidden' as const },
++  barFill: { height: 4, backgroundColor: c.primary },
++  linkedBanner: { flexDirection: 'row' as const, gap: 10, alignItems: 'center' as const, padding: 14, borderRadius: radius.md, backgroundColor: c.successSoft },
++  linkedText: { flex: 1, fontSize: 14, lineHeight: 20, color: c.text, fontWeight: '600' as const },
++  list: { backgroundColor: c.surface, borderRadius: radius.md, borderWidth: 1, borderColor: c.border },
++  device: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 10, padding: 12, borderTopWidth: 1, borderTopColor: c.border },
++  deviceName: { fontSize: 14, fontWeight: '700' as const, color: c.text },
++  deviceMeta: { fontSize: 12, color: c.textMuted, marginTop: 2 },
++  unlink: { fontSize: 13, fontWeight: '700' as const, color: c.danger },
++});
+diff --git a/app/services/extensionLink.ts b/app/services/extensionLink.ts
+new file mode 100644
+index 0000000..f50f63b
+--- /dev/null
++++ b/app/services/extensionLink.ts
+@@ -0,0 +1,47 @@
++// app/services/extensionLink.ts
++// Linking the FF Helper browser extension to your account (one-time pairing code), the browsers
++// you've linked, and the pending Sleeper trades they saved. Firestore paths match firestore.rules.
++
++import { collection, deleteDoc, doc, onSnapshot, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
++import { db } from './firebase';
++import { newPairingCode, PAIRING_TTL_MS } from './pairingCode';
++import { freshExtensionTrades, type ExtensionTrade } from './extensionTrades';
++
++export type LinkedDevice = { id: string; browser: string; linkedAt: number; lastSyncAt: number | null; version: string };
++
++/**
++ * A new pairing code for this account. It lasts 10 minutes from when the server saves it (the
++ * rules time it with the server's clock, so a wrong device clock doesn't matter); `expiresAt` is
++ * this device's estimate for the countdown. `label` is a display name, never the email.
++ */
++export async function createPairing(uid: string, label: string): Promise<{ code: string; expiresAt: number }> {
++  const code = newPairingCode();
++  await setDoc(doc(db, 'extensionPairings', code), { uid, label: label.slice(0, 60), createdAt: serverTimestamp(), claimedBy: null });
++  return { code, expiresAt: Date.now() + PAIRING_TTL_MS };
++}
++
++/** Browsers linked to this account (live). Returns an unsubscribe function. */
++export function watchLinkedDevices(uid: string, cb: (d: LinkedDevice[]) => void): () => void {
++  return onSnapshot(
++    collection(db, 'users', uid, 'linkedDevices'),
++    snap =>
++      cb(
++        snap.docs.map(d => {
++          const v = d.data() as any;
++          return { id: d.id, browser: String(v.browser ?? 'Browser'), linkedAt: Number(v.linkedAt) || 0, lastSyncAt: v.lastSyncAt ?? null, version: String(v.version ?? '') };
++        })
++      ),
++    () => cb([])
++  );
++}
++
++export const unlinkDevice = (uid: string, extUid: string) => deleteDoc(doc(db, 'users', uid, 'linkedDevices', extUid));
++
++/** Pending trades the extension saved for one league (live, only fresh pending ones). */
++export function watchExtensionTrades(uid: string, leagueId: string, cb: (t: ExtensionTrade[]) => void): () => void {
++  return onSnapshot(
++    query(collection(db, 'users', uid, 'pendingTrades'), where('leagueId', '==', String(leagueId))),
++    snap => cb(freshExtensionTrades(snap.docs.map(d => d.data() as ExtensionTrade), Date.now())),
++    () => cb([])
++  );
++}
+diff --git a/app/services/extensionTrades.ts b/app/services/extensionTrades.ts
+new file mode 100644
+index 0000000..14965f8
+--- /dev/null
++++ b/app/services/extensionTrades.ts
+@@ -0,0 +1,51 @@
++// app/services/extensionTrades.ts
++// Pending trades the FF Helper browser extension saved to your account (pure helpers).
++
++import type { CapturedTrade } from '../../extension/src/capture';
++
++export type ExtensionTrade = CapturedTrade & { seenAt: number };
++
++const DAY = 86_400_000;
++const MAX_AGE = 14 * DAY;
++const PENDING = new Set(['proposed', 'pending']);
++
++/** Offers still pending and seen in the last 14 days, newest first. */
++export function freshExtensionTrades(docs: ExtensionTrade[], now: number): ExtensionTrade[] {
++  return docs
++    .filter(t => PENDING.has(String(t.status)) && now - Number(t.seenAt) <= MAX_AGE)
++    .sort((a, b) => b.seenAt - a.seenAt);
++}
++
++/** "just now", "3m ago", "2h ago", "4d ago" */
++export function seenAgo(seenAt: number, now: number): string {
++  const s = Math.max(0, Math.floor((now - seenAt) / 1000));
++  if (s < 60) return 'just now';
++  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
++  if (s < 86_400) return `${Math.floor(s / 3600)}h ago`;
++  return `${Math.floor(s / 86_400)}d ago`;
++}
++
++/** "via browser extension · seen 3m ago" for offers the extension found ("" for Sleeper's own). */
++export function offerSourceLabel(o: { transactionId: string; source?: string }, seen: Map<string, number>, now: number): string {
++  if (o.source !== 'extension') return '';
++  const at = seen.get(o.transactionId);
++  return at ? `via browser extension · seen ${seenAgo(at, now)}` : 'via browser extension';
++}
++
++const ordinal = (n: number) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'}`;
++
++/** Draft picks you'd get and give in a trade, as "2027 2nd round pick". */
++export function draftPickLines(picks: unknown[] | undefined, myRosterId: number): { get: string[]; give: string[] } {
++  const out = { get: [] as string[], give: [] as string[] };
++  for (const p of (picks ?? []) as any[]) {
++    const line = `${p?.season ?? ''} ${ordinal(Number(p?.round) || 0)} round pick`.trim();
++    if (Number(p?.owner_id) === Number(myRosterId)) out.get.push(line);
++    else if (Number(p?.previous_owner_id) === Number(myRosterId)) out.give.push(line);
++  }
++  return out;
++}
++
++/** Did a browser link since `before` (id -> linkedAt) was taken? New browser, or the same one re-linked. */
++export function newlyLinked(before: Map<string, number>, after: { id: string; linkedAt: number }[]): boolean {
++  return after.some(d => before.get(d.id) !== d.linkedAt);
++}
+diff --git a/app/services/firebase.ts b/app/services/firebase.ts
+index fc2b4e6..2fac708 100644
+--- a/app/services/firebase.ts
++++ b/app/services/firebase.ts
+@@ -1,16 +1,7 @@
+ import { initializeApp } from "firebase/app";
+ import { getAuth } from "firebase/auth";
+ import { getFirestore } from "firebase/firestore";
+-
+-const firebaseConfig = {
+-  apiKey: "AIzaSyDo3jyq9cbSjGeSLmKbQE8ryNiiKJbc31Q",
+-  authDomain: "ffhelper-eb35a.firebaseapp.com",
+-  projectId: "ffhelper-eb35a",
+-  storageBucket: "ffhelper-eb35a.firebasestorage.app",
+-  messagingSenderId: "133040506561",
+-  appId: "1:133040506561:web:f35f6e4e88a3cbdf5ef640",
+-  measurementId: "G-PLK9BW8W66"
+-};
++import { firebaseConfig } from "./firebaseConfig";
+ 
+ const app = initializeApp(firebaseConfig);
+ 
+diff --git a/app/services/firebaseConfig.ts b/app/services/firebaseConfig.ts
+new file mode 100644
+index 0000000..739ef59
+--- /dev/null
++++ b/app/services/firebaseConfig.ts
+@@ -0,0 +1,13 @@
++// app/services/firebaseConfig.ts
++// Firebase web settings (public by design; access is controlled by firestore.rules).
++// Shared by the app and the browser extension.
++
++export const firebaseConfig = {
++  apiKey: "AIzaSyDo3jyq9cbSjGeSLmKbQE8ryNiiKJbc31Q",
++  authDomain: "ffhelper-eb35a.firebaseapp.com",
++  projectId: "ffhelper-eb35a",
++  storageBucket: "ffhelper-eb35a.firebasestorage.app",
++  messagingSenderId: "133040506561",
++  appId: "1:133040506561:web:f35f6e4e88a3cbdf5ef640",
++  measurementId: "G-PLK9BW8W66"
++};
+diff --git a/app/services/pairingCode.ts b/app/services/pairingCode.ts
+new file mode 100644
+index 0000000..168072d
+--- /dev/null
++++ b/app/services/pairingCode.ts
+@@ -0,0 +1,30 @@
++// app/services/pairingCode.ts
++// One-time codes that link the FF Helper browser extension to your account. Shared by the app
++// (which makes them) and the extension (which reads what you type). Pure code.
++
++// No 0/O or 1/I, so codes are easy to read and type.
++export const PAIRING_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
++export const PAIRING_TTL_MS = 10 * 60 * 1000;
++
++const secureRandom = () => {
++  const buf = new Uint32Array(1);
++  globalThis.crypto.getRandomValues(buf);
++  return buf[0] / 2 ** 32;
++};
++
++/** A new 8-character code (stored without the dash). */
++export function newPairingCode(rand: () => number = secureRandom): string {
++  let code = '';
++  for (let i = 0; i < 8; i++) code += PAIRING_ALPHABET[Math.floor(rand() * PAIRING_ALPHABET.length)];
++  return code;
++}
++
++/** "ABCDEFGH" -> "ABCD-EFGH" */
++export const formatCode = (code: string) => `${code.slice(0, 4)}-${code.slice(4, 8)}`;
++
++/** A code as typed (any case, spaces, dash) -> the stored form, or null if it can't be a code. */
++export function normalizeCode(input: string): string | null {
++  const code = String(input ?? '').toUpperCase().replace(/[\s-]/g, '');
++  if (code.length !== 8) return null;
++  return [...code].every(c => PAIRING_ALPHABET.includes(c)) ? code : null;
++}
+diff --git a/app/services/tradeGrader.ts b/app/services/tradeGrader.ts
+index 85560e6..eeeb815 100644
+--- a/app/services/tradeGrader.ts
++++ b/app/services/tradeGrader.ts
+@@ -30,6 +30,9 @@ export type PendingOffer = {
+   give: string[];
+   get: string[];
+   result: TradeGrade;
++  // Where it was found: Sleeper's public API, or the FF Helper browser extension
++  source?: 'sleeper' | 'extension';
++  draftPicks?: unknown[];
+ };
+ 
+ async function post<T>(path: string, body: unknown): Promise<T> {
+@@ -46,8 +49,9 @@ async function post<T>(path: string, body: unknown): Promise<T> {
+ export const fetchLeagueTeams = (leagueId: string, rosterId: number, ownerId?: string) =>
+   post<{ myRosterId: number; teams: LeagueTeamRoster[]; offers: PendingOffer[] }>('/league-teams', { leagueId, rosterId, ownerId });
+ 
+-export const fetchTradeOffers = (leagueId: string, rosterId: number, ownerId?: string) =>
+-  post<{ checkedAt: string; offers: PendingOffer[]; checked?: OfferCheck }>('/trade-offers', { leagueId, rosterId, ownerId });
++/** Pending offers, graded. `extraTransactions`: trades the browser extension saw on sleeper.com. */
++export const fetchTradeOffers = (leagueId: string, rosterId: number, ownerId?: string, extraTransactions: unknown[] = []) =>
++  post<{ checkedAt: string; offers: PendingOffer[]; checked?: OfferCheck }>('/trade-offers', { leagueId, rosterId, ownerId, extraTransactions });
+ 
+ /** What the app found in Sleeper's transaction list (shown when no offer appears). */
+ export type OfferCheck = { weeks: number[]; transactions: number; trades: number; statuses: Record<string, number>; involvingYou: number };
+diff --git a/docs/extension-setup.md b/docs/extension-setup.md
+new file mode 100644
+index 0000000..0140255
+--- /dev/null
++++ b/docs/extension-setup.md
+@@ -0,0 +1,40 @@
++# FF Helper browser extension: setup
++
++## One-time Firebase setup (project ffhelper-eb35a)
++
++1. **Anonymous sign-in** (the extension uses it to identify itself):
++   Firebase console -> Authentication -> Sign-in method -> Add new provider -> Anonymous -> Enable -> Save.
++2. **Firestore rules**: Firestore Database -> Rules -> replace everything with the contents of
++   `firestore.rules` -> Publish.
++   - These also fix saving favorites / "my team" / last league to your account (the old rules
++     only allowed `users/{uid}/leagues`, so those saves were silently blocked).
++   - To undo: paste `firestore.rules.previous` and Publish.
++
++## Build the extension
++
++```bash
++npm install
++npm run build:extension
++```
++
++This makes `extension/dist/` (the unpacked extension) and `public/ffhelper-extension.zip`
++(what the app's Download button serves).
++
++## Install it (Chrome, Edge, Brave)
++
++1. Unzip `ffhelper-extension.zip` (or use `extension/dist/` directly).
++2. Open `chrome://extensions` and turn on **Developer mode** (top right).
++3. Click **Load unpacked** and pick the unzipped folder.
++4. Pin the FF Helper icon, open it, and enter the code from the app
++   (account menu -> Browser extension -> Connect).
++
++Then open your league on sleeper.com. Pending trades show in the app's Trades tab within a few
++seconds, labelled "via browser extension".
++
++## Test the Firestore rules (optional, needs Java)
++
++```bash
++npx -p firebase-tools -p @firebase/rules-unit-testing -p firebase firebase emulators:exec --only firestore --project demo-ffh "node --test tests-rules/rules.test.cjs"
++```
++
++Expected: `# pass 7`, `# fail 0`.
+diff --git a/docs/superpowers/plans/2026-11-18-trade-offers-extension.md b/docs/superpowers/plans/2026-11-18-trade-offers-extension.md
+new file mode 100644
+index 0000000..8f518d8
+--- /dev/null
++++ b/docs/superpowers/plans/2026-11-18-trade-offers-extension.md
+@@ -0,0 +1,196 @@
++# Trade Offers Browser Extension Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** A downloadable Chrome (MV3) extension that passively captures a user's pending Sleeper trades on sleeper.com and saves them to their FF Helper account, where the Trades panel grades them.
++
++**Architecture:** Pure, tested core modules (trade capture, pairing codes, request validation, freshness filtering) shared by three thin shells: the extension (content scripts + background worker + popup, bundled with esbuild), the app (pairing screen, Firestore listeners, Trades panel merge), and the backend (`/trade-offers` accepts `extraTransactions`). Linking is a one-time pairing code; Firestore rules enforce who can read/write.
++
++**Tech Stack:** TypeScript, Chrome Manifest V3, Firebase JS SDK v12 (`firebase/auth/web-extension`, `firebase/firestore/lite` in the extension; `firebase/firestore` in the app), esbuild + fflate (new devDependencies), Expo 54 web, Express, node:test via ts-node.
++
++**Spec:** `docs/superpowers/specs/2026-11-17-trade-offers-extension-design.md`
++
++## Global Constraints
++
++- Delivery is patch files; never commit or push. "Commit" steps below mean: stage nothing, just confirm `npm test` and `npm run typecheck` pass and move on.
++- The extension never reads Sleeper tokens, cookies, headers or storage, and never makes its own requests to Sleeper.
++- Host permissions: `https://sleeper.com/*` only, plus `https://firestore.googleapis.com/*`, `https://identitytoolkit.googleapis.com/*`, `https://securetoken.googleapis.com/*`. Permissions: `storage` only.
++- Pairing code: 8 chars from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, displayed `XXXX-XXXX`, stored without the dash, expires 10 minutes after creation.
++- Pairing doc stores `label` = display name, never the email.
++- Extension trades shown only if status is `proposed` or `pending` and `seenAt` is within 14 days.
++- Background writes: at most 1 write per transaction per 30 seconds unless its status changed.
++- `extraTransactions`: array of at most 50; each must be `type: "trade"` and include the caller's roster id.
++- Signed-out users (uid `'anon'`) see "Sign in to connect the extension" instead of Connect.
++- Firebase web config is the one in `app/services/firebase.ts` (same project `ffhelper-eb35a`).
++
++## Review Focus
++
++1. A trade the public API already shows as `complete`/`failed` but the extension still has as `proposed` → must not show as pending (public status wins).
++2. Pasted code with lowercase, spaces or a dash (`ab3d-ef7h `) → must link; an expired or already-claimed code → clear "code expired or used" message, not a generic error.
++3. Sleeper responses that are huge, non-JSON, or contain trade-shaped objects for leagues the user didn't open → walker must not throw, must cap work (depth ≤ 12, ≤ 200 trades per response), and league id falls back to the page URL.
++4. Extension unlinked from the app while the browser is open → next write fails → popup shows "Unlinked: enter a new code" and capturing stops writing.
++5. Offers involving draft picks only (no players) → still listed with picks as text, not dropped and not crashing `gradeTrade`.
++
++---
++
++### Task 1: Trade capture core (pure)
++
++**Files:**
++- Create: `extension/src/capture.ts`
++- Test: `tests/extension/capture.test.ts`
++
++**Interfaces:**
++- Produces:
++  - `type CapturedTrade = { transactionId: string; leagueId: string | null; status: string; type: "trade"; creator: string | null; rosterIds: number[]; adds: Record<string, number>; drops: Record<string, number>; draftPicks: unknown[]; waiverBudget: unknown[]; created: number | null }`
++  - `findTrades(json: unknown, pageLeagueId?: string | null): CapturedTrade[]`: depth-first walk, max depth 12, max 200 results, de-duped by `transactionId`; accepts objects with `type === "trade"`, a `transaction_id`, and an array `roster_ids`; copies only the whitelisted fields (renamed to camelCase); `leagueId` from `league_id` on the object, else `pageLeagueId`.
++  - `leagueIdFromUrl(url: string): string | null`: matches `/leagues/(\d+)` on sleeper.com.
++  - `toTransaction(t: CapturedTrade): Record<string, unknown>`: back to Sleeper's v1 shape (`transaction_id`, `type`, `status`, `creator`, `roster_ids`, `adds`, `drops`, `draft_picks`, `waiver_budget`, `created`) for the backend.
++
++- [ ] **Step 1: Write failing tests** `findTrades`:
++  - nested GraphQL payload `{data:{league_transactions_filtered:[{transaction_id:"9",type:"trade",status:"proposed",roster_ids:[1,4],adds:{"6794":1},drops:{"6794":4},creator:"u1",leg:10,league_id:"123",metadata:{secret:"x"}}]}}` → one trade, `leagueId "123"`, no `metadata`/`leg` keys present.
++  - waiver/free-agent objects and strings ignored; the same trade twice → 1 result.
++  - object without `league_id` + `pageLeagueId "777"` → `leagueId "777"`.
++  - 13-deep nesting → not found; 250 trades → 200 returned; `findTrades("not json")`, `findTrades(null)` → `[]`.
++  - `leagueIdFromUrl("https://sleeper.com/leagues/1180/trades")` → `"1180"`; `"https://sleeper.com/"` → `null`.
++  - `toTransaction(findTrades(payload)[0]).roster_ids` deep-equals `[1,4]`.
++- [ ] **Step 2: Run** `npm test` → new tests FAIL (module not found).
++- [ ] **Step 3: Implement** `extension/src/capture.ts` per Interfaces (no DOM or chrome APIs in this file).
++- [ ] **Step 4: Run** `npm test` → PASS.
++- [ ] **Step 5: Checkpoint** `npm run typecheck` passes.
++
++### Task 2: Pairing codes (pure, shared)
++
++**Files:**
++- Create: `app/services/pairingCode.ts`
++- Test: `tests/extension/pairingCode.test.ts`
++
++**Interfaces:**
++- Produces:
++  - `PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"`, `PAIRING_TTL_MS = 600_000`
++  - `newPairingCode(rand: () => number = secureRandom): string`: 8 chars, no dash (secureRandom uses `crypto.getRandomValues`).
++  - `formatCode(code: string): string` → `"ABCD-EFGH"`.
++  - `normalizeCode(input: string): string | null`: uppercase, strips spaces and dashes, `null` unless exactly 8 alphabet chars.
++
++- [ ] **Step 1: Failing tests:** `newPairingCode(() => 0)` → `"AAAAAAAA"`; 1000 codes all match `/^[A-HJ-NP-Z2-9]{8}$/`; `formatCode("ABCDEFGH")` → `"ABCD-EFGH"`; `normalizeCode(" ab3d-ef7h ")` → `"AB3DEF7H"`; `normalizeCode("AB0DEF7H")` → `null` (0 not allowed); `normalizeCode("ABC")` → `null`.
++- [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** → PASS.
++
++### Task 3: Backend accepts extension trades
++
++**Files:**
++- Create: `app/backend/utils/extraTransactions.ts`
++- Modify: `app/backend/routes.ts` (`/trade-offers` handler, ~line 574)
++- Modify: `app/backend/services/tradeGrade.ts` (`PendingTrade` gets `source`)
++- Test: `tests/backend/extension.test.ts`
++
++**Interfaces:**
++- Consumes: Sleeper v1 shape from Task 1 `toTransaction`.
++- Produces:
++  - `validateExtraTransactions(raw: unknown, rosterId: number): any[]`: returns `[]` for non-arrays; keeps ≤ 50; each item must have `type === "trade"`, string/number `transaction_id`, `roster_ids` array of numbers including `rosterId`, `adds`/`drops` plain objects of `string → number`; drops anything else.
++  - `mergeTransactions(publicTx: any[], extra: any[]): any[]`: union by `transaction_id`; when both exist, the public one wins (so `complete`/`failed` hides the offer).
++  - `PendingTrade.source: "sleeper" | "extension"`; response offers carry it. `/trade-offers` body gains optional `extraTransactions`.
++
++- [ ] **Step 1: Failing tests:** 60 valid items → 50 kept; item without caller roster → dropped; `adds: {"1": "x"}` → dropped; `mergeTransactions([{transaction_id:"9",status:"complete",...}], [{transaction_id:"9",status:"proposed",...}])` then `pendingTradesFor(..., 1)` → `[]` (Review Focus 1); extension-only trade → `pendingTradesFor` returns it with `source "extension"`; draft-pick-only trade (empty adds/drops, `draft_picks:[{...}]`) → returned, `give`/`get` empty, no throw (Review Focus 5).
++- [ ] **Step 2: Run** → FAIL. **Step 3: Implement** utils; in the route, `validateExtraTransactions(req.body.extraTransactions, ctx.me.rosterId)` → `mergeTransactions(transactions, extra)` before `pendingTradesFor`; `pendingTradesFor` marks `source` by whether the id came only from `extra` (pass a `Set` of extension ids as an optional 4th param). Also add `draftPicks: t.draft_picks ?? []` to `PendingTrade`.
++- [ ] **Step 4: Run** → PASS, plus existing `trade.test.ts` unchanged and passing.
++
++### Task 4: Firestore rules and setup guide
++
++**Files:**
++- Create: `firestore.rules`, `firestore.rules.previous` (the user's current rules verbatim), `docs/extension-setup.md`
++
++**Interfaces:**
++- Produces the paths used by Tasks 5 and 8: `extensionPairings/{code}` `{uid,label,createdAt,expiresAt,claimedBy}`; `users/{uid}/linkedDevices/{extUid}` `{code,browser,linkedAt,lastSyncAt,version}`; `users/{uid}/pendingTrades/{transactionId}` (CapturedTrade fields + `capturedAt`, `seenAt`, `source:"extension"`). Timestamps are Firestore `Timestamp`s.
++
++- [ ] **Step 1:** Write `firestore.rules` from the spec §2 sketch, plus: owner read/write on `users/{uid}` doc itself; linked-device create also requires pairing `expiresAt > request.time`; pendingTrades writes require `request.resource.data.keys().hasOnly([...whitelisted fields])`.
++- [ ] **Step 2:** If `java -version` works, add `tests/rules/` with `@firebase/rules-unit-testing` covering: other user can't read `pendingTrades`; unlinked anon can't write; expired code can't be claimed; claimed code can't be re-claimed; owner can write `users/{uid}`. Otherwise write that list as a manual checklist in `docs/extension-setup.md`.
++- [ ] **Step 3:** `docs/extension-setup.md`: enable Anonymous provider (done by user), paste rules (Firestore → Rules → Publish), rollback by pasting `firestore.rules.previous`, build and load the extension.
++
++### Task 5: App linking service
++
++**Files:**
++- Create: `app/services/extensionLink.ts`
++- Test: `tests/extension/extensionLink.test.ts` (pure parts only)
++
++**Interfaces:**
++- Consumes: Task 2 `newPairingCode`, `PAIRING_TTL_MS`; Task 4 paths.
++- Produces:
++  - `createPairing(uid: string, label: string): Promise<{ code: string; expiresAt: number }>`
++  - `watchLinkedDevices(uid: string, cb: (d: LinkedDevice[]) => void): () => void`
++  - `unlinkDevice(uid: string, extUid: string): Promise<void>`
++  - `watchExtensionTrades(uid: string, leagueId: string, cb: (t: ExtensionTrade[]) => void): () => void`
++  - pure `freshExtensionTrades(docs: ExtensionTrade[], now: number): ExtensionTrade[]` (status `proposed`/`pending`, `seenAt` within 14 days, newest first)
++  - pure `seenAgo(seenAt: number, now: number): string` → `"just now"`, `"3m ago"`, `"2h ago"`, `"4d ago"`
++  - `type LinkedDevice = { id: string; browser: string; linkedAt: number; lastSyncAt: number | null; version: string }`; `type ExtensionTrade = CapturedTrade & { seenAt: number }`
++
++- [ ] **Step 1: Failing tests** for `freshExtensionTrades` (accepted dropped, 15-day-old dropped, order) and `seenAgo` boundaries (59 s → "just now", 3 min, 2 h, 4 d).
++- [ ] **Step 2–4:** FAIL → implement (Firestore calls thin, not unit-tested) → PASS.
++
++### Task 6: Trades panel shows extension offers
++
++**Files:**
++- Modify: `app/services/tradeGrader.ts` (`fetchTradeOffers` 4th param `extraTransactions?: unknown[]`; `PendingOffer` gets `source`, `draftPicks`)
++- Modify: `app/components/TradeOffers.tsx`
++- Test: `tests/extension/offersMerge.test.ts`
++
++**Interfaces:**
++- Consumes: Task 1 `toTransaction`, Task 5 `watchExtensionTrades`, `seenAgo`, Task 3 response `source`.
++- Produces: pure `offerSourceLabel(o: PendingOffer, seen: Map<string, number>, now: number): string` → `"via browser extension · seen 3m ago"` or `""`.
++
++- [ ] **Step 1: Failing test** for `offerSourceLabel` (extension vs sleeper source).
++- [ ] **Step 2–4:** FAIL → implement → PASS.
++- [ ] **Step 5:** In `TradeOffers`: subscribe with `watchExtensionTrades` (uid from `auth.currentUser`, skip when signed out); re-fetch offers when the extension set changes, passing `toTransaction` of each; render the label under each offer; draft picks as text ("+ 2027 2nd round pick"); when the user has no linked device, show a card "See offers people sent you · Get the browser extension" that navigates to `Extension`.
++
++### Task 7: Browser extension screen
++
++**Files:**
++- Create: `app/screens/ExtensionScreen.tsx`
++- Modify: `app/AppNavigator.tsx` (route `Extension: undefined`, account-menu item "Browser extension")
++
++**Interfaces:**
++- Consumes: Task 5 (`createPairing`, `watchLinkedDevices`, `unlinkDevice`), Task 2 `formatCode`, Task 9 zip at `/ffhelper-extension.zip`.
++
++- [ ] **Step 1:** Use the frontend-design skill for layout. Sections: what it does + privacy promise ("Reads only the trades Sleeper's website shows you. Never sees your Sleeper password or login. Sends only trade details to your FF Helper account."), Download button + 4 install steps (unzip → chrome://extensions → Developer mode → Load unpacked), Connect (signed out → "Sign in to connect the extension"; else code in large monospace `XXXX-XXXX` with mm:ss countdown and "New code" when expired; flips to "Linked ✓" when a device appears), Linked browsers list with last sync and Unlink.
++- [ ] **Step 2:** `npm run typecheck` passes; screenshot via the run skill in light and dark.
++
++### Task 8: Extension runtime
++
++**Files:**
++- Create: `extension/manifest.json`, `extension/src/content-main.ts`, `extension/src/content-relay.ts`, `extension/src/background.ts`, `extension/src/popup.html`, `extension/src/popup.ts`, `extension/src/messages.ts`, `extension/src/writeGate.ts`
++- Test: `tests/extension/runtime.test.ts`
++
++**Interfaces:**
++- Consumes: Task 1 `findTrades`, `leagueIdFromUrl`; Task 2 `normalizeCode`; Task 4 paths.
++- Produces:
++  - `RELAY_TAG = "ffh-trades-v1"`; `isRelayMessage(data: unknown): data is { tag: typeof RELAY_TAG; trades: CapturedTrade[]; seenGraphql: boolean }` (rejects other tags, non-array trades, > 200 trades)
++  - `shouldWrite(last: Map<string, { at: number; status: string }>, t: CapturedTrade, now: number): boolean` (30 s per id unless status changed)
++  - `claimCode(code: string): Promise<{ uid: string; label: string } | { error: "invalid" | "expired_or_used" | "network" }>`
++
++- [ ] **Step 1: Failing tests:** `isRelayMessage` accepts a valid payload, rejects wrong tag/201 trades/strings; `shouldWrite` → true first time, false at +10 s same status, true at +10 s new status, true at +31 s.
++- [ ] **Step 2–4:** FAIL → implement → PASS.
++- [ ] **Step 5:** Wire runtime: `content-main` (MAIN world, `document_start`) wraps `fetch`/`XMLHttpRequest` to clone and parse responses whose URL host is `sleeper.com`/`sleeper.app`/`api.sleeper.app`, runs `findTrades(json, leagueIdFromUrl(location.href))`, posts `{tag, trades, seenGraphql}` to window; `content-relay` (isolated) checks `event.source === window && isRelayMessage` → `chrome.runtime.sendMessage`; `background` signs in anonymously (persisted), on message filters with `shouldWrite`, `setDoc(users/{uid}/pendingTrades/{id}, {...trade, seenAt, capturedAt, source})`, updates `linkedDevices.lastSyncAt`; on permission-denied clears link state (Review Focus 4); keeps the last 20 captures in `chrome.storage.session` for the popup. `popup`: code entry (Task 2 normalize; error copy for `expired_or_used` = "That code expired or was already used. Make a new one in the app." (Review Focus 2)), linked state with label + last sync + count, **Check what I see** (last 20 captures + whether any Sleeper response was seen) with **Copy**, **Unlink this browser**.
++
++### Task 9: Build, package, download
++
++**Files:**
++- Create: `scripts/build-extension.mjs`, `extension/PRIVACY.md`, `extension/README.md`
++- Modify: `package.json` (devDependencies `esbuild`, `fflate`; script `"build:extension": "node scripts/build-extension.mjs"`), `.gitignore` (`extension/dist/`, `public/ffhelper-extension.zip`)
++
++- [ ] **Step 1:** Script bundles `background`, `content-main`, `content-relay`, `popup` (IIFE for content scripts, ESM for background) into `extension/dist/`, copies `manifest.json`, `popup.html`, icons resized-by-copy from `assets/icon.png` (16/48/128 entries pointing at the same PNG), writes `public/ffhelper-extension.zip` with fflate.
++- [ ] **Step 2:** Run `npm run build:extension` → `extension/dist/manifest.json` exists, zip > 0 bytes.
++- [ ] **Step 3:** With the run skill, start Expo web and confirm `GET /ffhelper-extension.zip` returns 200 (if Expo 54 doesn't serve `public/`, put the zip under `assets/` and import it as an asset URL instead; record which in README).
++
++### Task 10: End-to-end check with Playwright
++
++**Files:**
++- Create: `scripts/e2e-extension.mjs` (not part of `npm test`)
++
++- [ ] **Step 1:** Launch Chromium persistent context with `--load-extension=extension/dist`; `page.route("https://sleeper.com/**")` serves a fixture HTML page whose script `fetch`es `https://sleeper.com/graphql` (also routed, returning the Task 1 GraphQL fixture).
++- [ ] **Step 2:** Open the popup page (`chrome-extension://<id>/popup.html`) → "Check what I see" lists transaction `9`, status `proposed`, rosters `1, 4`. Expected output printed: `captured 1 trade(s)`.
++- [ ] **Step 3:** Screenshot popup (linked-out state) for the user.
++
++### Task 11: Reviews and delivery
++
++- [ ] **Step 1:** Run the security-review skill on the full diff; fix findings that apply.
++- [ ] **Step 2:** Run the code-review skill; fix confirmed findings.
++- [ ] **Step 3:** verification-before-completion: `npm test`, `npm run typecheck`, `npm run build:extension`, `node scripts/e2e-extension.mjs` all shown passing.
++- [ ] **Step 4:** Build `Fantasy-Football-Helper-v16.patch` against `origin/main` (no binaries; zip and dist are built by the user), check it applies in a clean `git archive`, send it with apply steps + `docs/extension-setup.md` steps.
+diff --git a/docs/superpowers/specs/2026-11-17-trade-offers-extension-design.md b/docs/superpowers/specs/2026-11-17-trade-offers-extension-design.md
+new file mode 100644
+index 0000000..eae0ff8
+--- /dev/null
++++ b/docs/superpowers/specs/2026-11-17-trade-offers-extension-design.md
+@@ -0,0 +1,216 @@
++# FF Helper browser extension: pending Sleeper trades in the app
++
++Date: 2026-11-17 · Project 1 of 7 (round 14)
++
++## Intent
++
++Sleeper's public API never returns trades that haven't been accepted yet, so the app can't show
++the offers people send you (e.g. the Deebo Samuel ↔ Jahmyr Gibbs offer in "goongent") or the ones
++you've sent. Sleeper's own website does load them, because you're logged in there.
++
++A downloadable browser extension, for **anyone who uses the app**, runs on sleeper.com while the
++user browses it, picks out their pending trades (sent and received), and saves just the trade
++details to their FF Helper account. The app shows them in the Trades tab, graded, with
++counter-offers, the way it already handles offers it can find today.
++
++This is the first piece of a larger "AI agent in your browser". Version 1 only **reads**.
++
++## Goals
++
++- Pending trades (sent and received) from Sleeper web show in the app's Trade offers panel within
++  seconds of the user having Sleeper open, graded with the existing trade engine (`gradeTrade`,
++  `counterOffers`).
++- Anyone can install it: a downloadable zip from the app now (load-unpacked steps), packaged so it
++  can go to the Chrome Web Store later without changes.
++- Linking by a one-time pairing code (chosen approach A, below). Works for Google and email users.
++- The user can see what's linked, when it last synced, and unlink it, from the app.
++
++## Non-goals (v1)
++
++- Sending, accepting, rejecting or countering trades on Sleeper from the extension (later version;
++  always a confirm-in-Sleeper step, never automatic).
++- Phones. Mobile browsers don't run Chrome extensions.
++- Any league platform other than Sleeper.
++- Draft picks / FAAB in trades: captured and stored, shown as text, not graded.
++
++## Anti-goals (a failure even if it "works")
++
++- The extension reads, stores or sends the user's Sleeper login token, password or cookies.
++- One user can read or write another user's trades.
++- The extension makes its own requests to Sleeper (looks like a bot, risks the user's account).
++  It only reads responses the Sleeper website already fetched.
++- Asking for broad permissions ("read all websites").
++
++## Approaches considered (linking the extension to an account)
++
++| | Approach | Trade-off |
++|---|---|---|
++| **A (chosen)** | One-time pairing code: app shows a code, user types it into the extension, extension signs in to Firebase anonymously and is linked to that account by Firestore rules | No backend changes, no secrets, works for Google + email users. Needs the Firebase "Anonymous" sign-in provider turned on (one console toggle) and new Firestore rules. |
++| B | Sign in inside the extension with the app account | Easy for email users; Google sign-in inside an MV3 extension needs extra OAuth client setup. |
++| C | Extension posts to our backend, backend stores | Backend has no database; needs a Firebase Admin service-account key on the server. More parts, a secret to protect. |
++
++The user picked A.
++
++## Constraints
++
++- Manifest V3 (Chrome, Edge, Brave; Firefox later). No remotely hosted code, everything bundled.
++- Firebase project `ffhelper-eb35a`, web SDK v12 (already in the app). In the extension's
++  background service worker use `firebase/auth/web-extension` and `firebase/firestore/lite`
++  (works with `fetch`, no XHR).
++- No paid services. (Chrome Web Store listing later costs a one-time $5 developer fee; not needed
++  for the download route.)
++- The user tests changes before committing: everything ships as patch files; nothing is committed
++  or pushed for them.
++- Firestore rules currently live only in the Firebase console. The repo gets a `firestore.rules`
++  file the user pastes/deploys; it must keep every path the app already uses working
++  (`users/{uid}` and its `leagues` subcollection, owner read/write).
++
++## Design
++
++### 1. Pairing (Firestore)
++
++```
++extensionPairings/{code}          created by the app (signed-in user)
++  uid, label (the user's display name, never the email), createdAt,
++  expiresAt (createdAt + 10 min), claimedBy: null | <extension anon uid>
++
++users/{uid}/linkedDevices/{extUid}  created by the extension after claiming
++  code, browser ("Chrome 131 on Mac"), linkedAt, lastSyncAt, version
++
++users/{uid}/pendingTrades/{transactionId}
++  leagueId, transactionId, status, type:"trade", creator, rosterIds[], adds{}, drops{},
++  draftPicks[], waiverBudget[], created (Sleeper ms), capturedAt, seenAt, source:"extension"
++```
++
++- Code: 8 characters from an unambiguous alphabet (no 0/O/1/I), shown as `XXXX-XXXX`.
++  ~10^12 combinations and a 10-minute life make guessing impractical.
++- Flow: app → "Connect browser extension" → writes pairing doc → shows code and a countdown.
++  Extension popup → user enters code → extension signs in anonymously → `updateDoc` sets
++  `claimedBy` to its uid (rules: only if unclaimed and unexpired) → reads `uid` from the doc →
++  creates `users/{uid}/linkedDevices/{extUid}` (rules: allowed only if that pairing doc names this
++  `uid` and is `claimedBy` this extension) → stores `{uid}` locally. The app listens to
++  `linkedDevices` and flips to "Linked ✓".
++- Unlink: the app deletes the `linkedDevices` doc; the extension's next write is denied, it shows
++  "Unlinked: enter a new code".
++
++### 2. Firestore rules (sketch)
++
++```
++match /users/{uid} {
++  allow read, write: if request.auth.uid == uid;              // unchanged behaviour
++  match /leagues/{leagueId} { allow read, write: if request.auth.uid == uid; }
++  match /linkedDevices/{extUid} {
++    allow read, delete: if request.auth.uid == uid;
++    allow read: if request.auth.uid == extUid;
++    allow create: if request.auth.uid == extUid
++      && get(/databases/$(database)/documents/extensionPairings/$(request.resource.data.code)).data.uid == uid
++      && get(/databases/$(database)/documents/extensionPairings/$(request.resource.data.code)).data.claimedBy == extUid
++      && get(/databases/$(database)/documents/extensionPairings/$(request.resource.data.code)).data.expiresAt > request.time;
++    allow update: if request.auth.uid == extUid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSyncAt','version','browser']);
++  }
++  match /pendingTrades/{tid} {
++    allow read, delete: if request.auth.uid == uid;
++    allow write: if exists(/databases/$(database)/documents/users/$(uid)/linkedDevices/$(request.auth.uid));
++  }
++}
++match /extensionPairings/{code} {
++  allow create: if request.auth.uid == request.resource.data.uid && request.resource.data.claimedBy == null;
++  allow get: if request.auth != null && resource.data.expiresAt > request.time;   // no list
++  allow update: if request.auth != null && resource.data.claimedBy == null
++    && resource.data.expiresAt > request.time
++    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['claimedBy'])
++    && request.resource.data.claimedBy == request.auth.uid;
++  allow delete: if request.auth.uid == resource.data.uid;
++}
++```
++
++The app itself only uses `users/{uid}` and `users/{uid}/leagues/{leagueId}` (checked across
++`app/`, `App.tsx`, `index.ts`; the backend doesn't use Firestore). Whether the console has rules
++for anything else is open (see Open questions).
++
++### 3. Reading trades on sleeper.com (extension)
++
++- `content-main.js` runs in the page (`"world": "MAIN"`, `run_at: document_start`, matches
++  `https://sleeper.com/*`). It wraps `fetch` and `XMLHttpRequest` **only to read** responses
++  from `sleeper.com/graphql` and `api.sleeper.app` the page already makes. It never changes
++  requests and never reads headers, cookies or storage.
++- It walks the JSON for objects shaped like a Sleeper transaction (`type === "trade"`,
++  `transaction_id`, `roster_ids`, `status`) and posts only those fields (plus the league id from
++  the object or the page URL `/leagues/{id}/…`) to `content-relay.js` (isolated world) via
++  `window.postMessage` with a fixed tag; the relay checks `event.source === window` and the tag,
++  then `chrome.runtime.sendMessage`s to the background worker.
++- Background worker: de-dupes by `transaction_id`, writes `pendingTrades/{id}` (status updates too,
++  so accepted/rejected/expired offers drop off), updates `lastSyncAt`. Debounced (≤1 write per
++  trade per 30 s).
++- Popup: link/unlink, "Linked to <display name>" (the pairing doc's `label`), last sync, number of pending trades
++  seen, and **Check what I see**: the last 20 trade-shaped objects captured (ids, status, rosters)
++  plus whether any GraphQL responses were seen at all, with a "Copy" button for bug reports.
++- Permissions: `storage`, host permissions only for `https://sleeper.com/*`, Firebase hosts the SDK
++  needs (`firestore.googleapis.com`, `identitytoolkit.googleapis.com`, `securetoken.googleapis.com`).
++
++Unknown until tested on a real logged-in account: which Sleeper page loads pending trades (league
++home vs the Trades tab) and the exact response shape. The walker is shape-based, not
++query-name-based, so it should hold; the "Check what I see" output is the fallback.
++
++### 4. App changes
++
++- `services/extensionLink.ts`: create pairing code, watch `linkedDevices`, unlink; watch
++  `pendingTrades` for the active league.
++- `TradeOffers` panel: merge trades from the extension with what `/trade-offers` finds today; send
++  extension trades to the backend as `extraTransactions` so the same `pendingTradesFor` +
++  `gradeTrade` + `counterOffers` grade them (they're already in Sleeper's transaction shape).
++  Each offer is labelled **Received** / **Sent by you** and "via browser extension · seen 3m ago".
++  Hide extension trades whose status isn't proposed/pending, and any older than 14 days.
++- Empty state when not linked: a short card "See offers people sent you: get the browser
++  extension" → link to the extension page.
++- New "Browser extension" screen (from the account menu and that card): what it does, privacy
++  promise in plain words, **Download** (zip) + 4-step install, **Connect** (code + countdown),
++  linked browsers with last sync and Unlink.
++- Backend `/trade-offers`: accept optional `extraTransactions` (validated: array ≤ 50, each must be
++  `type:"trade"`, involve the caller's roster, ids/rosters numeric/string only).
++
++### 5. Packaging
++
++- `extension/` folder at the repo root: `manifest.json`, `src/` (TypeScript), esbuild script
++  (`npm run build:extension`) → `extension/dist/` + `ffhelper-extension.zip` copied into the web
++  app's public assets so the app's Download button serves it. Icons from the app's logo.
++- Privacy policy page text (needed for the Web Store later) included as `extension/PRIVACY.md`.
++
++### Calls made by the builder check (author's calls, check these)
++
++- **Signed-in users only.** The app also runs signed out (uid `'anon'`); pairing needs a real
++  account, so Connect shows "Sign in to connect the extension" for signed-out users. No guest mode.
++- Offers are matched to "via browser extension" labels by transaction id.
++- The zip and icons are produced by the build, not shipped as binaries in the patch.
++- The device-create rule also checks the code hasn't expired, so an unlinked extension can't
++  re-link with its old code.
++
++## Testing
++
++- Unit (node:test, existing setup): transaction walker on sample GraphQL/REST payloads (nested,
++  arrays, non-trade noise), field whitelisting, league-id detection, de-dupe/debounce, pairing-code
++  generation/format, `extraTransactions` validation, merge + labelling in the app.
++- Firestore rules: if the emulator can't run here, a written test checklist for the user
++  (cross-account read/write denied, expired/claimed code denied, unlinked device denied).
++- Manual by the user: install from zip, link, open Sleeper, see the Deebo/Gibbs offer graded.
++
++## Answers from the user (2026-11-18)
++
++1. **Current console rules** only allow `users/{uid}/leagues/{leagueId}` (owner read/write).
++   Nothing else uses the project. Consequence: the app's writes to the `users/{uid}` document
++   itself (favorites, myTeam, lastLeagueId, favorite team) are denied today and only persist
++   locally. The new `firestore.rules` is a clean replacement that adds owner read/write on
++   `users/{uid}` (fixing that), keeps `leagues`, and adds the extension paths. Rollback = paste the
++   old rules (kept verbatim in `firestore.rules.previous`).
++2. **API keys** are API-restricted ("28 APIs"), not website-restricted, and the app already uses
++   Identity Toolkit + Firestore with its key. The extension uses the same web config; no key change.
++3. **Sleeper Terms risk accepted.** Research (`reports/Sleeper pending trades access.md`) found
++   Sleeper's Terms §11.3 (per search excerpts) forbid third parties retrieving data through a
++   user's credentials, so the extension is a gray area. The user chose to proceed. Mitigations
++   built in: passive reading only (no requests of our own to Sleeper), only trade fields leave the
++   page, no token/cookie access, clear disclosure on the extension page and in the popup.
++
++## Left to the builder
++
++File layout inside `extension/src`, popup styling (match the app's theme tokens), debounce
++details, how the zip is served in dev vs. production, copy wording.
+diff --git a/extension/PRIVACY.md b/extension/PRIVACY.md
+new file mode 100644
+index 0000000..81d1d69
+--- /dev/null
++++ b/extension/PRIVACY.md
+@@ -0,0 +1,17 @@
++# FF Helper browser extension: privacy
++
++**What it does.** While you have sleeper.com open, the extension looks at the trade information
++Sleeper's own website loads for you and sends the pending trades to your FF Helper account, so
++the FF Helper app can show and grade them.
++
++**What it collects.** Only trade details: the trade's id, league id, status, which rosters are in
++it, which players and draft picks move, and when it was made. Nothing else from Sleeper.
++
++**What it never collects.** Your Sleeper password, login token, cookies, messages or any other
++website. It doesn't make requests to Sleeper on its own and can't send, accept or change trades.
++
++**Where it goes.** To your FF Helper account in Google Firebase (Firestore). Only you can read it.
++Linking uses a one-time code and an anonymous Firebase sign-in for the extension.
++
++**Your control.** Unlink the browser in the extension or in the app (Browser extension page) to
++stop it. Removing the extension stops it completely.
+diff --git a/extension/README.md b/extension/README.md
+new file mode 100644
+index 0000000..7d3f173
+--- /dev/null
++++ b/extension/README.md
+@@ -0,0 +1,12 @@
++# FF Helper browser extension
++
++Source for the Chrome (Manifest V3) extension that shows your pending Sleeper trade offers in FF
++Helper. See `docs/extension-setup.md` for Firebase setup, building and installing.
++
++- `src/capture.ts`: finds trades in Sleeper responses (pure, unit-tested)
++- `src/content-main.ts`: runs in sleeper.com's page, reads responses Sleeper already fetched
++- `src/content-relay.ts`: passes trades to the background worker
++- `src/background.ts`: links with a code and saves trades to Firestore
++- `src/popup.*`: connect, status, "Check what I see"
++
++The download is served from `public/ffhelper-extension.zip` by Expo web.
+diff --git a/extension/manifest.json b/extension/manifest.json
+new file mode 100644
+index 0000000..516596a
+--- /dev/null
++++ b/extension/manifest.json
+@@ -0,0 +1,22 @@
++{
++  "manifest_version": 3,
++  "name": "FF Helper: Sleeper trade offers",
++  "short_name": "FF Helper",
++  "version": "1.0.0",
++  "description": "Shows your pending Sleeper trade offers in FF Helper, graded, with counter-offer ideas.",
++  "permissions": ["storage"],
++  "host_permissions": [
++    "https://sleeper.com/*",
++    "https://firestore.googleapis.com/*",
++    "https://identitytoolkit.googleapis.com/*",
++    "https://securetoken.googleapis.com/*"
++  ],
++  "background": { "service_worker": "background.js", "type": "module" },
++  "content_scripts": [
++    { "matches": ["https://sleeper.com/*"], "js": ["content-main.js"], "run_at": "document_start", "world": "MAIN" },
++    { "matches": ["https://sleeper.com/*"], "js": ["content-relay.js"], "run_at": "document_start" }
++  ],
++  "action": { "default_popup": "popup.html", "default_title": "FF Helper", "default_icon": { "16": "icon.png", "48": "icon.png", "128": "icon.png" } },
++  "icons": { "16": "icon.png", "48": "icon.png", "128": "icon.png" },
++  "minimum_chrome_version": "111"
++}
+diff --git a/extension/src/background.ts b/extension/src/background.ts
+new file mode 100644
+index 0000000..3d87490
+--- /dev/null
++++ b/extension/src/background.ts
+@@ -0,0 +1,148 @@
++// extension/src/background.ts
++// The extension's background worker: links to your FF Helper account with a one-time code and
++// saves the pending trades the page script found to your account (Firestore, per firestore.rules).
++
++import { initializeApp } from 'firebase/app';
++import { getAuth, signInAnonymously } from 'firebase/auth/web-extension';
++import { deleteDoc, doc, getDoc, getFirestore, setDoc, updateDoc } from 'firebase/firestore/lite';
++import { firebaseConfig } from '../../app/services/firebaseConfig';
++import { normalizeCode } from '../../app/services/pairingCode';
++import type { CapturedTrade } from './capture';
++import { shouldWrite } from './writeGate';
++
++const VERSION = chrome.runtime.getManifest().version;
++const app = initializeApp(firebaseConfig);
++const auth = getAuth(app);
++const db = getFirestore(app);
++
++type Link = { uid: string; label: string; linkedAt: number };
++type Capture = { transactionId: string; status: string; rosterIds: number[]; leagueId: string | null; at: number };
++type Status = { link: Link | null; unlinked: boolean; lastSyncAt: number | null; captures: Capture[]; seenSleeper: boolean };
++
++const lastWrite = new Map<string, { at: number; status: string }>();
++let lastDeviceSync = 0;
++
++const getLink = async (): Promise<Link | null> => ((await chrome.storage.local.get('link')).link as Link) ?? null;
++
++async function me(): Promise<string> {
++  await auth.authStateReady();
++  return auth.currentUser?.uid ?? (await signInAnonymously(auth)).user.uid;
++}
++
++function browserName(): string {
++  const ua = navigator.userAgent;
++  const name = /Edg\//.test(ua) ? 'Edge' : (navigator as any).brave ? 'Brave' : /OPR\//.test(ua) ? 'Opera' : 'Chrome';
++  const os = /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /CrOS/.test(ua) ? 'ChromeOS' : /Linux/.test(ua) ? 'Linux' : 'computer';
++  return `${name} on ${os}`;
++}
++
++const isDenied = (e: any) => String(e?.code ?? e?.message ?? '').includes('permission-denied');
++
++/** Link this browser to the account that made the code. */
++async function claimCode(input: string): Promise<{ ok: true; label: string } | { error: 'invalid' | 'expired_or_used' | 'network' }> {
++  const code = normalizeCode(input);
++  if (!code) return { error: 'invalid' };
++  try {
++    const extUid = await me();
++    const ref = doc(db, 'extensionPairings', code);
++    let snap;
++    try {
++      snap = await getDoc(ref);
++    } catch (e) {
++      if (isDenied(e)) return { error: 'expired_or_used' }; // expired codes can't be read
++      throw e;
++    }
++    const p = snap.data() as any;
++    if (!snap.exists() || (p.claimedBy && p.claimedBy !== extUid)) return { error: 'expired_or_used' };
++    if (!p.claimedBy) await updateDoc(ref, { claimedBy: extUid });
++    const now = Date.now();
++    const device = doc(db, 'users', p.uid, 'linkedDevices', extUid);
++    // If this browser is still listed from an earlier link, remove that record first: the rules
++    // only let an existing record change its sync fields.
++    await deleteDoc(device).catch(() => undefined);
++    await setDoc(device, { code, browser: browserName(), linkedAt: now, lastSyncAt: null, version: VERSION });
++    const link: Link = { uid: p.uid, label: String(p.label ?? 'your account'), linkedAt: now };
++    await chrome.storage.local.set({ link, unlinked: false });
++    return { ok: true, label: link.label };
++  } catch (e) {
++    return isDenied(e) ? { error: 'expired_or_used' } : { error: 'network' };
++  }
++}
++
++async function unlinkHere() {
++  const link = await getLink();
++  if (link) {
++    try {
++      await deleteDoc(doc(db, 'users', link.uid, 'linkedDevices', await me()));
++    } catch {
++      // already unlinked from the app
++    }
++  }
++  await chrome.storage.local.set({ link: null, unlinked: false });
++}
++
++async function remember(trades: CapturedTrade[]) {
++  const { captures = [] } = (await chrome.storage.session.get('captures')) as { captures?: Capture[] };
++  const now = Date.now();
++  const fresh = trades.map(t => ({ transactionId: t.transactionId, status: t.status, rosterIds: t.rosterIds, leagueId: t.leagueId, at: now }));
++  // Newest first, one line per trade.
++  const ids = new Set(fresh.map(c => c.transactionId));
++  await chrome.storage.session.set({ captures: [...fresh, ...captures.filter(c => !ids.has(c.transactionId))].slice(0, 20), seenSleeper: true });
++}
++
++async function saveTrades(trades: CapturedTrade[]) {
++  const now = Date.now();
++  try {
++    const link = await getLink();
++    if (!link) return;
++    const extUid = await me();
++    for (const t of trades) {
++      if (!t.leagueId || !shouldWrite(lastWrite, t, now)) continue;
++      const first = !lastWrite.has(t.transactionId);
++      await setDoc(
++        doc(db, 'users', link.uid, 'pendingTrades', t.transactionId),
++        { ...t, seenAt: now, source: 'extension', ...(first ? { capturedAt: now } : {}) },
++        { merge: true }
++      );
++      lastWrite.set(t.transactionId, { at: now, status: t.status });
++    }
++    if (trades.length && now - lastDeviceSync > 30_000) {
++      lastDeviceSync = now;
++      await updateDoc(doc(db, 'users', link.uid, 'linkedDevices', extUid), { lastSyncAt: now, version: VERSION });
++      await chrome.storage.local.set({ lastSyncAt: now });
++    }
++  } catch (e) {
++    // Unlinked from the app: stop saving and tell the popup.
++    if (isDenied(e)) await chrome.storage.local.set({ link: null, unlinked: true });
++  }
++}
++
++async function status(): Promise<Status> {
++  const local = await chrome.storage.local.get(['link', 'unlinked', 'lastSyncAt']);
++  const session = await chrome.storage.session.get(['captures', 'seenSleeper']);
++  return {
++    link: (local.link as Link) ?? null,
++    unlinked: !!local.unlinked,
++    lastSyncAt: (local.lastSyncAt as number) ?? null,
++    captures: (session.captures as Capture[]) ?? [],
++    seenSleeper: !!session.seenSleeper,
++  };
++}
++
++chrome.runtime.onMessage.addListener((msg, sender, reply) => {
++  // Trades only come from our own content script on sleeper.com.
++  if (msg?.type === 'trades') {
++    if (sender.id !== chrome.runtime.id || !sender.url?.startsWith('https://sleeper.com/')) return;
++    const trades = (Array.isArray(msg.trades) ? msg.trades : []).slice(0, 200) as CapturedTrade[];
++    // Offline or sign-in trouble: skip this batch; the next Sleeper response retries.
++    remember(trades).then(() => saveTrades(trades)).catch(() => undefined);
++    return;
++  }
++  // Everything else must come from one of this extension's own pages (the popup).
++  if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) return;
++  if (msg?.type === 'claim') claimCode(String(msg.code ?? '')).then(reply);
++  else if (msg?.type === 'unlink') unlinkHere().then(() => reply({ ok: true }));
++  else if (msg?.type === 'status') status().then(reply);
++  else return;
++  return true; // reply comes later
++});
+diff --git a/extension/src/capture.ts b/extension/src/capture.ts
+new file mode 100644
+index 0000000..6281030
+--- /dev/null
++++ b/extension/src/capture.ts
+@@ -0,0 +1,94 @@
++// extension/src/capture.ts
++// Finds Sleeper trades in a JSON response the Sleeper website already loaded, keeping only the
++// trade fields FF Helper needs. Pure code: no DOM, no chrome APIs (unit-tested in tests/extension).
++
++export type CapturedTrade = {
++  transactionId: string;
++  leagueId: string | null;
++  status: string;
++  type: 'trade';
++  creator: string | null;
++  rosterIds: number[];
++  adds: Record<string, number>;
++  drops: Record<string, number>;
++  draftPicks: unknown[];
++  waiverBudget: unknown[];
++  created: number | null;
++};
++
++const MAX_DEPTH = 12;
++const MAX_TRADES = 200;
++
++const isObj = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
++
++function playerMap(v: unknown): Record<string, number> {
++  const out: Record<string, number> = {};
++  if (!isObj(v)) return out;
++  for (const [k, r] of Object.entries(v)) if (Number.isFinite(Number(r))) out[String(k)] = Number(r);
++  return out;
++}
++
++function toCaptured(o: Record<string, any>, pageLeagueId: string | null): CapturedTrade {
++  return {
++    transactionId: String(o.transaction_id),
++    leagueId: o.league_id != null ? String(o.league_id) : pageLeagueId,
++    status: String(o.status ?? 'unknown'),
++    type: 'trade',
++    creator: o.creator != null ? String(o.creator) : null,
++    rosterIds: (o.roster_ids as unknown[]).map(Number).filter(Number.isFinite),
++    adds: playerMap(o.adds),
++    drops: playerMap(o.drops),
++    draftPicks: Array.isArray(o.draft_picks) ? o.draft_picks : [],
++    waiverBudget: Array.isArray(o.waiver_budget) ? o.waiver_budget : [],
++    created: Number.isFinite(Number(o.created)) ? Number(o.created) : null,
++  };
++}
++
++const looksLikeTrade = (o: Record<string, any>) =>
++  o.type === 'trade' && (typeof o.transaction_id === 'string' || typeof o.transaction_id === 'number') && Array.isArray(o.roster_ids);
++
++/** Every trade-shaped object in a response (depth ≤ 12, at most 200, no duplicates). */
++export function findTrades(json: unknown, pageLeagueId: string | null = null): CapturedTrade[] {
++  const out = new Map<string, CapturedTrade>();
++  const walk = (v: unknown, depth: number) => {
++    if (out.size >= MAX_TRADES || depth > MAX_DEPTH || !v || typeof v !== 'object') return;
++    if (Array.isArray(v)) {
++      for (const item of v) walk(item, depth + 1);
++      return;
++    }
++    if (looksLikeTrade(v as Record<string, any>)) {
++      const t = toCaptured(v as Record<string, any>, pageLeagueId);
++      if (!out.has(t.transactionId)) out.set(t.transactionId, t);
++      return;
++    }
++    for (const child of Object.values(v)) walk(child, depth + 1);
++  };
++  try {
++    walk(json, 0);
++  } catch {
++    // never break the Sleeper page
++  }
++  return [...out.values()];
++}
++
++/** The league id in a Sleeper page address, like https://sleeper.com/leagues/123/trades. */
++export function leagueIdFromUrl(url: string): string | null {
++  const m = /\/leagues\/(\d+)/.exec(String(url ?? ''));
++  return m ? m[1] : null;
++}
++
++/** Back to Sleeper's transaction shape, which the FF Helper backend grades. */
++export function toTransaction(t: CapturedTrade): Record<string, unknown> {
++  return {
++    transaction_id: t.transactionId,
++    type: 'trade',
++    status: t.status,
++    creator: t.creator,
++    roster_ids: t.rosterIds,
++    adds: t.adds,
++    drops: t.drops,
++    draft_picks: t.draftPicks,
++    waiver_budget: t.waiverBudget,
++    created: t.created,
++  };
++}
+diff --git a/extension/src/content-main.ts b/extension/src/content-main.ts
+new file mode 100644
+index 0000000..6c6e893
+--- /dev/null
++++ b/extension/src/content-main.ts
+@@ -0,0 +1,73 @@
++// extension/src/content-main.ts
++// Runs inside sleeper.com's page. Reads (never changes) the responses Sleeper's website already
++// fetched, picks out trades, and hands only those to the relay script. It never reads cookies,
++// headers, storage or your login, and never makes requests of its own.
++
++import { findTrades, leagueIdFromUrl } from './capture';
++import { RELAY_TAG, type RelayMessage } from './messages';
++
++const MAX_BYTES = 5_000_000;
++let reportedSeen = false;
++
++const isSleeper = (url: string) => {
++  try {
++    const h = new URL(url, location.href).hostname;
++    return h === 'sleeper.com' || h.endsWith('.sleeper.com') || h === 'sleeper.app' || h.endsWith('.sleeper.app');
++  } catch {
++    return false;
++  }
++};
++
++function handle(url: string, body: unknown) {
++  try {
++    let json = body;
++    if (typeof body === 'string') {
++      if (body.length > MAX_BYTES || !/"trade"/.test(body)) {
++        if (!reportedSeen) post([], url);
++        return;
++      }
++      json = JSON.parse(body);
++    }
++    const trades = findTrades(json, leagueIdFromUrl(location.href));
++    if (trades.length || !reportedSeen) post(trades, url);
++  } catch {
++    // not JSON, or anything unexpected: ignore, never break Sleeper
++  }
++}
++
++function post(trades: RelayMessage['trades'], url: string) {
++  reportedSeen = true;
++  const msg: RelayMessage = { tag: RELAY_TAG, trades, seenGraphql: /graphql/.test(url) };
++  window.postMessage(msg, location.origin);
++}
++
++const origFetch = window.fetch;
++window.fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
++  const res = await origFetch.apply(this, args);
++  try {
++    if (isSleeper(res.url)) res.clone().text().then(t => handle(res.url, t), () => undefined);
++  } catch {
++    // ignore
++  }
++  return res;
++} as typeof fetch;
++
++// One load listener per XHR object; it reads whichever URL that object last opened.
++const xhrUrl = new WeakMap<XMLHttpRequest, string>();
++const origOpen = XMLHttpRequest.prototype.open;
++XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: any[]) {
++  if (!xhrUrl.has(this)) {
++    this.addEventListener('load', () => {
++      const u = xhrUrl.get(this) ?? '';
++      if (!isSleeper(u)) return;
++      try {
++        const body = this.responseType === '' || this.responseType === 'text' ? this.responseText : this.responseType === 'json' ? this.response : null;
++        if (body != null) handle(u, body);
++      } catch {
++        // ignore
++      }
++    });
++  }
++  xhrUrl.set(this, String(url));
++  return (origOpen as any).call(this, method, url, ...rest);
++} as typeof XMLHttpRequest.prototype.open;
+diff --git a/extension/src/content-relay.ts b/extension/src/content-relay.ts
+new file mode 100644
+index 0000000..e957874
+--- /dev/null
++++ b/extension/src/content-relay.ts
+@@ -0,0 +1,10 @@
++// extension/src/content-relay.ts
++// Passes trades from the page script to the extension's background worker. Only accepts messages
++// from this same page that have our tag and shape.
++
++import { isRelayMessage } from './messages';
++
++window.addEventListener('message', event => {
++  if (event.source !== window || event.origin !== location.origin || !isRelayMessage(event.data)) return;
++  chrome.runtime.sendMessage({ type: 'trades', trades: event.data.trades, seenGraphql: event.data.seenGraphql, page: location.pathname }).catch(() => undefined);
++});
+diff --git a/extension/src/messages.ts b/extension/src/messages.ts
+new file mode 100644
+index 0000000..15c85fe
+--- /dev/null
++++ b/extension/src/messages.ts
+@@ -0,0 +1,14 @@
++// extension/src/messages.ts
++// The message the page script sends to the relay script (window.postMessage), and its check.
++
++import type { CapturedTrade } from './capture';
++
++export const RELAY_TAG = 'ffh-trades-v1';
++const MAX = 200;
++
++export type RelayMessage = { tag: typeof RELAY_TAG; trades: CapturedTrade[]; seenGraphql: boolean };
++
++export function isRelayMessage(data: unknown): data is RelayMessage {
++  const d = data as any;
++  return !!d && typeof d === 'object' && d.tag === RELAY_TAG && Array.isArray(d.trades) && d.trades.length <= MAX && typeof d.seenGraphql === 'boolean';
++}
+diff --git a/extension/src/popup.html b/extension/src/popup.html
+new file mode 100644
+index 0000000..a4333f5
+--- /dev/null
++++ b/extension/src/popup.html
+@@ -0,0 +1,56 @@
++<!doctype html>
++<html lang="en">
++<head>
++  <meta charset="utf-8" />
++  <title>FF Helper</title>
++  <style>
++    :root { --bg:#ffffff; --muted-bg:#f3f4f8; --border:#e5e7eb; --text:#111827; --muted:#6b7280; --primary:#4f46e5; --primary-soft:#eef2ff; --ok:#15803d; --ok-soft:#dcfce7; --bad:#b91c1c; }
++    @media (prefers-color-scheme: dark) { :root { --bg:#111827; --muted-bg:#1f2937; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#818cf8; --primary-soft:#1e1b4b; --ok:#4ade80; --ok-soft:#14532d; --bad:#f87171; } }
++    * { box-sizing: border-box; }
++    body { margin:0; width:320px; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
++    main { padding:16px; display:grid; gap:12px; }
++    h1 { font-size:16px; margin:0; }
++    p { margin:0; color:var(--muted); font-size:13px; }
++    input { width:100%; padding:10px 12px; font-size:20px; font-weight:800; letter-spacing:4px; text-align:center; text-transform:uppercase; border:2px solid var(--border); border-radius:10px; background:var(--bg); color:var(--text); }
++    input:focus-visible, button:focus-visible { outline:3px solid var(--primary); outline-offset:2px; }
++    button { border:0; border-radius:999px; padding:9px 14px; font-weight:700; font-size:13px; cursor:pointer; }
++    .primary { background:var(--primary); color:#fff; }
++    .quiet { background:var(--muted-bg); color:var(--text); }
++    .row { display:flex; gap:8px; flex-wrap:wrap; }
++    .ok { background:var(--ok-soft); border-radius:10px; padding:10px 12px; font-size:13px; }
++    .error { color:var(--bad); font-size:13px; }
++    pre { margin:0; max-height:180px; overflow:auto; background:var(--muted-bg); border-radius:8px; padding:8px; font-size:11px; white-space:pre-wrap; }
++    [hidden] { display:none !important; }
++  </style>
++</head>
++<body>
++  <main>
++    <h1>FF Helper</h1>
++
++    <section id="link" hidden>
++      <p id="unlinked-note" hidden>This browser was unlinked. Make a new code in the app to connect again.</p>
++      <p>In FF Helper, open the account menu, then Browser extension, and tap Get a connect code.</p>
++      <form id="form" style="display:grid; gap:8px; margin-top:8px">
++        <label for="code" style="font-size:13px; font-weight:700">Connect code</label>
++        <input id="code" autocomplete="off" spellcheck="false" maxlength="11" placeholder="XXXX-XXXX" />
++        <button class="primary" type="submit">Connect</button>
++        <div id="error" class="error" role="alert"></div>
++      </form>
++    </section>
++
++    <section id="linked" hidden style="display:grid; gap:10px">
++      <div class="ok" id="linked-text"></div>
++      <p id="sync"></p>
++      <div class="row">
++        <button class="quiet" id="check">Check what I see</button>
++        <button class="quiet" id="unlink">Unlink this browser</button>
++      </div>
++      <div id="debug" hidden style="display:grid; gap:6px">
++        <pre id="debug-text"></pre>
++        <button class="quiet" id="copy">Copy</button>
++      </div>
++    </section>
++  </main>
++  <script src="popup.js"></script>
++</body>
++</html>
+diff --git a/extension/src/popup.ts b/extension/src/popup.ts
+new file mode 100644
+index 0000000..69ebce4
+--- /dev/null
++++ b/extension/src/popup.ts
+@@ -0,0 +1,64 @@
++// extension/src/popup.ts
++// Connect with a code, see what's linked, and "Check what I see" for troubleshooting.
++
++const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
++const send = <T>(msg: unknown) => chrome.runtime.sendMessage(msg) as Promise<T>;
++
++type Status = {
++  link: { uid: string; label: string; linkedAt: number } | null;
++  unlinked: boolean;
++  lastSyncAt: number | null;
++  captures: { transactionId: string; status: string; rosterIds: number[]; leagueId: string | null; at: number }[];
++  seenSleeper: boolean;
++};
++
++const ERRORS: Record<string, string> = {
++  invalid: 'Codes are 8 letters and numbers, like ABCD-EFGH.',
++  expired_or_used: 'That code expired or was already used. Make a new one in the app.',
++  network: "Couldn't reach FF Helper. Check your connection and try again.",
++};
++
++const ago = (t: number) => {
++  const m = Math.floor((Date.now() - t) / 60000);
++  return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`;
++};
++
++async function render() {
++  const s = await send<Status>({ type: 'status' });
++  $('link').hidden = !!s.link;
++  $('linked').hidden = !s.link;
++  $('unlinked-note').hidden = !s.unlinked;
++  if (s.link) {
++    $('linked-text').textContent = `Linked to ${s.link.label}. Pending offers you see on sleeper.com show in the app's Trades tab.`;
++    $('sync').textContent = s.lastSyncAt ? `Last saved offers ${ago(s.lastSyncAt)}.` : 'Open your league on sleeper.com to send your offers.';
++  }
++  return s;
++}
++
++$('form').addEventListener('submit', async e => {
++  e.preventDefault();
++  $('error').textContent = '';
++  const r = await send<{ ok?: true; error?: string }>({ type: 'claim', code: $<HTMLInputElement>('code').value });
++  if (r?.error) $('error').textContent = ERRORS[r.error] ?? ERRORS.network;
++  else render();
++});
++
++$('unlink').addEventListener('click', async () => {
++  await send({ type: 'unlink' });
++  render();
++});
++
++$('check').addEventListener('click', async () => {
++  const s = await render();
++  const lines = [
++    s.seenSleeper ? 'Saw Sleeper data in this browser session: yes' : 'Saw Sleeper data in this browser session: no (open your league on sleeper.com)',
++    `Trades captured: ${s.captures.length}`,
++    ...s.captures.map(c => `#${c.transactionId}  ${c.status}  rosters ${c.rosterIds.join(', ')}  league ${c.leagueId ?? '?'}  ${ago(c.at)}`),
++  ];
++  $('debug-text').textContent = lines.join('\n');
++  $('debug').hidden = false;
++});
++
++$('copy').addEventListener('click', () => navigator.clipboard.writeText($('debug-text').textContent ?? ''));
++
++render();
+diff --git a/extension/src/writeGate.ts b/extension/src/writeGate.ts
+new file mode 100644
+index 0000000..e6663dd
+--- /dev/null
++++ b/extension/src/writeGate.ts
+@@ -0,0 +1,12 @@
++// extension/src/writeGate.ts
++// Keeps the extension from saving the same trade over and over: once per 30 seconds per trade,
++// or right away when its status changes (accepted, rejected...).
++
++import type { CapturedTrade } from './capture';
++
++const MIN_GAP_MS = 30_000;
++
++export function shouldWrite(last: Map<string, { at: number; status: string }>, t: CapturedTrade, now: number): boolean {
++  const prev = last.get(t.transactionId);
++  return !prev || prev.status !== t.status || now - prev.at >= MIN_GAP_MS;
++}
+diff --git a/extension/tsconfig.json b/extension/tsconfig.json
+new file mode 100644
+index 0000000..f421665
+--- /dev/null
++++ b/extension/tsconfig.json
+@@ -0,0 +1,14 @@
++{
++  "compilerOptions": {
++    "target": "ES2020",
++    "module": "ESNext",
++    "moduleResolution": "bundler",
++    "lib": ["ES2020", "DOM"],
++    "types": ["chrome"],
++    "strict": true,
++    "noEmit": true,
++    "skipLibCheck": true,
++    "esModuleInterop": true
++  },
++  "include": ["src"]
++}
+diff --git a/firestore.rules b/firestore.rules
+new file mode 100644
+index 0000000..a4ad2ae
+--- /dev/null
++++ b/firestore.rules
+@@ -0,0 +1,66 @@
++rules_version = '2';
++// FF Helper Firestore rules. Paste into Firebase console -> Firestore Database -> Rules -> Publish.
++// To undo, paste firestore.rules.previous instead.
++service cloud.firestore {
++  match /databases/{database}/documents {
++
++    function signedIn() { return request.auth != null; }
++    function isOwner(uid) { return signedIn() && request.auth.uid == uid; }
++    function pairing(code) { return get(/databases/$(database)/documents/extensionPairings/$(code)).data; }
++    // Codes last 10 minutes from when the server saved them (device clocks don't matter).
++    function fresh(p) { return p.createdAt + duration.value(10, 'm') > request.time; }
++    function isLinkedDevice(uid) {
++      return signedIn() && exists(/databases/$(database)/documents/users/$(uid)/linkedDevices/$(request.auth.uid));
++    }
++
++    // Your account: favorites, my team, last league (the app already writes these).
++    match /users/{uid} {
++      allow read, write: if isOwner(uid);
++
++      match /leagues/{leagueId} {
++        allow read, write: if isOwner(uid);
++      }
++
++      // Browsers linked with a pairing code. Only the extension that claimed the code can add itself.
++      match /linkedDevices/{extUid} {
++        allow read, delete: if isOwner(uid);
++        allow get, delete: if signedIn() && request.auth.uid == extUid;
++        allow create: if signedIn() && request.auth.uid == extUid
++          && request.resource.data.keys().hasOnly(['code', 'browser', 'linkedAt', 'lastSyncAt', 'version'])
++          && request.resource.data.code is string
++          && pairing(request.resource.data.code).uid == uid
++          && pairing(request.resource.data.code).claimedBy == extUid
++          && fresh(pairing(request.resource.data.code));
++        allow update: if signedIn() && request.auth.uid == extUid
++          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSyncAt', 'version', 'browser']);
++      }
++
++      // Pending Sleeper trades saved by your linked extension. Only you can read them.
++      match /pendingTrades/{tid} {
++        allow read, delete: if isOwner(uid);
++        allow create, update: if isLinkedDevice(uid)
++          && request.resource.data.keys().hasOnly(['transactionId', 'leagueId', 'status', 'type', 'creator', 'rosterIds',
++               'adds', 'drops', 'draftPicks', 'waiverBudget', 'created', 'seenAt', 'capturedAt', 'source'])
++          && request.resource.data.transactionId == tid
++          && request.resource.data.type == 'trade'
++          && request.resource.data.rosterIds is list && request.resource.data.rosterIds.size() <= 12;
++      }
++    }
++
++    // One-time pairing codes (10 minutes). The code itself is the secret, so no listing.
++    match /extensionPairings/{code} {
++      allow create: if signedIn()
++        && request.resource.data.keys().hasOnly(['uid', 'label', 'createdAt', 'claimedBy'])
++        && request.resource.data.uid == request.auth.uid
++        && request.resource.data.claimedBy == null
++        && request.resource.data.createdAt == request.time;
++      allow get: if signedIn() && fresh(resource.data);
++      allow update: if signedIn()
++        && resource.data.claimedBy == null
++        && fresh(resource.data)
++        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['claimedBy'])
++        && request.resource.data.claimedBy == request.auth.uid;
++      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
++    }
++  }
++}
+diff --git a/firestore.rules.previous b/firestore.rules.previous
+new file mode 100644
+index 0000000..4fb535f
+--- /dev/null
++++ b/firestore.rules.previous
+@@ -0,0 +1,8 @@
++rules_version = '2';
++service cloud.firestore {
++  match /databases/{database}/documents {
++    match /users/{userId}/leagues/{leagueId} {
++      allow read, write: if request.auth != null && request.auth.uid == userId;
++    }
++  }
++}
+diff --git a/package-lock.json b/package-lock.json
+index 3b501ad..e6f8f49 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -38,12 +38,15 @@
+         "react-native-web": "^0.21.0"
+       },
+       "devDependencies": {
++        "@types/chrome": "^0.3.7",
+         "@types/cors": "^2.8.19",
+         "@types/event-source-polyfill": "^1.0.5",
+         "@types/express": "^5.0.6",
+         "@types/node": "^24.10.13",
+         "@types/react": "~19.1.0",
+         "baseline-browser-mapping": "^2.9.19",
++        "esbuild": "^0.28.2",
++        "fflate": "^0.8.3",
+         "ts-node": "^10.9.2",
+         "ts-node-dev": "^2.0.0",
+         "typescript": "^5.9.3"
+@@ -1624,6 +1627,448 @@
+         "node": ">=0.8.0"
+       }
+     },
++    "node_modules/@esbuild/aix-ppc64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.28.2.tgz",
++      "integrity": "sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==",
++      "cpu": [
++        "ppc64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "aix"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/android-arm": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.28.2.tgz",
++      "integrity": "sha512-kXXoiPVVGQcnIYGOeaovwOURpniDBpSq4A03qkQ+BMQqtGG6HYap3xne9C1O1yo4TR3qxlCX5IqqmX6fFo2Lqg==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/android-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.28.2.tgz",
++      "integrity": "sha512-5YfKeeI8qWfBZIX+u2xZC3Zlb3Os/gLS2sbEKM+I4ZOcsWmHS2WLysCcQZDAFRslDUU5Oiq44gf6PYN1vGwG5A==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/android-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.28.2.tgz",
++      "integrity": "sha512-O387ite7SzUyCcy3JQX4P4bLtEA7bLLkx+esve5JHnyYfNTxcVpXZo9jhdB0lTKN44gztELTdU7nS8Nr16Fs1Q==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/darwin-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.28.2.tgz",
++      "integrity": "sha512-n4KqkOQrraxHJcgjM1RvwbigfQKIKJVpM7xp+KsxiyUSrRdIXnt73VhrPAx0fV44hgfmIVKjxMN9J1t5jySVkw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/darwin-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.28.2.tgz",
++      "integrity": "sha512-uq6suIWYP37qzGddBKPw5QEQPi6HiLGsO7UmkpfyaYNQ3D+rN6w6WfwH+nuqcGXWvawGwxOEroO4YGnFh95azw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/freebsd-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-arm64/-/freebsd-arm64-0.28.2.tgz",
++      "integrity": "sha512-n+I0BTSRIoy+d6RPKnEVwql5UwBJolytvY4mAOIEJorKlqgPII8ix6slVVrfZ5Tnj7glIZvloylbB/EJPMWEXw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/freebsd-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-x64/-/freebsd-x64-0.28.2.tgz",
++      "integrity": "sha512-78XJTJkvPs0kz2w61301PJjXl4g7q3JqiYMZ/M/yVI73EHBrCRTgkhu9oqG7vPqq+a/yadEW8aD+agKlk5xrmg==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-arm": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm/-/linux-arm-0.28.2.tgz",
++      "integrity": "sha512-XlDnu2q5yoqems+xay6wSAcg9DDD7K9RLKZEBOMZm3ckNpJBvOX20tSfby8KfrrhINDyv9V2YVZKY/SpoGJI8w==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.28.2.tgz",
++      "integrity": "sha512-pW4AC0P3it8c7do9MVM4p51FzHzdM/TZrerurgRcHJ2WTa1VQ1CIq18xncfpBJw4ojkiZZrKW2yIBWBP92j6Ug==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-ia32": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-ia32/-/linux-ia32-0.28.2.tgz",
++      "integrity": "sha512-CYbnj78HsIeA+DhgUKgFCfvNsTHFhMMrinUrMZpDXJXKN8T3XViTZ/+wtHeVxEWY8ewSzTFN+nRmSwO2tZaLUQ==",
++      "cpu": [
++        "ia32"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-loong64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-loong64/-/linux-loong64-0.28.2.tgz",
++      "integrity": "sha512-buwkd8nsph4R+ajRvw0qM5Hja/TXQow3ptzWO2EbG/cqcIkHloRrdlBtQlshyYGTNFvfkfJ5tpPLVkY4DtsPfQ==",
++      "cpu": [
++        "loong64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-mips64el": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-mips64el/-/linux-mips64el-0.28.2.tgz",
++      "integrity": "sha512-ZVykbDyk7519VwiNb9Lcj9m8XM6v5V9uKPvrEMkkEedVewf+0itkhahp4HDpgERXhwLRpWFypsGbG/J8s0QjJA==",
++      "cpu": [
++        "mips64el"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-ppc64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-ppc64/-/linux-ppc64-0.28.2.tgz",
++      "integrity": "sha512-CAXl+Dtd9UUuJd8pKKdwh6MLm3MUMiqMPmhZ3tTSXPqfyQ3vDl6R5hZdZ/kYojK4ofXtdfSv1tFq8XzWx3heNQ==",
++      "cpu": [
++        "ppc64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-riscv64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-riscv64/-/linux-riscv64-0.28.2.tgz",
++      "integrity": "sha512-GeXCej4IQtU1B+QlDV8W/RRvbzI3O/Stss+/bCXv4lZls5WGRtu2a+3JkA3i4qIUlMXpcHebWpF8AkJhATowuA==",
++      "cpu": [
++        "riscv64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-s390x": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-s390x/-/linux-s390x-0.28.2.tgz",
++      "integrity": "sha512-3H1weTYZPxt/WOhByszQZybS9w5lKzUn1FDMsgEChbHWQwHYQQRfBxgCcZvPhjHfKyJjIievvMmEUawJrdY9Dg==",
++      "cpu": [
++        "s390x"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.28.2.tgz",
++      "integrity": "sha512-4xTZr1FUmSoQW4XIWmit3tzQrUTZM+N3P0XV8xROKYF50XfI7xeO90+1bZvNwxIufQ9hDQVRJH5YhgPVF8A/HQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/netbsd-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-arm64/-/netbsd-arm64-0.28.2.tgz",
++      "integrity": "sha512-sSATRjPeDBg3pdgHoQfoYBob11Kk1FGa9lui5RIHZCoCkJa9QKlvl3/vKz2usCmYYjs7ymJR/2Nnsqe+Hjt5nw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "netbsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/netbsd-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-x64/-/netbsd-x64-0.28.2.tgz",
++      "integrity": "sha512-lqnzCV+mM0gIADaKihiCg6ifgfU2L3h5E33rNQBN1Y4MaVGnzryzmvvf7UHxprpQdE8hpqLolJ9Rl+SkIRDpyw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "netbsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/openbsd-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-arm64/-/openbsd-arm64-0.28.2.tgz",
++      "integrity": "sha512-AL2qJILH7lNjrDmCQDvdxMfAUIv8KMNZOvrwAQ8i8//ntL9FflhOyMJ8OZSMBb8/AWXe3/5v5S20y3zCoZWKoQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openbsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/openbsd-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-x64/-/openbsd-x64-0.28.2.tgz",
++      "integrity": "sha512-QtiuPytchRyC4rwUKhexJdQKvDuZ6hWloi3igqPQNUJCS1/v9EiO3UTOXR6A3FoMo4fnAKbWJdqaIwhOzh8qEw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openbsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/openharmony-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/openharmony-arm64/-/openharmony-arm64-0.28.2.tgz",
++      "integrity": "sha512-WkhYDmpTjLvGlScA1rwjRUmhl4k8oXR3cIbtqWmELgU/dFeHHlEllxDvdWcNJV9rbzCexB5vz8gtNewWLgCT7Q==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openharmony"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/sunos-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/sunos-x64/-/sunos-x64-0.28.2.tgz",
++      "integrity": "sha512-GPMSkTOtMnv2U2F8gxe4Io6qmVs+YKyp832Etqqxr0hFngmXQ3rzwytelm3GIn7T4VviRUlf3sOgBOiTdvaf7g==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "sunos"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/win32-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/win32-arm64/-/win32-arm64-0.28.2.tgz",
++      "integrity": "sha512-PIhhEkE9uPBleRBrQEJpUn7MBnibZzbGzYWPmY3x+YoVg/95zbjB4CxPPOQ8l5tYYM4mMaCthF8/1DIfBQQyWQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/win32-ia32": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/win32-ia32/-/win32-ia32-0.28.2.tgz",
++      "integrity": "sha512-YmJbfTlvU7Sdn9BB+4PRES4oB6pxgS37MAONj+hBr/cpXS1aBPKXxNnDbu+QCWPj0o9dgyxeq79g6c5P8KeuYA==",
++      "cpu": [
++        "ia32"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/win32-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.28.2.tgz",
++      "integrity": "sha512-5ebpxr3nWMzrL/rnUI755Jkuee0bHL/Gq0WTF9lvcpv73wAp5eu8MfBUgWK9bhWvZjj7yX8etf/8tI8Ney695g==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/@expo/code-signing-certificates": {
+       "version": "0.0.6",
+       "resolved": "https://registry.npmjs.org/@expo/code-signing-certificates/-/code-signing-certificates-0.0.6.tgz",
+@@ -4624,6 +5069,16 @@
+         "@types/node": "*"
+       }
+     },
++    "node_modules/@types/chrome": {
++      "version": "0.3.7",
++      "resolved": "https://registry.npmjs.org/@types/chrome/-/chrome-0.3.7.tgz",
++      "integrity": "sha512-jWZgbHqWbTL1a5+PoyN0OJutNyejWgyZ5MdcvKo6iJE1TNRtXR3FxsC4WzNl52yZWPidfWC8NV/VUNZf+OFKcA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/har-format": "*"
++      }
++    },
+     "node_modules/@types/connect": {
+       "version": "3.4.38",
+       "resolved": "https://registry.npmjs.org/@types/connect/-/connect-3.4.38.tgz",
+@@ -4691,6 +5146,13 @@
+       "integrity": "sha512-ynRvcq6wvqexJ9brDMS4BnBLzmr0e14d6ZJTEShTBWKymQiHwlAyGu0ZPEFI2Fh1U53F7tN9ufClWM5KvqkKOw==",
+       "license": "MIT"
+     },
++    "node_modules/@types/har-format": {
++      "version": "1.2.16",
++      "resolved": "https://registry.npmjs.org/@types/har-format/-/har-format-1.2.16.tgz",
++      "integrity": "sha512-fluxdy7ryD3MV6h8pTfTYpy/xQzCFC7m89nOH9y94cNqJ1mDIDPut7MnRHI3F6qRmh/cT2fUjG1MLdCNb4hE9A==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/@types/http-errors": {
+       "version": "2.0.5",
+       "resolved": "https://registry.npmjs.org/@types/http-errors/-/http-errors-2.0.5.tgz",
+@@ -6431,6 +6893,48 @@
+         "node": ">= 0.4"
+       }
+     },
++    "node_modules/esbuild": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/esbuild/-/esbuild-0.28.2.tgz",
++      "integrity": "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==",
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "bin": {
++        "esbuild": "bin/esbuild"
++      },
++      "engines": {
++        "node": ">=18"
++      },
++      "optionalDependencies": {
++        "@esbuild/aix-ppc64": "0.28.2",
++        "@esbuild/android-arm": "0.28.2",
++        "@esbuild/android-arm64": "0.28.2",
++        "@esbuild/android-x64": "0.28.2",
++        "@esbuild/darwin-arm64": "0.28.2",
++        "@esbuild/darwin-x64": "0.28.2",
++        "@esbuild/freebsd-arm64": "0.28.2",
++        "@esbuild/freebsd-x64": "0.28.2",
++        "@esbuild/linux-arm": "0.28.2",
++        "@esbuild/linux-arm64": "0.28.2",
++        "@esbuild/linux-ia32": "0.28.2",
++        "@esbuild/linux-loong64": "0.28.2",
++        "@esbuild/linux-mips64el": "0.28.2",
++        "@esbuild/linux-ppc64": "0.28.2",
++        "@esbuild/linux-riscv64": "0.28.2",
++        "@esbuild/linux-s390x": "0.28.2",
++        "@esbuild/linux-x64": "0.28.2",
++        "@esbuild/netbsd-arm64": "0.28.2",
++        "@esbuild/netbsd-x64": "0.28.2",
++        "@esbuild/openbsd-arm64": "0.28.2",
++        "@esbuild/openbsd-x64": "0.28.2",
++        "@esbuild/openharmony-arm64": "0.28.2",
++        "@esbuild/sunos-x64": "0.28.2",
++        "@esbuild/win32-arm64": "0.28.2",
++        "@esbuild/win32-ia32": "0.28.2",
++        "@esbuild/win32-x64": "0.28.2"
++      }
++    },
+     "node_modules/escalade": {
+       "version": "3.2.0",
+       "resolved": "https://registry.npmjs.org/escalade/-/escalade-3.2.0.tgz",
+@@ -7220,6 +7724,13 @@
+         "node": "^12.20 || >= 14.13"
+       }
+     },
++    "node_modules/fflate": {
++      "version": "0.8.3",
++      "resolved": "https://registry.npmjs.org/fflate/-/fflate-0.8.3.tgz",
++      "integrity": "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/fill-range": {
+       "version": "7.1.1",
+       "resolved": "https://registry.npmjs.org/fill-range/-/fill-range-7.1.1.tgz",
+diff --git a/package.json b/package.json
+index c91ec17..054490b 100644
+--- a/package.json
++++ b/package.json
+@@ -9,7 +9,8 @@
+     "ios": "expo start --ios",
+     "web": "expo start --web",
+     "test": "node --require ts-node/register --test \"tests/**/*.test.ts\"",
+-    "typecheck": "tsc -p tsconfig.app.json && tsc --noEmit -p app/backend/tsconfig.server.json"
++    "typecheck": "tsc -p tsconfig.app.json && tsc --noEmit -p app/backend/tsconfig.server.json && tsc -p extension/tsconfig.json",
++    "build:extension": "node scripts/build-extension.mjs"
+   },
+   "dependencies": {
+     "@expo/vector-icons": "^15.0.3",
+@@ -42,12 +43,15 @@
+     "react-native-web": "^0.21.0"
+   },
+   "devDependencies": {
++    "@types/chrome": "^0.3.7",
+     "@types/cors": "^2.8.19",
+     "@types/event-source-polyfill": "^1.0.5",
+     "@types/express": "^5.0.6",
+     "@types/node": "^24.10.13",
+     "@types/react": "~19.1.0",
+     "baseline-browser-mapping": "^2.9.19",
++    "esbuild": "^0.28.2",
++    "fflate": "^0.8.3",
+     "ts-node": "^10.9.2",
+     "ts-node-dev": "^2.0.0",
+     "typescript": "^5.9.3"
+diff --git a/scripts/build-extension.mjs b/scripts/build-extension.mjs
+new file mode 100644
+index 0000000..8b251b8
+--- /dev/null
++++ b/scripts/build-extension.mjs
+@@ -0,0 +1,40 @@
++// scripts/build-extension.mjs
++// Builds the FF Helper browser extension into extension/dist/ and zips it to
++// public/ffhelper-extension.zip (what the app's Download button serves).
++//   npm run build:extension
++
++import { build } from 'esbuild';
++import { zipSync } from 'fflate';
++import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
++import { join, relative } from 'node:path';
++import { fileURLToPath } from 'node:url';
++
++const root = fileURLToPath(new URL('..', import.meta.url));
++const src = join(root, 'extension/src');
++const dist = join(root, 'extension/dist');
++
++rmSync(dist, { recursive: true, force: true });
++mkdirSync(dist, { recursive: true });
++
++const common = { bundle: true, minify: false, target: 'chrome111', logLevel: 'warning', legalComments: 'none' };
++// Content scripts and the popup are classic scripts; the background worker is a module.
++await build({ ...common, entryPoints: ['content-main', 'content-relay', 'popup'].map(n => join(src, `${n}.ts`)), outdir: dist, format: 'iife' });
++await build({ ...common, entryPoints: [join(src, 'background.ts')], outdir: dist, format: 'esm' });
++
++copyFileSync(join(root, 'extension/manifest.json'), join(dist, 'manifest.json'));
++copyFileSync(join(src, 'popup.html'), join(dist, 'popup.html'));
++copyFileSync(join(root, 'assets/icon.png'), join(dist, 'icon.png'));
++copyFileSync(join(root, 'extension/PRIVACY.md'), join(dist, 'PRIVACY.md'));
++
++const files = {};
++const walk = dir => {
++  for (const name of readdirSync(dir)) {
++    const p = join(dir, name);
++    if (statSync(p).isDirectory()) walk(p);
++    else files[`ffhelper-extension/${relative(dist, p)}`] = readFileSync(p);
++  }
++};
++walk(dist);
++mkdirSync(join(root, 'public'), { recursive: true });
++writeFileSync(join(root, 'public/ffhelper-extension.zip'), zipSync(files, { level: 9 }));
++console.log(`Built extension/dist (${Object.keys(files).length} files) and public/ffhelper-extension.zip`);
+diff --git a/scripts/e2e-extension.mjs b/scripts/e2e-extension.mjs
+new file mode 100644
+index 0000000..1665796
+--- /dev/null
++++ b/scripts/e2e-extension.mjs
+@@ -0,0 +1,68 @@
++// scripts/e2e-extension.mjs
++// End-to-end check of the built extension (npm run build:extension first): loads it in Chromium,
++// serves a fake sleeper.com page that fetches a GraphQL response with a pending trade, and checks
++// the popup's "Check what I see" lists it. Nothing touches the real Sleeper or Firebase.
++//   node scripts/e2e-extension.mjs
++
++import { createRequire } from 'node:module';
++import { mkdtempSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { fileURLToPath } from 'node:url';
++
++// Playwright may be installed globally; require() finds it where import can't.
++const { chromium } = createRequire(import.meta.url)('playwright');
++const dist = fileURLToPath(new URL('../extension/dist', import.meta.url));
++const shot = process.argv[2];
++
++const graphql = {
++  data: {
++    league_transactions_filtered: [
++      { transaction_id: '9', type: 'trade', status: 'proposed', league_id: '1180', roster_ids: [1, 4], creator: 'u4',
++        adds: { '6794': 1, '4866': 4 }, drops: { '6794': 4, '4866': 1 }, metadata: { note: 'not captured' } },
++    ],
++  },
++};
++const page = `<!doctype html><title>Sleeper</title><p>league</p><script>
++  // One XHR object reused twice (Sleeper-style polling), then a fetch.
++  const x = new XMLHttpRequest();
++  x.onload = () => { x.onload = null; x.open('POST', 'https://sleeper.com/graphql'); x.send('{}'); };
++  x.open('POST', 'https://sleeper.com/graphql'); x.send('{}');
++  fetch('https://sleeper.com/graphql', { method: 'POST', body: '{}' }).then(r => r.json()).then(() => setTimeout(() => document.title = 'loaded', 500));
++</script>`;
++
++const ctx = await chromium.launchPersistentContext(mkdtempSync(join(tmpdir(), 'ffh-ext-')), {
++  headless: true,
++  channel: 'chromium', // the full Chromium build (new headless) can load extensions
++  args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
++});
++// Keep everything offline: fake Sleeper, block Firebase.
++await ctx.route('https://sleeper.com/graphql', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(graphql) }));
++await ctx.route('https://sleeper.com/leagues/**', r => r.fulfill({ status: 200, contentType: 'text/html', body: page }));
++await ctx.route(/googleapis\.com/, r => r.abort());
++
++let [worker] = ctx.serviceWorkers();
++worker ??= await ctx.waitForEvent('serviceworker');
++const extId = new URL(worker.url()).host;
++
++const tab = await ctx.newPage();
++await tab.goto('https://sleeper.com/leagues/1180/trades');
++await tab.waitForFunction(() => document.title === 'loaded');
++await tab.waitForTimeout(1500);
++
++const popup = await ctx.newPage();
++await popup.setViewportSize({ width: 340, height: 420 });
++await popup.goto(`chrome-extension://${extId}/popup.html`);
++const status = await popup.evaluate(() => chrome.runtime.sendMessage({ type: 'status' }));
++const captured = status.captures.filter(c => c.transactionId === '9' && c.status === 'proposed');
++console.log(`captured ${captured.length} trade(s); rosters ${captured[0]?.rosterIds?.join(', ')}; league ${captured[0]?.leagueId}; saw Sleeper: ${status.seenSleeper}`);
++
++// Wrong-shaped code is rejected before any network call.
++await popup.fill('#code', 'abc');
++await popup.click('button[type=submit]');
++await popup.waitForTimeout(300);
++console.log(`bad code message: ${await popup.textContent('#error')}`);
++if (shot) await popup.screenshot({ path: shot });
++
++await ctx.close();
++if (captured.length !== 1 || !status.seenSleeper) process.exit(1);
+diff --git a/tests-rules/rules.test.cjs b/tests-rules/rules.test.cjs
+new file mode 100644
+index 0000000..273dde1
+--- /dev/null
++++ b/tests-rules/rules.test.cjs
+@@ -0,0 +1,96 @@
++// Firestore rules tests. Needs Java + the Firebase emulator:
++//   npx -p firebase-tools -p @firebase/rules-unit-testing firebase emulators:exec --only firestore --project demo-ffh "node --test tests-rules/rules.test.cjs"
++const { test, before, after, beforeEach } = require("node:test");
++const fs = require("node:fs");
++const path = require("node:path");
++const { initializeTestEnvironment, assertSucceeds, assertFails } = require("@firebase/rules-unit-testing");
++// Use the same Firebase copy as @firebase/rules-unit-testing (not the app's).
++const fsPath = require.resolve("firebase/firestore", { paths: [path.dirname(require.resolve("@firebase/rules-unit-testing"))] });
++const { doc, getDoc, setDoc, updateDoc, deleteDoc, Timestamp, serverTimestamp } = require(fsPath);
++
++let env;
++const MIN = 60 * 1000;
++const ts = ms => Timestamp.fromMillis(Date.now() + ms);
++
++before(async () => {
++  env = await initializeTestEnvironment({
++    projectId: "demo-ffh",
++    firestore: { rules: fs.readFileSync(path.join(__dirname, "..", "firestore.rules"), "utf8") },
++  });
++});
++after(() => env.cleanup());
++beforeEach(() => env.clearFirestore());
++
++const as = uid => env.authenticatedContext(uid).firestore();
++const seed = (p, data) => env.withSecurityRulesDisabled(c => setDoc(doc(c.firestore(), p), data));
++// Seeded pairings (rules disabled) use explicit times; app-created ones use the server's clock.
++const pairingDoc = (over = {}) => ({ uid: "alice", label: "Alice", createdAt: ts(0), claimedBy: null, ...over });
++const newPairing = (over = {}) => ({ uid: "alice", label: "Alice", createdAt: serverTimestamp(), claimedBy: null, ...over });
++const trade = id => ({ transactionId: id, leagueId: "1", status: "proposed", type: "trade", creator: "u", rosterIds: [1, 2], adds: {}, drops: {}, draftPicks: [], waiverBudget: [], created: 1, seenAt: 1, capturedAt: 1, source: "extension" });
++
++test("owner can save to their own account document (favorites, my team)", async () => {
++  await assertSucceeds(setDoc(doc(as("alice"), "users/alice"), { favorites: { players: [], teams: [] } }, { merge: true }));
++  await assertFails(setDoc(doc(as("bob"), "users/alice"), { x: 1 }));
++});
++
++test("leagues stay owner-only", async () => {
++  await assertSucceeds(setDoc(doc(as("alice"), "users/alice/leagues/1"), { leagueId: "1" }));
++  await assertFails(getDoc(doc(as("bob"), "users/alice/leagues/1")));
++});
++
++test("app can create a pairing code for itself only, timed by the server clock", async () => {
++  await assertSucceeds(setDoc(doc(as("alice"), "extensionPairings/ABCDEFGH"), newPairing()));
++  await assertFails(setDoc(doc(as("alice"), "extensionPairings/ABCDEFGJ"), newPairing({ uid: "bob" })));
++  // A device clock that's off can't set the time (skewed createdAt is rejected).
++  await assertFails(setDoc(doc(as("alice"), "extensionPairings/ABCDEFGK"), newPairing({ createdAt: ts(5 * MIN) })));
++});
++
++test("extension claims a fresh code once, then links itself", async () => {
++  await seed("extensionPairings/ABCDEFGH", pairingDoc());
++  const ext = as("ext1");
++  await assertSucceeds(updateDoc(doc(ext, "extensionPairings/ABCDEFGH"), { claimedBy: "ext1" }));
++  await assertFails(updateDoc(doc(as("ext2"), "extensionPairings/ABCDEFGH"), { claimedBy: "ext2" }));
++  await assertSucceeds(setDoc(doc(ext, "users/alice/linkedDevices/ext1"), { code: "ABCDEFGH", browser: "Chrome", linkedAt: 1, lastSyncAt: null, version: "1.0.0" }));
++  // another extension can't link with someone else's claim
++  await assertFails(setDoc(doc(as("ext2"), "users/alice/linkedDevices/ext2"), { code: "ABCDEFGH", browser: "x", linkedAt: 1, lastSyncAt: null, version: "1" }));
++});
++
++test("expired codes can't be read or claimed", async () => {
++  await seed("extensionPairings/OLDCODE2", pairingDoc({ createdAt: ts(-11 * MIN) }));
++  await assertFails(getDoc(doc(as("ext1"), "extensionPairings/OLDCODE2")));
++  await assertFails(updateDoc(doc(as("ext1"), "extensionPairings/OLDCODE2"), { claimedBy: "ext1" }));
++});
++
++test("only a linked extension can save trades, and only the owner can read them", async () => {
++  await assertFails(setDoc(doc(as("ext1"), "users/alice/pendingTrades/9"), trade("9")));
++  await seed("users/alice/linkedDevices/ext1", { code: "ABCDEFGH", browser: "x", linkedAt: 1, lastSyncAt: null, version: "1" });
++  await assertSucceeds(setDoc(doc(as("ext1"), "users/alice/pendingTrades/9"), trade("9")));
++  await assertFails(setDoc(doc(as("ext1"), "users/alice/pendingTrades/9"), { ...trade("9"), token: "secret" }));
++  await assertSucceeds(getDoc(doc(as("alice"), "users/alice/pendingTrades/9")));
++  await assertFails(getDoc(doc(as("bob"), "users/alice/pendingTrades/9")));
++  await assertFails(getDoc(doc(as("ext1"), "users/alice/pendingTrades/9")));
++});
++
++test("after unlinking, the extension can't save anymore", async () => {
++  await seed("users/alice/linkedDevices/ext1", { code: "ABCDEFGH", browser: "x", linkedAt: 1, lastSyncAt: null, version: "1" });
++  await assertSucceeds(deleteDoc(doc(as("alice"), "users/alice/linkedDevices/ext1")));
++  await assertFails(setDoc(doc(as("ext1"), "users/alice/pendingTrades/9"), trade("9")));
++});
++
++test("an extension can unlink itself, but not other browsers", async () => {
++  await seed("users/alice/linkedDevices/ext1", { code: "ABCDEFGH", browser: "x", linkedAt: 1, lastSyncAt: null, version: "1" });
++  await seed("users/alice/linkedDevices/ext2", { code: "ABCDEFGJ", browser: "y", linkedAt: 1, lastSyncAt: null, version: "1" });
++  await assertFails(deleteDoc(doc(as("ext1"), "users/alice/linkedDevices/ext2")));
++  await assertSucceeds(deleteDoc(doc(as("ext1"), "users/alice/linkedDevices/ext1")));
++});
++
++test("a browser whose device record still exists can re-link with a new code (remove, then add)", async () => {
++  await seed("users/alice/linkedDevices/ext1", { code: "OLDCODE2", browser: "x", linkedAt: 1, lastSyncAt: null, version: "1" });
++  await seed("extensionPairings/NEWCODE2", pairingDoc({ claimedBy: "ext1" }));
++  const ext = as("ext1");
++  // Overwriting the old record is an update, which only allows sync fields:
++  await assertFails(setDoc(doc(ext, "users/alice/linkedDevices/ext1"), { code: "NEWCODE2", browser: "y", linkedAt: 2, lastSyncAt: null, version: "1" }));
++  // ...so the extension removes its own record first, then creates it again.
++  await assertSucceeds(deleteDoc(doc(ext, "users/alice/linkedDevices/ext1")));
++  await assertSucceeds(setDoc(doc(ext, "users/alice/linkedDevices/ext1"), { code: "NEWCODE2", browser: "y", linkedAt: 2, lastSyncAt: null, version: "1" }));
++});
+diff --git a/tests/backend/extension.test.ts b/tests/backend/extension.test.ts
+new file mode 100644
+index 0000000..66662c8
+--- /dev/null
++++ b/tests/backend/extension.test.ts
+@@ -0,0 +1,49 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { validateExtraTransactions, mergeTransactions } from "../../app/backend/utils/extraTransactions";
++import { pendingTradesFor } from "../../app/backend/services/tradeGrade";
++
++const tx = (id: string, extra: Record<string, unknown> = {}) => ({
++  transaction_id: id, type: "trade", status: "proposed", roster_ids: [1, 4], creator: "u4",
++  adds: { a: 1, b: 4 }, drops: { a: 4, b: 1 }, draft_picks: [], ...extra,
++});
++
++test("extension trades: at most 50, must be trades involving your roster", () => {
++  assert.equal(validateExtraTransactions(Array.from({ length: 60 }, (_, i) => tx(String(i))), 1).length, 50);
++  assert.deepEqual(validateExtraTransactions([tx("x", { roster_ids: [2, 3] })], 1), []);
++  assert.deepEqual(validateExtraTransactions([tx("x", { adds: { "1": "x" } })], 1), []);
++  assert.deepEqual(validateExtraTransactions([tx("x", { type: "waiver" })], 1), []);
++  assert.deepEqual(validateExtraTransactions("nope", 1), []);
++});
++
++test("a trade Sleeper already finished doesn't show as pending", () => {
++  const merged = mergeTransactions([tx("9", { status: "complete" })], [tx("9")]);
++  assert.deepEqual(pendingTradesFor(merged, 1, "u1", new Set(["9"])), []);
++});
++
++test("extension-only trades are marked as coming from the extension", () => {
++  const merged = mergeTransactions([], validateExtraTransactions([tx("9")], 1));
++  const [t] = pendingTradesFor(merged, 1, "u1", new Set(["9"]));
++  assert.equal(t.source, "extension");
++  assert.equal(t.direction, "received");
++  assert.deepEqual(t.get, ["a"]);
++  assert.deepEqual(t.give, ["b"]);
++});
++
++test("draft-pick-only trades are kept with their picks", () => {
++  const pick = { season: "2027", round: 2, roster_id: 4, owner_id: 1, previous_owner_id: 4 };
++  const merged = mergeTransactions([], validateExtraTransactions([tx("p", { adds: {}, drops: {}, draft_picks: [pick] })], 1));
++  const [t] = pendingTradesFor(merged, 1, "u1", new Set(["p"]));
++  assert.deepEqual(t.give, []);
++  assert.deepEqual(t.get, []);
++  assert.deepEqual(t.draftPicks, [pick]);
++});
++
++import { tradeFitsLeague } from "../../app/backend/utils/extraTransactions";
++
++test("extension trades must only move players from this league's rosters", () => {
++  const rostered = new Set(["a", "b", "c"]);
++  assert.equal(tradeFitsLeague(tx("1"), rostered), true);
++  assert.equal(tradeFitsLeague(tx("2", { adds: { zz: 1 }, drops: { zz: 4 } }), rostered), false); // another league's player
++  assert.equal(tradeFitsLeague(tx("3", { adds: {}, drops: {} }), rostered), true); // picks only
++});
+diff --git a/tests/backend/round5.test.ts b/tests/backend/round5.test.ts
+index 6a0cb64..cfbadbb 100644
+--- a/tests/backend/round5.test.ts
++++ b/tests/backend/round5.test.ts
+@@ -84,7 +84,7 @@ test("pending trades are read from Sleeper transactions", () => {
+     "u1"
+   );
+   assert.equal(offers.length, 1);
+-  assert.deepEqual(offers[0], { transactionId: "t1", status: "pending", direction: "received", partnerRosterId: 2, give: ["2"], get: ["6"] });
++  assert.deepEqual(offers[0], { transactionId: "t1", status: "pending", direction: "received", partnerRosterId: 2, give: ["2"], get: ["6"], source: "sleeper", draftPicks: [] });
+ });
+ 
+ test("lineup check: swaps to the best lineup, leaving locked players alone", () => {
+diff --git a/tests/extension/capture.test.ts b/tests/extension/capture.test.ts
+new file mode 100644
+index 0000000..1c62d11
+--- /dev/null
++++ b/tests/extension/capture.test.ts
+@@ -0,0 +1,50 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { findTrades, leagueIdFromUrl, toTransaction } from "../../extension/src/capture";
++
++const trade = (id: string, extra: Record<string, unknown> = {}) => ({
++  transaction_id: id, type: "trade", status: "proposed", roster_ids: [1, 4],
++  adds: { "6794": 1 }, drops: { "6794": 4 }, creator: "u1", ...extra,
++});
++const payload = { data: { league_transactions_filtered: [trade("9", { leg: 10, league_id: "123", metadata: { secret: "x" } })] } };
++
++test("finds a pending trade in a GraphQL response and keeps only trade fields", () => {
++  const found = findTrades(payload);
++  assert.equal(found.length, 1);
++  assert.equal(found[0].transactionId, "9");
++  assert.equal(found[0].leagueId, "123");
++  assert.equal(found[0].status, "proposed");
++  assert.deepEqual(found[0].rosterIds, [1, 4]);
++  assert.ok(!("metadata" in found[0]) && !("leg" in found[0]));
++});
++
++test("ignores waivers, strings and duplicates", () => {
++  const found = findTrades({ a: [{ transaction_id: "w", type: "waiver", roster_ids: [1] }, "text", trade("9"), trade("9")] });
++  assert.deepEqual(found.map(t => t.transactionId), ["9"]);
++});
++
++test("falls back to the page's league id", () => {
++  assert.equal(findTrades([trade("5")], "777")[0].leagueId, "777");
++});
++
++test("caps depth at 12 and results at 200, never throws", () => {
++  let deep: any = trade("deep");
++  for (let i = 0; i < 13; i++) deep = { x: deep };
++  assert.deepEqual(findTrades(deep), []);
++  const many = Array.from({ length: 250 }, (_, i) => trade(String(i)));
++  assert.equal(findTrades(many).length, 200);
++  assert.deepEqual(findTrades("not json"), []);
++  assert.deepEqual(findTrades(null), []);
++});
++
++test("reads the league id from a Sleeper page URL", () => {
++  assert.equal(leagueIdFromUrl("https://sleeper.com/leagues/1180/trades"), "1180");
++  assert.equal(leagueIdFromUrl("https://sleeper.com/"), null);
++});
++
++test("converts back to Sleeper's transaction shape", () => {
++  const tx = toTransaction(findTrades(payload)[0]) as any;
++  assert.deepEqual(tx.roster_ids, [1, 4]);
++  assert.equal(tx.transaction_id, "9");
++  assert.equal(tx.type, "trade");
++});
+diff --git a/tests/extension/extensionTrades.test.ts b/tests/extension/extensionTrades.test.ts
+new file mode 100644
+index 0000000..b4d969c
+--- /dev/null
++++ b/tests/extension/extensionTrades.test.ts
+@@ -0,0 +1,53 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { freshExtensionTrades, seenAgo, type ExtensionTrade } from "../../app/services/extensionTrades";
++
++const DAY = 86_400_000;
++const NOW = 1_800_000_000_000;
++const t = (id: string, status: string, seenAt: number): ExtensionTrade => ({
++  transactionId: id, leagueId: "1", status, type: "trade", creator: null, rosterIds: [1, 2],
++  adds: {}, drops: {}, draftPicks: [], waiverBudget: [], created: null, seenAt,
++});
++
++test("only pending offers seen in the last 14 days, newest first", () => {
++  const out = freshExtensionTrades(
++    [t("old", "proposed", NOW - 15 * DAY), t("done", "complete", NOW), t("a", "proposed", NOW - DAY), t("b", "pending", NOW - 1000)],
++    NOW
++  );
++  assert.deepEqual(out.map(x => x.transactionId), ["b", "a"]);
++});
++
++test("seen times read naturally", () => {
++  assert.equal(seenAgo(NOW - 59_000, NOW), "just now");
++  assert.equal(seenAgo(NOW - 3 * 60_000, NOW), "3m ago");
++  assert.equal(seenAgo(NOW - 2 * 3_600_000, NOW), "2h ago");
++  assert.equal(seenAgo(NOW - 4 * DAY, NOW), "4d ago");
++});
++
++import { offerSourceLabel, draftPickLines } from "../../app/services/extensionTrades";
++
++test("offers from the extension say where they came from", () => {
++  const seen = new Map([["9", NOW - 3 * 60_000]]);
++  assert.equal(offerSourceLabel({ transactionId: "9", source: "extension" }, seen, NOW), "via browser extension · seen 3m ago");
++  assert.equal(offerSourceLabel({ transactionId: "9", source: "extension" }, new Map(), NOW), "via browser extension");
++  assert.equal(offerSourceLabel({ transactionId: "8", source: "sleeper" }, seen, NOW), "");
++});
++
++test("draft picks in a trade read as text for each side", () => {
++  const picks = [
++    { season: "2027", round: 2, roster_id: 4, owner_id: 1, previous_owner_id: 4 },
++    { season: "2026", round: 1, roster_id: 1, owner_id: 4, previous_owner_id: 1 },
++  ];
++  assert.deepEqual(draftPickLines(picks, 1), { get: ["2027 2nd round pick"], give: ["2026 1st round pick"] });
++  assert.deepEqual(draftPickLines(undefined, 1), { get: [], give: [] });
++});
++
++import { newlyLinked } from "../../app/services/extensionTrades";
++
++test("a browser counts as just linked when it's new or its link time changed", () => {
++  const before = new Map([["e1", 100]]);
++  assert.equal(newlyLinked(before, [{ id: "e1", linkedAt: 100 }]), false);
++  assert.equal(newlyLinked(before, [{ id: "e1", linkedAt: 250 }]), true); // same browser re-linked
++  assert.equal(newlyLinked(before, [{ id: "e1", linkedAt: 100 }, { id: "e2", linkedAt: 5 }]), true);
++  assert.equal(newlyLinked(before, []), false);
++});
+diff --git a/tests/extension/pairingCode.test.ts b/tests/extension/pairingCode.test.ts
+new file mode 100644
+index 0000000..4574bf7
+--- /dev/null
++++ b/tests/extension/pairingCode.test.ts
+@@ -0,0 +1,19 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { newPairingCode, formatCode, normalizeCode, PAIRING_TTL_MS } from "../../app/services/pairingCode";
++
++test("pairing codes are 8 unambiguous characters", () => {
++  assert.equal(newPairingCode(() => 0), "AAAAAAAA");
++  for (let i = 0; i < 1000; i++) assert.match(newPairingCode(), /^[A-HJ-NP-Z2-9]{8}$/);
++  assert.equal(PAIRING_TTL_MS, 600_000);
++});
++
++test("codes show as XXXX-XXXX", () => {
++  assert.equal(formatCode("ABCDEFGH"), "ABCD-EFGH");
++});
++
++test("typed codes are cleaned up, bad ones rejected", () => {
++  assert.equal(normalizeCode(" ab3d-ef7h "), "AB3DEF7H");
++  assert.equal(normalizeCode("AB0DEF7H"), null);
++  assert.equal(normalizeCode("ABC"), null);
++});
+diff --git a/tests/extension/runtime.test.ts b/tests/extension/runtime.test.ts
+new file mode 100644
+index 0000000..1c6e350
+--- /dev/null
++++ b/tests/extension/runtime.test.ts
+@@ -0,0 +1,27 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { isRelayMessage, RELAY_TAG } from "../../extension/src/messages";
++import { shouldWrite } from "../../extension/src/writeGate";
++import type { CapturedTrade } from "../../extension/src/capture";
++
++const t = (id: string, status = "proposed"): CapturedTrade => ({
++  transactionId: id, leagueId: "1", status, type: "trade", creator: null, rosterIds: [1, 2],
++  adds: {}, drops: {}, draftPicks: [], waiverBudget: [], created: null,
++});
++
++test("only our own relay messages are accepted", () => {
++  assert.equal(isRelayMessage({ tag: RELAY_TAG, trades: [t("1")], seenGraphql: true }), true);
++  assert.equal(isRelayMessage({ tag: "other", trades: [], seenGraphql: true }), false);
++  assert.equal(isRelayMessage({ tag: RELAY_TAG, trades: "x", seenGraphql: true }), false);
++  assert.equal(isRelayMessage({ tag: RELAY_TAG, trades: Array.from({ length: 201 }, (_, i) => t(String(i))), seenGraphql: true }), false);
++  assert.equal(isRelayMessage("hello"), false);
++});
++
++test("a trade is saved at most every 30 seconds unless its status changes", () => {
++  const last = new Map<string, { at: number; status: string }>();
++  assert.equal(shouldWrite(last, t("9"), 0), true);
++  last.set("9", { at: 0, status: "proposed" });
++  assert.equal(shouldWrite(last, t("9"), 10_000), false);
++  assert.equal(shouldWrite(last, t("9", "complete"), 10_000), true);
++  assert.equal(shouldWrite(last, t("9"), 31_000), true);
++});

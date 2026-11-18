@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>FF Helper</title>
+  <style>
+    :root { --bg:#ffffff; --muted-bg:#f3f4f8; --border:#e5e7eb; --text:#111827; --muted:#6b7280; --primary:#4f46e5; --primary-soft:#eef2ff; --ok:#15803d; --ok-soft:#dcfce7; --bad:#b91c1c; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#111827; --muted-bg:#1f2937; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#818cf8; --primary-soft:#1e1b4b; --ok:#4ade80; --ok-soft:#14532d; --bad:#f87171; } }
+    * { box-sizing: border-box; }
+    body { margin:0; width:320px; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+    main { padding:16px; display:grid; gap:12px; }
+    h1 { font-size:16px; margin:0; }
+    p { margin:0; color:var(--muted); font-size:13px; }
+    input { width:100%; padding:10px 12px; font-size:20px; font-weight:800; letter-spacing:4px; text-align:center; text-transform:uppercase; border:2px solid var(--border); border-radius:10px; background:var(--bg); color:var(--text); }
+    input:focus-visible, button:focus-visible { outline:3px solid var(--primary); outline-offset:2px; }
+    button { border:0; border-radius:999px; padding:9px 14px; font-weight:700; font-size:13px; cursor:pointer; }
+    .primary { background:var(--primary); color:#fff; }
+    .quiet { background:var(--muted-bg); color:var(--text); }
+    .row { display:flex; gap:8px; flex-wrap:wrap; }
+    .ok { background:var(--ok-soft); border-radius:10px; padding:10px 12px; font-size:13px; }
+    .error { color:var(--bad); font-size:13px; }
+    pre { margin:0; max-height:180px; overflow:auto; background:var(--muted-bg); border-radius:8px; padding:8px; font-size:11px; white-space:pre-wrap; }
+    [hidden] { display:none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>FF Helper</h1>
+
+    <section id="link" hidden>
+      <p id="unlinked-note" hidden>This browser was unlinked. Make a new code in the app to connect again.</p>
+      <p>In FF Helper, open the account menu, then Browser extension, and tap Get a connect code.</p>
+      <form id="form" style="display:grid; gap:8px; margin-top:8px">
+        <label for="code" style="font-size:13px; font-weight:700">Connect code</label>
+        <input id="code" autocomplete="off" spellcheck="false" maxlength="11" placeholder="XXXX-XXXX" />
+        <button class="primary" type="submit">Connect</button>
+        <div id="error" class="error" role="alert"></div>
+      </form>
+    </section>
+
+    <section id="linked" hidden style="display:grid; gap:10px">
+      <div class="ok" id="linked-text"></div>
+      <p id="sync"></p>
+      <div class="row">
+        <button class="quiet" id="check">Check what I see</button>
+        <button class="quiet" id="unlink">Unlink this browser</button>
+      </div>
+      <div id="debug" hidden style="display:grid; gap:6px">
+        <pre id="debug-text"></pre>
+        <button class="quiet" id="copy">Copy</button>
+      </div>
+    </section>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

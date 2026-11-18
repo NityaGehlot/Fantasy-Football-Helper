@@ -227,6 +227,9 @@ export type PendingTrade = {
   partnerRosterId: number;
   give: string[];
   get: string[];
+  // Where it was found: Sleeper's public API, or the FF Helper browser extension
+  source: "sleeper" | "extension";
+  draftPicks: unknown[];
 };
 
 /**
@@ -234,7 +237,7 @@ export type PendingTrade = {
  * Sleeper's public API mostly lists completed moves, so this is often empty: offers can
  * also be entered by hand in the app.
  */
-export function pendingTradesFor(transactions: any[], rosterId: number, ownerId?: string): PendingTrade[] {
+export function pendingTradesFor(transactions: any[], rosterId: number, ownerId?: string, extensionIds: Set<string> = new Set()): PendingTrade[] {
   return (transactions ?? [])
     .filter(t => t?.type === "trade" && !["complete", "failed"].includes(String(t?.status)))
     .filter(t => (t?.roster_ids ?? []).map(Number).includes(Number(rosterId)))
@@ -249,6 +252,8 @@ export function pendingTradesFor(transactions: any[], rosterId: number, ownerId?
         partnerRosterId: partner,
         get: adds.filter(([, r]) => Number(r) === Number(rosterId)).map(([id]) => id),
         give: drops.filter(([, r]) => Number(r) === Number(rosterId)).map(([id]) => id),
+        source: extensionIds.has(String(t.transaction_id ?? "")) ? "extension" : "sleeper",
+        draftPicks: Array.isArray(t?.draft_picks) ? t.draft_picks : [],
       } as PendingTrade;
     });
 }

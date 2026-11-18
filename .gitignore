@@ -132,3 +132,6 @@ dmypy.json
 .pyre/
 node_modules
 .DS_Store
+.superpowers/
+extension/dist/
+public/ffhelper-extension.zip

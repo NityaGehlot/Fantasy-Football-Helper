@@ -9,7 +9,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "test": "node --require ts-node/register --test \"tests/**/*.test.ts\"",
-    "typecheck": "tsc -p tsconfig.app.json && tsc --noEmit -p app/backend/tsconfig.server.json"
+    "typecheck": "tsc -p tsconfig.app.json && tsc --noEmit -p app/backend/tsconfig.server.json && tsc -p extension/tsconfig.json",
+    "build:extension": "node scripts/build-extension.mjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
@@ -42,12 +43,15 @@
     "react-native-web": "^0.21.0"
   },
   "devDependencies": {
+    "@types/chrome": "^0.3.7",
     "@types/cors": "^2.8.19",
     "@types/event-source-polyfill": "^1.0.5",
     "@types/express": "^5.0.6",
     "@types/node": "^24.10.13",
     "@types/react": "~19.1.0",
     "baseline-browser-mapping": "^2.9.19",
+    "esbuild": "^0.28.2",
+    "fflate": "^0.8.3",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.9.3"

@@ -1,0 +1,66 @@
+rules_version = '2';
+// FF Helper Firestore rules. Paste into Firebase console -> Firestore Database -> Rules -> Publish.
+// To undo, paste firestore.rules.previous instead.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isOwner(uid) { return signedIn() && request.auth.uid == uid; }
+    function pairing(code) { return get(/databases/$(database)/documents/extensionPairings/$(code)).data; }
+    // Codes last 10 minutes from when the server saved them (device clocks don't matter).
+    function fresh(p) { return p.createdAt + duration.value(10, 'm') > request.time; }
+    function isLinkedDevice(uid) {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(uid)/linkedDevices/$(request.auth.uid));
+    }
+
+    // Your account: favorites, my team, last league (the app already writes these).
+    match /users/{uid} {
+      allow read, write: if isOwner(uid);
+
+      match /leagues/{leagueId} {
+        allow read, write: if isOwner(uid);
+      }
+
+      // Browsers linked with a pairing code. Only the extension that claimed the code can add itself.
+      match /linkedDevices/{extUid} {
+        allow read, delete: if isOwner(uid);
+        allow get, delete: if signedIn() && request.auth.uid == extUid;
+        allow create: if signedIn() && request.auth.uid == extUid
+          && request.resource.data.keys().hasOnly(['code', 'browser', 'linkedAt', 'lastSyncAt', 'version'])
+          && request.resource.data.code is string
+          && pairing(request.resource.data.code).uid == uid
+          && pairing(request.resource.data.code).claimedBy == extUid
+          && fresh(pairing(request.resource.data.code));
+        allow update: if signedIn() && request.auth.uid == extUid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSyncAt', 'version', 'browser']);
+      }
+
+      // Pending Sleeper trades saved by your linked extension. Only you can read them.
+      match /pendingTrades/{tid} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isLinkedDevice(uid)
+          && request.resource.data.keys().hasOnly(['transactionId', 'leagueId', 'status', 'type', 'creator', 'rosterIds',
+               'adds', 'drops', 'draftPicks', 'waiverBudget', 'created', 'seenAt', 'capturedAt', 'source'])
+          && request.resource.data.transactionId == tid
+          && request.resource.data.type == 'trade'
+          && request.resource.data.rosterIds is list && request.resource.data.rosterIds.size() <= 12;
+      }
+    }
+
+    // One-time pairing codes (10 minutes). The code itself is the secret, so no listing.
+    match /extensionPairings/{code} {
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['uid', 'label', 'createdAt', 'claimedBy'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.claimedBy == null
+        && request.resource.data.createdAt == request.time;
+      allow get: if signedIn() && fresh(resource.data);
+      allow update: if signedIn()
+        && resource.data.claimedBy == null
+        && fresh(resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['claimedBy'])
+        && request.resource.data.claimedBy == request.auth.uid;
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+  }
+}

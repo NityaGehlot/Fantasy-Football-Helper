@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "FF Helper: Sleeper trade offers",
+  "short_name": "FF Helper",
+  "version": "1.0.0",
+  "description": "Shows your pending Sleeper trade offers in FF Helper, graded, with counter-offer ideas.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://sleeper.com/*",
+    "https://firestore.googleapis.com/*",
+    "https://identitytoolkit.googleapis.com/*",
+    "https://securetoken.googleapis.com/*"
+  ],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "content_scripts": [
+    { "matches": ["https://sleeper.com/*"], "js": ["content-main.js"], "run_at": "document_start", "world": "MAIN" },
+    { "matches": ["https://sleeper.com/*"], "js": ["content-relay.js"], "run_at": "document_start" }
+  ],
+  "action": { "default_popup": "popup.html", "default_title": "FF Helper", "default_icon": { "16": "icon.png", "48": "icon.png", "128": "icon.png" } },
+  "icons": { "16": "icon.png", "48": "icon.png", "128": "icon.png" },
+  "minimum_chrome_version": "111"
+}

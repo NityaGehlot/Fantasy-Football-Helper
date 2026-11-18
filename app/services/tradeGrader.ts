@@ -30,6 +30,9 @@ export type PendingOffer = {
   give: string[];
   get: string[];
   result: TradeGrade;
+  // Where it was found: Sleeper's public API, or the FF Helper browser extension
+  source?: 'sleeper' | 'extension';
+  draftPicks?: unknown[];
 };
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -46,8 +49,9 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 export const fetchLeagueTeams = (leagueId: string, rosterId: number, ownerId?: string) =>
   post<{ myRosterId: number; teams: LeagueTeamRoster[]; offers: PendingOffer[] }>('/league-teams', { leagueId, rosterId, ownerId });
 
-export const fetchTradeOffers = (leagueId: string, rosterId: number, ownerId?: string) =>
-  post<{ checkedAt: string; offers: PendingOffer[]; checked?: OfferCheck }>('/trade-offers', { leagueId, rosterId, ownerId });
+/** Pending offers, graded. `extraTransactions`: trades the browser extension saw on sleeper.com. */
+export const fetchTradeOffers = (leagueId: string, rosterId: number, ownerId?: string, extraTransactions: unknown[] = []) =>
+  post<{ checkedAt: string; offers: PendingOffer[]; checked?: OfferCheck }>('/trade-offers', { leagueId, rosterId, ownerId, extraTransactions });
 
 /** What the app found in Sleeper's transaction list (shown when no offer appears). */
 export type OfferCheck = { weeks: number[]; transactions: number; trades: number; statuses: Record<string, number>; involvingYou: number };
