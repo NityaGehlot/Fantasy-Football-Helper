@@ -126,6 +126,40 @@ export async function imageForArticle(link: string): Promise<string | null> {
   });
 }
 
+// ---------- Shared link cache (written by nfl-data's news job) ----------
+
+// Every article the news job has looked up: its real address and picture, or how many times
+// the lookup failed. Read first, so the backend doesn't repeat Google lookups the job already did.
+export const LINK_CACHE_URL = "https://raw.githubusercontent.com/NityaGehlot/nfl-data/main/data/news/link_cache.json";
+const GIVE_UP_TRIES = 4;
+
+export type LinkCacheEntry = { url?: string; image?: string; tries?: number; last_try?: string; seen?: string };
+
+/** Same key as nfl-data: the Google article id, else the link itself. */
+export function cacheKey(link: string): string {
+  return link.match(/^https?:\/\/news\.google\.com\/(?:rss\/)?articles\/([^?/#]+)/i)?.[1] ?? link;
+}
+
+/** What the cache says about a link: its picture, and whether to skip looking it up again. */
+export function fromLinkCache(cache: Record<string, LinkCacheEntry> | null, link: string): { image: string | null; skip: boolean } {
+  const e = cache?.[cacheKey(link)];
+  if (!e) return { image: null, skip: false };
+  if (e.image) return { image: e.image, skip: true };
+  return { image: null, skip: Number(e.tries ?? 0) >= GIVE_UP_TRIES };
+}
+
+async function loadLinkCache(): Promise<Record<string, LinkCacheEntry> | null> {
+  try {
+    return await cache.get("linkCache", HOUR / 2, async () => {
+      const res = await fetch(LINK_CACHE_URL, { timeout: 15000 } as any);
+      if (!res.ok) throw new Error(`link cache ${res.status}`);
+      return (await res.json()) as Record<string, LinkCacheEntry>;
+    });
+  } catch {
+    return null; // not published yet or offline: fall back to looking up ourselves
+  }
+}
+
 // ---------- Headshot fallback ----------
 
 export function headshotFor(player: any): string | null {
@@ -141,11 +175,13 @@ export type ImageRequest = { link: string; player?: string | null };
 export async function imagesForArticles(items: ImageRequest[], concurrency = 6): Promise<Record<string, string | null>> {
   const out: Record<string, string | null> = {};
   const unique = [...new Map(items.filter(i => i?.link).map(i => [i.link, i])).values()].slice(0, 60);
+  const shared = await loadLinkCache();
   let next = 0;
   const worker = async () => {
     while (next < unique.length) {
       const item = unique[next++];
-      const image = await imageForArticle(item.link).catch(() => null);
+      const known = fromLinkCache(shared, item.link);
+      const image = known.skip ? known.image : await imageForArticle(item.link).catch(() => null);
       out[item.link] = image ?? null;
     }
   };

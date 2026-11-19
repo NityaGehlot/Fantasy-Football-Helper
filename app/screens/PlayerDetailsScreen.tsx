@@ -670,7 +670,7 @@ export default function PlayerDetailsScreen({ route }: any) {
     // Same cards as "Around the League" on Home, scrolling sideways.
     return (
       <View style={{ marginHorizontal: -16 }}>
-        <NewsCardRow items={articles} images={newsImages} />
+        <NewsCardRow items={articles} images={newsImages} players={{ self: { full_name: playerName, team: displayTeam === 'N/A' ? null : displayTeam } }} />
       </View>
     );
   };

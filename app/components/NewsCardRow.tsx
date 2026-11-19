@@ -3,7 +3,7 @@
 // image (the article's own picture), a colored label (good / bad news), headline, summary
 // and source. Used for "Your favorites" on Home and for news on player pages.
 
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { Image, Linking, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { isVideoArticle } from '../services/newsDiversity';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,6 +11,8 @@ import { useTheme, useThemedStyles } from '../context/ThemeContext';
 import { timeAgo } from '../services/leagueNews';
 import type { NewsItem } from '../services/newsDiversity';
 import { radius, shadowFor, type Palette } from '../theme';
+import { fallbackFor, teamIndex } from '../services/newsFallback';
+import NewsFallbackCover from './NewsFallbackCover';
 
 type Tone = { label: string; icon: keyof typeof Ionicons.glyphMap; color: string };
 
@@ -29,15 +31,21 @@ export default function NewsCardRow({
   items,
   images = {},
   extraLabel,
+  players,
 }: {
   items: NewsItem[];
   // link -> cover image found by the app (used when the article has none of its own)
   images?: Record<string, string | null>;
   // Small text above the headline, e.g. why it's in your favorites
   extraLabel?: (a: NewsItem) => string;
+  // Sleeper players (id -> player), to give picture-less stories their team's colours
+  players?: Record<string, any>;
 }) {
   const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const teams = useMemo(() => teamIndex(players ?? {}), [players]);
+  // Pictures that failed to load (blocked or gone): show the fallback cover instead.
+  const [failed, setFailed] = useState<Set<string>>(() => new Set());
 
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.cards} decelerationRate="fast" snapToInterval={252}>
@@ -53,12 +61,15 @@ export default function NewsCardRow({
             activeOpacity={0.85}
             onPress={() => href && Linking.openURL(href).catch(() => undefined)}
           >
-            {image ? (
-              <Image source={{ uri: image }} style={styles.image} resizeMode="cover" />
+            {image && !failed.has(image) ? (
+              <Image
+                source={{ uri: image }}
+                style={styles.image}
+                resizeMode="cover"
+                onError={() => setFailed(prev => new Set(prev).add(image))}
+              />
             ) : (
-              <View style={[styles.image, styles.placeholder, { backgroundColor: `${tone.color}22` }]}>
-                <Ionicons name={video ? 'videocam' : tone.icon} size={32} color={tone.color} />
-              </View>
+              <NewsFallbackCover fallback={fallbackFor(a, teams)} height={128} video={video} />
             )}
             {/* Videos: a play button over the cover, so it's clear the link opens a video */}
             {video && (

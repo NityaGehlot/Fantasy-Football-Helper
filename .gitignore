@@ -135,3 +135,4 @@ node_modules
 .superpowers/
 extension/dist/
 public/ffhelper-extension.zip
+*.patch

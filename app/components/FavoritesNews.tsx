@@ -66,7 +66,7 @@ export default function FavoritesNews({ players }: { players: Record<string, any
           <Text style={styles.empty}>No recent news about the players and teams you follow.</Text>
         ) : (
           <View style={{ marginTop: 10 }}>
-            <NewsCardRow items={items} images={images} extraLabel={a => `${favoriteReason(a, fav, players)} · ${a.player}`} />
+            <NewsCardRow items={items} images={images} players={players} extraLabel={a => `${favoriteReason(a, fav, players)} · ${a.player}`} />
           </View>
         ))}
 

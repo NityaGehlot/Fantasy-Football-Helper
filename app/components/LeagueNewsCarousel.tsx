@@ -8,6 +8,7 @@ import { articlesForFilter, fillMissingImages, getLeagueNews, timeAgo, type Leag
 import { useTheme, useThemedStyles } from '../context/ThemeContext';
 import { isVideoArticle } from '../services/newsDiversity';
 import { radius, shadowFor, type Palette } from '../theme';
+import NewsFallbackCover from './NewsFallbackCover';
 
 const FILTERS: { key: string; label: string; categories: LeagueNewsCategory[] | null }[] = [
   { key: 'all', label: 'Top stories', categories: null },
@@ -31,6 +32,8 @@ export default function LeagueNewsCarousel() {
   const styles = useThemedStyles(makeStyles);
   const [feed, setFeed] = useState<LeagueNewsFeed | null>(null);
   const [filter, setFilter] = useState('all');
+  // Pictures that failed to load: show the fallback cover instead.
+  const [failed, setFailed] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -94,12 +97,16 @@ export default function LeagueNewsCarousel() {
                 activeOpacity={0.85}
                 onPress={() => a.link && Linking.openURL(a.link).catch(() => undefined)}
               >
-                {a.image ? (
-                  <Image source={{ uri: a.image }} style={styles.image} resizeMode="cover" />
+                {a.image && !failed.has(a.image) ? (
+                  <Image
+                    source={{ uri: a.image }}
+                    style={styles.image}
+                    resizeMode="cover"
+                    onError={() => setFailed(prev => new Set(prev).add(a.image!))}
+                  />
                 ) : (
-                  <View style={[styles.image, styles.imagePlaceholder, { backgroundColor: `${cat.color}22` }]}>
-                    <Ionicons name={isVideoArticle(a as any) ? 'videocam' : cat.icon} size={34} color={cat.color} />
-                  </View>
+                  // League-wide stories: a neutral cover with the source's name.
+                  <NewsFallbackCover fallback={{ kind: 'neutral', source: (a as any).source || (feed?.source === 'espn' ? 'ESPN' : 'News') }} height={140} video={isVideoArticle(a as any)} />
                 )}
                 {isVideoArticle(a as any) && (
                   <View style={styles.play} pointerEvents="none" accessibilityLabel="Video">
